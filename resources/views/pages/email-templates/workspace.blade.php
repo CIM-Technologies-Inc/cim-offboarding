@@ -1,0 +1,225 @@
+@extends('layouts.app')
+
+@section('content')
+    <div class="mb-6">
+        <h2 class="text-xl font-semibold text-gray-800 dark:text-white/90">Email Template Management</h2>
+        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+            Create and manage email templates used throughout the offboarding process.
+        </p>
+    </div>
+
+    @if (session('success'))
+        <div class="mb-6 rounded-lg border border-[#145a3a]/30 bg-[#145a3a]/10 px-4 py-3 text-sm font-medium text-[#145a3a] dark:bg-[#145a3a]/15 dark:text-[#3aa876]">
+            {{ session('success') }}
+        </div>
+    @endif
+
+    @if ($errors->any())
+        <div class="mb-6 rounded-lg border border-error-500 bg-error-50 px-4 py-3 text-sm text-error-600 dark:border-error-500/30 dark:bg-error-500/10 dark:text-error-400">
+            <ul class="list-inside list-disc space-y-1">
+                @foreach ($errors->all() as $error)
+                    <li>{{ $error }}</li>
+                @endforeach
+            </ul>
+        </div>
+    @endif
+
+    <div x-data="emailWorkspace()" @open-view-template-modal.window="viewing = $event.detail">
+        <div class="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,1fr)]">
+            <!-- LEFT (25%) -->
+            <div class="h-fit rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-white/[0.03]">
+                <p class="mb-2 px-1 text-xs font-semibold uppercase tracking-wide text-gray-400">Templates</p>
+
+                <div class="max-h-[70vh] space-y-2 overflow-y-auto custom-scrollbar">
+                    @forelse ($templates as $item)
+                        <div class="rounded-lg border p-3 {{ $template && $template->id === $item->id ? 'border-[#145a3a]/40 bg-[#145a3a]/5' : 'border-gray-200 dark:border-gray-800' }}">
+                            <p class="truncate text-sm font-medium {{ $template && $template->id === $item->id ? 'text-[#145a3a] dark:text-[#3aa876]' : 'text-gray-700 dark:text-gray-300' }}">
+                                {{ $item->template_name }}
+                            </p>
+
+                            <div class="mt-2 flex items-center gap-1.5">
+                                <button type="button"
+                                    @click="$dispatch('open-view-template-modal', { name: @js($item->template_name), subject: @js($item->subject), body: @js($item->html_content) })"
+                                    class="rounded-md border border-gray-200 px-2.5 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
+                                    View
+                                </button>
+                                <a href="{{ route('email-templates.edit', $item) }}"
+                                    class="rounded-md border border-gray-200 px-2.5 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
+                                    Edit
+                                </a>
+                                <form method="POST" action="{{ route('email-templates.toggle-status', $item) }}">
+                                    @csrf
+                                    @method('PATCH')
+                                    <label class="relative inline-flex cursor-pointer items-center" title="{{ $item->is_active ? 'Active' : 'Inactive' }}">
+                                        <input type="checkbox" class="peer sr-only" onchange="this.form.requestSubmit()" @checked($item->is_active) />
+                                        <div
+                                            class="peer h-5 w-9 rounded-full bg-gray-200 transition-colors duration-200 peer-checked:bg-[#145a3a] peer-focus:outline-hidden after:absolute after:top-0.5 after:left-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:transition-all after:duration-200 after:content-[''] peer-checked:after:translate-x-4 dark:bg-gray-700">
+                                        </div>
+                                    </label>
+                                </form>
+                                <form method="POST" action="{{ route('email-templates.destroy', $item) }}" class="ml-auto"
+                                    @submit.prevent="Swal.fire({
+                                        title: 'Delete this template?',
+                                        text: 'You are about to delete &quot;{{ $item->template_name }}&quot;. This cannot be undone.',
+                                        icon: 'warning',
+                                        showCancelButton: true,
+                                        confirmButtonText: 'Yes, delete it',
+                                        cancelButtonText: 'Cancel',
+                                        confirmButtonColor: '#dc2626',
+                                        cancelButtonColor: '#6b7280',
+                                        reverseButtons: true
+                                    }).then((result) => { if (result.isConfirmed) { $el.submit(); } })">
+                                    @csrf
+                                    @method('DELETE')
+                                    <button type="submit"
+                                        class="rounded-md border border-error-300 px-2.5 py-1 text-xs font-medium text-error-500 hover:bg-error-50 dark:border-error-500/30 dark:hover:bg-error-500/10">
+                                        Delete
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
+                    @empty
+                        <p class="px-1 py-6 text-center text-sm text-gray-400">No templates yet.</p>
+                    @endforelse
+                </div>
+            </div>
+
+            <!-- CENTER (50%) -->
+            <div class="rounded-xl border border-gray-200 bg-white p-6 shadow-sm dark:border-gray-800 dark:bg-white/[0.03]">
+                <form id="templateForm" method="POST"
+                    action="{{ $template ? route('email-templates.update', $template) : route('email-templates.store') }}">
+                    @csrf
+                    @if ($template)
+                        @method('PUT')
+                    @endif
+
+                    <div class="grid grid-cols-1 gap-5">
+                        <div>
+                            <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                                Template Name <span class="text-error-500">*</span>
+                            </label>
+                            <input type="text" name="template_name" required
+                                value="{{ old('template_name', $template->template_name ?? '') }}"
+                                placeholder="e.g. Exit Interview Invitation"
+                                class="h-11 w-full rounded-xl border border-gray-300 bg-transparent px-4 py-2.5 text-sm text-gray-800 shadow-sm placeholder:text-gray-400 focus:border-[#145a3a]/50 focus:outline-hidden focus:ring-3 focus:ring-[#145a3a]/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30" />
+                        </div>
+
+                        <div>
+                            <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                                Email Subject <span class="text-error-500">*</span>
+                            </label>
+                            <input type="text" name="subject" id="templateSubject" required
+                                value="{{ old('subject', $template->subject ?? '') }}"
+                                placeholder="e.g. Your Exit Interview is Scheduled"
+                                class="h-11 w-full rounded-xl border border-gray-300 bg-transparent px-4 py-2.5 text-sm text-gray-800 shadow-sm placeholder:text-gray-400 focus:border-[#145a3a]/50 focus:outline-hidden focus:ring-3 focus:ring-[#145a3a]/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30" />
+                        </div>
+
+                        <div>
+                            <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                                Email Body
+                            </label>
+                            @php
+                                $defaultBody = old('html_content', $template->html_content ?? '');
+                                if ($defaultBody === '') {
+                                    $defaultBody = '<p>Good day Mrs/Mr. employee,</p>'
+                                        . '<p>Please be informed that you have pending for approval for employee.</p>';
+                                }
+                            @endphp
+                            <!-- <textarea name="html_content" id="templateBody" class="summernote" data-height="420">{{ $defaultBody }}</textarea> -->
+                            <textarea name="html_content" id="templateBody" class="w-full h-40"
+                                @dragover.prevent
+                                @drop.prevent="handleEmployeeDrop($event)">{{ $defaultBody }}</textarea>
+                            <p class="mt-1.5 text-xs text-gray-400">Tip: drag an employee's name from the list on the right and drop it onto {employee} to replace it.</p>
+                        </div>
+                    </div>
+
+                    <div class="mt-6 flex items-center justify-end gap-2 border-t border-gray-200 pt-5 dark:border-gray-800">
+                        <button type="button" @click="showPreview()"
+                            class="flex h-10 items-center justify-center rounded-xl border border-gray-300 bg-white px-4 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-white/[0.03]">
+                            Preview
+                        </button>
+                        <button type="submit"
+                            class="flex h-10 items-center justify-center rounded-xl bg-[#145a3a] px-5 text-sm font-medium text-white shadow-sm hover:bg-[#0f4630]">
+                            {{ $template ? 'Update Template' : 'Save Template' }}
+                        </button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- RIGHT (25%) -->
+            <div class="h-fit rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-white/[0.03]">
+                <h4 class="mb-3 text-sm font-semibold text-gray-800 dark:text-white/90">Employees</h4>
+                <p class="mb-3 text-xs text-gray-400">Drag a name onto the email body, or click Insert.</p>
+
+                <div class="max-h-[75vh] space-y-1 overflow-y-auto custom-scrollbar">
+                    @forelse ($employees as $employee)
+                        <div draggable="true"
+                            @dragstart="$event.dataTransfer.setData('text/plain', '{{ $employee->name }}')"
+                            class="flex cursor-grab items-center justify-between gap-2 rounded-lg px-3 py-2 hover:bg-gray-50 active:cursor-grabbing dark:hover:bg-white/5">
+                            <div class="min-w-0">
+                                <p class="truncate text-sm font-medium text-gray-700 dark:text-gray-300">{{ $employee->name }}</p>
+                                @if ($employee->department)
+                                    <p class="truncate text-xs text-gray-400">{{ $employee->department }}</p>
+                                @endif
+                            </div>
+                            <button type="button" @click="insertEmployeeName('{{ $employee->name }}')"
+                                class="shrink-0 rounded-md bg-[#145a3a]/10 px-2 py-1 text-[11px] font-medium text-[#145a3a] hover:bg-[#145a3a]/20 dark:text-[#3aa876]">
+                                Insert
+                            </button>
+                        </div>
+                    @empty
+                        <p class="px-1 py-6 text-center text-sm text-gray-400">No employees found.</p>
+                    @endforelse
+                </div>
+            </div>
+        </div>
+
+        <!-- VIEW TEMPLATE MODAL -->
+        <x-ui.modal x-data="{ open: false }" @open-view-template-modal.window="open = true" :isOpen="false" class="max-w-[640px]">
+            <div class="no-scrollbar relative max-h-[85vh] w-full max-w-[640px] overflow-y-auto rounded-3xl bg-white p-6 dark:bg-gray-900 lg:p-8" x-show="viewing" x-cloak>
+                <template x-if="viewing">
+                    <div>
+                        <h4 class="mb-1 text-xl font-semibold text-gray-800 dark:text-white/90" x-text="viewing.name"></h4>
+                        <p class="mb-5 text-sm text-gray-500 dark:text-gray-400">
+                            Subject: <span x-text="viewing.subject"></span>
+                        </p>
+
+                        <div class="rounded-xl border border-gray-200 bg-[#F8F9FA] p-5 dark:border-gray-800 dark:bg-white/[0.03]">
+                            <div class="email-preview-body text-sm text-gray-700 dark:text-gray-300" x-html="viewing.body"></div>
+                        </div>
+
+                        <div class="mt-6 flex justify-end">
+                            <button @click="open = false" type="button"
+                                class="flex justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03]">
+                                Close
+                            </button>
+                        </div>
+                    </div>
+                </template>
+            </div>
+        </x-ui.modal>
+
+        <!-- PREVIEW MODAL -->
+        <x-ui.modal x-data="{ open: false }" @open-preview-modal.window="open = true" :isOpen="false" class="max-w-[640px]">
+            <div class="no-scrollbar relative max-h-[85vh] w-full max-w-[640px] overflow-y-auto rounded-3xl bg-white p-6 dark:bg-gray-900 lg:p-8" x-show="open" x-cloak>
+                <h4 class="mb-1 text-xl font-semibold text-gray-800 dark:text-white/90">Email Preview</h4>
+                <p class="mb-5 text-sm text-gray-500 dark:text-gray-400">This is how the current, unsaved content will look.</p>
+
+                <div class="rounded-xl border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900">
+                    <div class="bg-[#F8F9FA] px-5 py-4 dark:bg-white/[0.03]">
+                        <p class="text-xs text-gray-400">Subject</p>
+                        <p class="mt-0.5 text-base font-semibold text-gray-800 dark:text-white/90" x-text="previewSubject || '(no subject)'"></p>
+                    </div>
+                    <div class="email-preview-body min-h-[150px] p-6 text-sm text-gray-700 dark:text-gray-300" x-html="previewHtml"></div>
+                </div>
+
+                <div class="mt-6 flex justify-end">
+                    <button @click="open = false" type="button"
+                        class="flex justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03]">
+                        Close
+                    </button>
+                </div>
+            </div>
+        </x-ui.modal>
+    </div>
+@endsection

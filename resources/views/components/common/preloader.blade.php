@@ -1,0 +1,10 @@
+<div
+  x-data="{ loaded: !window.__appBooted }"
+  x-show="loaded"
+  x-init="if (!window.__appBooted) { window.__appBooted = true; setTimeout(() => loaded = false, 350); }"
+  class="fixed left-0 top-0 z-999999 flex h-screen w-screen items-center justify-center bg-white dark:bg-black"
+>
+  <div
+    class="h-16 w-16 animate-spin rounded-full border-4 border-solid border-brand-500 border-t-transparent"
+  ></div>
+</div>
