@@ -1,8 +1,30 @@
-export function emailWorkspace() {
+export function emailWorkspace(flashSuccess = null, flashError = null) {
   return {
     viewing: null,
     previewSubject: '',
     previewHtml: '',
+    originalBody: '',
+    init() {
+      this.originalBody = this.getSummernoteHtml();
+
+      if (flashSuccess) {
+        this.notify('success', flashSuccess);
+      } else if (flashError) {
+        this.notify('error', flashError);
+      }
+    },
+    notify(icon, title) {
+      window.Swal?.fire({
+        toast: true,
+        position: 'bottom-end',
+        icon,
+        title,
+        showConfirmButton: false,
+        timer: icon === 'success' ? 2000 : 2500,
+        timerProgressBar: icon === 'success',
+        customClass: { container: 'app-toast' },
+      });
+    },
     getSummernoteHtml() {
       if (window.jQuery && window.jQuery('.summernote').data('summernote')) {
         return window.jQuery('.summernote').summernote('code');
@@ -18,8 +40,11 @@ export function emailWorkspace() {
         if (bodyEl) bodyEl.value = html;
       }
     },
+    // "approver", "offboardee", and "employee" are the placeholder words the
+    // backend mail-merge fills in with the signatory's, offboardee's, and
+    // request creator's name respectively (see OffboardingRequestController).
     findPlaceholderMatches(text) {
-      const pattern = /\{\s*employee\s*\}|\bemployee\b/gi;
+      const pattern = /\{\s*(?:approver|offboardee|employee)\s*\}|\b(?:approver|offboardee|employee)\b/gi;
       const matches = [];
       let match;
       while ((match = pattern.exec(text)) !== null) {
@@ -28,7 +53,7 @@ export function emailWorkspace() {
       return matches;
     },
     // Replaces only the placeholder closest to `position` (character offset),
-    // leaving every other "employee" occurrence in the body untouched.
+    // leaving every other placeholder occurrence in the body untouched.
     replaceNearestPlaceholder(text, name, position) {
       const matches = this.findPlaceholderMatches(text);
       if (matches.length === 0) return null;
@@ -63,8 +88,8 @@ export function emailWorkspace() {
         return;
       }
 
-      // No "employee" placeholder left anywhere — fall back to inserting the
-      // name directly at the drop/cursor position so this is never a no-op.
+      // No placeholder left anywhere — fall back to inserting the name
+      // directly at the drop/cursor position so this is never a no-op.
       if (window.jQuery && window.jQuery('.summernote').data('summernote')) {
         window.jQuery('.summernote').summernote('focus');
         window.jQuery('.summernote').summernote('pasteHTML', name);
@@ -89,11 +114,43 @@ export function emailWorkspace() {
 
       this.insertEmployeeName(name, dropIndex);
     },
+    // Removes every dragged-in employee name by restoring the body to
+    // whatever it was when the page loaded (placeholders intact).
+    undoDraggedNames() {
+      this.setSummernoteHtml(this.originalBody);
+      this.notify('success', 'Dragged names removed.');
+    },
     showPreview() {
       const subjectEl = document.getElementById('templateSubject');
       this.previewSubject = subjectEl ? subjectEl.value : '';
       this.previewHtml = this.getSummernoteHtml();
       this.$dispatch('open-preview-modal');
+    },
+    toggleTemplateStatus(event, url) {
+      const checkbox = event.target;
+      const label = checkbox.closest('label');
+      const previousChecked = !checkbox.checked;
+      const csrfMeta = document.querySelector('meta[name="csrf-token"]');
+
+      fetch(url, {
+        method: 'PATCH',
+        headers: {
+          'X-CSRF-TOKEN': csrfMeta ? csrfMeta.content : '',
+          Accept: 'application/json',
+        },
+      })
+        .then((response) => {
+          if (!response.ok) throw new Error('Request failed');
+          return response.json();
+        })
+        .then((data) => {
+          if (label) label.title = data.is_active ? 'Active' : 'Inactive';
+          this.notify('success', data.message);
+        })
+        .catch(() => {
+          checkbox.checked = previousChecked;
+          this.notify('error', 'Could not update template status.');
+        });
     },
   };
 }

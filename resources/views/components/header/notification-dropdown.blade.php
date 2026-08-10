@@ -1,21 +1,11 @@
 {{-- Notification Dropdown Component --}}
 <div class="relative" x-data="{
     dropdownOpen: false,
-    notifying: true,
     toggleDropdown() {
         this.dropdownOpen = !this.dropdownOpen;
-        this.notifying = false;
     },
     closeDropdown() {
         this.dropdownOpen = false;
-    },
-    handleItemClick() {
-        console.log('Notification item clicked');
-        this.closeDropdown();
-    },
-    handleViewAllClick() {
-        console.log('View All Notifications clicked');
-        this.closeDropdown();
     }
 }" @click.away="closeDropdown()">
     <!-- Notification Button -->
@@ -24,15 +14,14 @@
         @click="toggleDropdown()"
         type="button"
     >
-        <!-- Notification Badge -->
-        <span
-            x-show="notifying"
-            class="absolute right-0 top-0.5 z-1 h-2 w-2 rounded-full bg-orange-400"
-        >
+        @if ($unreadCount > 0)
+            <!-- Notification Badge -->
             <span
-                class="absolute inline-flex w-full h-full bg-orange-400 rounded-full opacity-75 -z-1 animate-ping"
-            ></span>
-        </span>
+                class="absolute -right-1 -top-1 z-1 flex h-4.5 min-w-4.5 items-center justify-center rounded-full bg-error-500 px-1 text-[10px] font-medium leading-none text-white"
+            >
+                {{ $unreadCount > 9 ? '9+' : $unreadCount }}
+            </span>
+        @endif
 
         <!-- Bell Icon -->
         <svg
@@ -68,149 +57,75 @@
         <div class="flex items-center justify-between pb-3 mb-3 border-b border-gray-100 dark:border-gray-800">
             <h5 class="text-lg font-semibold text-gray-800 dark:text-white/90">Notification</h5>
 
-            <button @click="closeDropdown()" class="text-gray-500 dark:text-gray-400" type="button">
-                <svg
-                    class="fill-current"
-                    width="24"
-                    height="24"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    xmlns="http://www.w3.org/2000/svg"
-                >
-                    <path
-                        fill-rule="evenodd"
-                        clip-rule="evenodd"
-                        d="M6.21967 7.28131C5.92678 6.98841 5.92678 6.51354 6.21967 6.22065C6.51256 5.92775 6.98744 5.92775 7.28033 6.22065L11.999 10.9393L16.7176 6.22078C17.0105 5.92789 17.4854 5.92788 17.7782 6.22078C18.0711 6.51367 18.0711 6.98855 17.7782 7.28144L13.0597 12L17.7782 16.7186C18.0711 17.0115 18.0711 17.4863 17.7782 17.7792C17.4854 18.0721 17.0105 18.0721 16.7176 17.7792L11.999 13.0607L7.28033 17.7794C6.98744 18.0722 6.51256 18.0722 6.21967 17.7794C5.92678 17.4865 5.92678 17.0116 6.21967 16.7187L10.9384 12L6.21967 7.28131Z"
-                        fill=""
-                    />
-                </svg>
-            </button>
+            <div class="flex items-center gap-3">
+                @if ($unreadCount > 0)
+                    <form method="POST" action="{{ route('notifications.read-all') }}">
+                        @csrf
+                        <button type="submit" class="text-xs font-medium text-[#145a3a] hover:text-[#0f4630] dark:text-[#3aa876]">
+                            Mark all
+                        </button>
+                    </form>
+                @endif
+
+                <button @click="closeDropdown()" class="text-gray-500 dark:text-gray-400" type="button">
+                    <svg
+                        class="fill-current"
+                        width="24"
+                        height="24"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        xmlns="http://www.w3.org/2000/svg"
+                    >
+                        <path
+                            fill-rule="evenodd"
+                            clip-rule="evenodd"
+                            d="M6.21967 7.28131C5.92678 6.98841 5.92678 6.51354 6.21967 6.22065C6.51256 5.92775 6.98744 5.92775 7.28033 6.22065L11.999 10.9393L16.7176 6.22078C17.0105 5.92789 17.4854 5.92788 17.7782 6.22078C18.0711 6.51367 18.0711 6.98855 17.7782 7.28144L13.0597 12L17.7782 16.7186C18.0711 17.0115 18.0711 17.4863 17.7782 17.7792C17.4854 18.0721 17.0105 18.0721 16.7176 17.7792L11.999 13.0607L7.28033 17.7794C6.98744 18.0722 6.51256 18.0722 6.21967 17.7794C5.92678 17.4865 5.92678 17.0116 6.21967 16.7187L10.9384 12L6.21967 7.28131Z"
+                            fill=""
+                        />
+                    </svg>
+                </button>
+            </div>
         </div>
 
         <!-- Notification List -->
         <ul class="flex flex-col h-auto overflow-y-auto custom-scrollbar">
-            @php
-                $notifications = [
-                    [
-                        'id' => 1,
-                        'userName' => 'Terry Franci',
-                        'action' => 'requests permission to change',
-                        'project' => 'Project - Nganter App',
-                        'type' => 'Project',
-                        'time' => '5 min ago',
-                        'status' => 'online',
-                    ],
-                    [
-                        'id' => 2,
-                        'userName' => 'Alex Johnson',
-                        'action' => 'requests permission to change',
-                        'project' => 'Project - Nganter App',
-                        'type' => 'Project',
-                        'time' => '10 min ago',
-                        'status' => 'offline',
-                    ],
-                    [
-                        'id' => 3,
-                        'userName' => 'Sarah Williams',
-                        'action' => 'requests permission to change',
-                        'project' => 'Project - Dashboard UI',
-                        'type' => 'Project',
-                        'time' => '15 min ago',
-                        'status' => 'online',
-                    ],
-                    [
-                        'id' => 4,
-                        'userName' => 'Mike Brown',
-                        'action' => 'requests permission to change',
-                        'project' => 'Project - E-commerce',
-                        'type' => 'Project',
-                        'time' => '20 min ago',
-                        'status' => 'online',
-                    ],
-                    [
-                        'id' => 5,
-                        'userName' => 'Emma Davis',
-                        'action' => 'requests permission to change',
-                        'project' => 'Project - Mobile App',
-                        'type' => 'Project',
-                        'time' => '25 min ago',
-                        'status' => 'offline',
-                    ],
-                    [
-                        'id' => 6,
-                        'userName' => 'John Smith',
-                        'action' => 'requests permission to change',
-                        'project' => 'Project - Landing Page',
-                        'type' => 'Project',
-                        'time' => '30 min ago',
-                        'status' => 'online',
-                    ],
-                    [
-                        'id' => 7,
-                        'userName' => 'Lisa Anderson',
-                        'action' => 'requests permission to change',
-                        'project' => 'Project - Blog System',
-                        'type' => 'Project',
-                        'time' => '35 min ago',
-                        'status' => 'online',
-                    ],
-                    [
-                        'id' => 8,
-                        'userName' => 'David Wilson',
-                        'action' => 'requests permission to change',
-                        'project' => 'Project - CRM Dashboard',
-                        'type' => 'Project',
-                        'time' => '40 min ago',
-                        'status' => 'online',
-                    ],
-                ];
-            @endphp
-
-            @foreach ($notifications as $notification)
-                <li @click="handleItemClick()">
-                    <a
-                        class="flex gap-3 rounded-lg border-b border-gray-100 p-3 px-4.5 py-3 hover:bg-gray-100 dark:border-gray-800 dark:hover:bg-white/5"
-                        href="#"
-                    >
-                        <span class="relative block w-full h-10 rounded-full z-1 max-w-10">
-                            <span class="flex h-10 w-10 items-center justify-center rounded-full bg-gray-100 text-sm font-semibold text-gray-600 dark:bg-gray-800 dark:text-gray-300">
-                                {{ collect(explode(' ', $notification['userName']))->map(fn ($part) => mb_substr($part, 0, 1))->take(2)->implode('') }}
+            @forelse ($notifications as $notification)
+                @php
+                    $isApproved = $notification->type === 'offboarding_approved';
+                    $isUnread = $notification->read_at === null;
+                @endphp
+                <li>
+                    <form method="POST" action="{{ route('notifications.read', $notification->id) }}">
+                        @csrf
+                        <button type="submit"
+                            class="flex w-full gap-3 rounded-lg border-b border-gray-100 p-3 px-4.5 py-3 text-left hover:bg-gray-100 dark:border-gray-800 dark:hover:bg-white/5">
+                            <span class="relative mt-1 block h-2.5 w-2.5 shrink-0 rounded-full {{ $isUnread ? ($isApproved ? 'bg-[#145a3a]' : 'bg-error-500') : 'bg-gray-300 dark:bg-gray-700' }}">
                             </span>
-                            <span
-                                class="absolute bottom-0 right-0 z-10 h-2.5 w-full max-w-2.5 rounded-full border-[1.5px] border-white dark:border-gray-900 {{ $notification['status'] === 'online' ? 'bg-success-500' : 'bg-error-500' }}"
-                            ></span>
-                        </span>
 
-                        <span class="block">
-                            <span class="mb-1.5 block text-theme-sm text-gray-500 dark:text-gray-400">
-                                <span class="font-medium text-gray-800 dark:text-white/90">
-                                    {{ $notification['userName'] }}
+                            <span class="block min-w-0">
+                                <span class="mb-1 block text-theme-sm text-gray-700 dark:text-gray-300">
+                                    {{ $notification->data['message'] ?? 'Notification' }}
                                 </span>
-                                {{ $notification['action'] }}
-                                <span class="font-medium text-gray-800 dark:text-white/90">
-                                    {{ $notification['project'] }}
+
+                                @if (! empty($notification->data['comment']))
+                                    <span class="mb-1 block text-xs text-gray-500 dark:text-gray-400">
+                                        Reason: {{ $notification->data['comment'] }}
+                                    </span>
+                                @endif
+
+                                <span class="flex items-center gap-2 text-gray-400 text-theme-xs">
+                                    {{ $notification->created_at->diffForHumans() }}
                                 </span>
                             </span>
-
-                            <span class="flex items-center gap-2 text-gray-500 text-theme-xs dark:text-gray-400">
-                                <span>{{ $notification['type'] }}</span>
-                                <span class="w-1 h-1 bg-gray-400 rounded-full"></span>
-                                <span>{{ $notification['time'] }}</span>
-                            </span>
-                        </span>
-                    </a>
+                        </button>
+                    </form>
                 </li>
-            @endforeach
+            @empty
+                <li class="flex flex-1 items-center justify-center py-10 text-sm text-gray-400">
+                    No notifications yet.
+                </li>
+            @endforelse
         </ul>
-
-        <!-- View All Button -->
-        <a
-            href="#"
-            class="mt-3 flex justify-center rounded-lg border border-gray-300 bg-white p-3 text-theme-sm font-medium text-gray-700 shadow-theme-xs hover:bg-gray-50 hover:text-gray-800 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03] dark:hover:text-gray-200"
-            @click.prevent="handleViewAllClick()"
-        >
-            View All Notification
-        </a>
     </div>
     <!-- Dropdown End -->
 </div>

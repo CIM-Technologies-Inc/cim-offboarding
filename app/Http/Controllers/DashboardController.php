@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\EmailTemplate;
 use App\Models\Employee;
 use App\Models\OffboardingRequest;
 use Illuminate\Support\Carbon;
@@ -47,6 +48,10 @@ class DashboardController extends Controller
             ->orderBy('name')
             ->get(['id', 'name', 'employee_code', 'department']);
 
+        $emailTemplates = EmailTemplate::where('is_active', true)
+            ->orderBy('template_name')
+            ->get(['id', 'template_name']);
+
         $recentRequests = OffboardingRequest::with('employee')
             ->latest()
             ->take(6)
@@ -75,6 +80,7 @@ class DashboardController extends Controller
             'departments' => $departments,
             'recentRequests' => $recentRequests,
             'employeesNotOffboarded' => $employeesNotOffboarded,
+            'emailTemplates' => $emailTemplates,
         ]);
     }
 

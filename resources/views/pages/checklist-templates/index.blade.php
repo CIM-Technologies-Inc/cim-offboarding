@@ -3,13 +3,7 @@
 @section('content')
     <x-common.page-breadcrumb pageTitle="Offboarding Checklist" />
 
-    @if (session('success'))
-        <div class="mb-6 rounded-lg border border-success-500 bg-success-50 px-4 py-3 text-sm text-success-600 dark:border-success-500/30 dark:bg-success-500/10 dark:text-success-400">
-            {{ session('success') }}
-        </div>
-    @endif
-
-    <div class="mb-6 flex items-center justify-between">
+    <div x-data="flashToast(@js(session('success')))" class="mb-6 flex items-center justify-between">
         <p class="text-sm text-gray-500 dark:text-gray-400">
             Build reusable clearance checklists and assign a signatory to each item.
         </p>
@@ -115,8 +109,21 @@
                                             <span class="absolute left-1/2 top-full -translate-x-1/2 border-4 border-transparent border-t-[#145a3a]"></span>
                                         </span>
                                     </div>
-                                    <form method="POST" action="{{ route('checklist-templates.destroy', $template) }}"
-                                        onsubmit="return confirm('Delete this checklist template?');">
+                                    <form method="POST" action="{{ route('checklist-templates.destroy', $template) }}" x-data="{ confirmed: false }"
+                                        @submit="if (!confirmed) {
+                                            $event.preventDefault();
+                                            Swal.fire({
+                                                title: 'Delete this checklist template?',
+                                                text: 'You are about to delete &quot;{{ $template->title }}&quot;. This cannot be undone.',
+                                                icon: 'warning',
+                                                showCancelButton: true,
+                                                confirmButtonText: 'Delete',
+                                                cancelButtonText: 'Cancel',
+                                                confirmButtonColor: '#dc2626',
+                                                cancelButtonColor: '#145a3a',
+                                                reverseButtons: true
+                                            }).then((result) => { if (result.isConfirmed) { confirmed = true; $el.requestSubmit(); } });
+                                        }">
                                         @csrf
                                         @method('DELETE')
                                         <div class="group relative">

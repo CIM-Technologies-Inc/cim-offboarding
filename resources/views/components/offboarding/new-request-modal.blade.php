@@ -1,6 +1,12 @@
 @props([
     'employees' => [],
+    'emailTemplates' => [],
 ])
+
+@php
+    $offboardingRequestFields = ['employee_id', 'notice_date', 'last_working_day', 'resignation_type', 'reason', 'notice_period', 'approval_mode', 'email_template_id'];
+    $offboardingRequestHasErrors = $errors->hasAny($offboardingRequestFields);
+@endphp
 
 <button @click="$dispatch('open-offboarding-request-modal')"
     class="shadow-theme-xs flex items-center justify-center gap-2 rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white hover:bg-[#0f4630]">
@@ -11,7 +17,7 @@
 </button>
 
 <x-ui.modal x-data="{ open: false }" @open-offboarding-request-modal.window="open = true"
-    :isOpen="$errors->hasAny(['employee_id', 'notice_date', 'last_working_day', 'resignation_type', 'reason', 'notice_period', 'approval_mode'])"
+    :isOpen="$offboardingRequestHasErrors"
     class="max-w-[700px]">
     <div class="no-scrollbar relative w-full max-w-[700px] overflow-y-auto rounded-3xl bg-white p-4 dark:bg-gray-900 lg:p-11">
         <div class="px-2 pr-14">
@@ -23,13 +29,9 @@
             </p>
         </div>
 
-        @if ($errors->hasAny(['employee_id', 'notice_date', 'last_working_day', 'resignation_type', 'reason', 'notice_period', 'approval_mode']))
-            <div class="mx-2 mb-5 rounded-lg border border-error-500 bg-error-50 px-4 py-3 text-sm text-error-600 dark:border-error-500/30 dark:bg-error-500/10 dark:text-error-400">
-                Please fill in all required fields before submitting.
-            </div>
-        @endif
-
-        <form class="flex flex-col" method="POST" action="{{ route('offboarding-requests.store') }}">
+        <form class="flex flex-col" method="POST" action="{{ route('offboarding-requests.store') }}"
+            x-data="offboardingRequestForm(@js(session('success')), @js($offboardingRequestHasErrors ? $errors->first() : null))"
+            @submit="submitting = true">
             @csrf
             <div class="custom-scrollbar h-[458px] overflow-y-auto p-2">
                 <div class="grid grid-cols-1 gap-x-6 gap-y-5 lg:grid-cols-2">
@@ -96,9 +98,9 @@
 
                     <div class="col-span-2 lg:col-span-1">
                         <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
-                            Resignation Type <span class="text-error-500">*</span>
+                            Resignation Type
                         </label>
-                        <input type="text" name="resignation_type" value="{{ old('resignation_type') }}" placeholder="e.g. Voluntary" required
+                        <input type="text" name="resignation_type" value="{{ old('resignation_type') }}" placeholder="e.g. Voluntary"
                             class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
                         @error('resignation_type')
                             <p class="mt-1.5 text-xs text-error-500">{{ $message }}</p>
@@ -157,6 +159,35 @@
                         @enderror
                     </div>
 
+                    <div class="col-span-2 lg:col-span-1">
+                        <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                            Email Template
+                        </label>
+                        <div x-data="{ isOptionSelected: {{ old('email_template_id') ? 'true' : 'false' }} }" class="relative z-20 bg-transparent">
+                            <select name="email_template_id" @change="isOptionSelected = true"
+                                :class="isOptionSelected && 'text-gray-800 dark:text-white/90'"
+                                class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 pr-11 text-sm text-gray-500 shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800">
+                                <option value="" class="text-gray-700 dark:bg-gray-900 dark:text-gray-400">
+                                    Use department default
+                                </option>
+                                @foreach ($emailTemplates as $emailTemplate)
+                                    <option value="{{ $emailTemplate->id }}" @selected(old('email_template_id') == $emailTemplate->id)
+                                        class="text-gray-700 dark:bg-gray-900 dark:text-gray-400">
+                                        {{ $emailTemplate->template_name }}
+                                    </option>
+                                @endforeach
+                            </select>
+                            <span class="pointer-events-none absolute top-1/2 right-4 z-30 -translate-y-1/2 text-gray-500 dark:text-gray-400">
+                                <svg class="stroke-current" width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <path d="M4.79175 7.396L10.0001 12.6043L15.2084 7.396" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                                </svg>
+                            </span>
+                        </div>
+                        @error('email_template_id')
+                            <p class="mt-1.5 text-xs text-error-500">{{ $message }}</p>
+                        @enderror
+                    </div>
+
                     <div class="col-span-2">
                         <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
                             Approval Mode <span class="text-error-500">*</span>
@@ -180,13 +211,14 @@
                 </div>
             </div>
             <div class="flex items-center gap-3 px-2 mt-6 lg:justify-end">
-                <button @click="open = false" type="button"
-                    class="flex w-full justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03] sm:w-auto">
+                <button @click="open = false" type="button" :disabled="submitting"
+                    class="flex w-full justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03] sm:w-auto">
                     Close
                 </button>
-                <button type="submit"
-                    class="flex w-full justify-center rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white hover:bg-[#0f4630] sm:w-auto">
-                    Submit Request
+                <button type="submit" :disabled="submitting"
+                    class="flex w-full items-center justify-center gap-2 rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white hover:bg-[#0f4630] disabled:cursor-not-allowed disabled:opacity-70 sm:w-auto">
+                    <span x-show="submitting" class="h-4 w-4 animate-spin rounded-full border-2 border-solid border-white border-t-transparent"></span>
+                    <span x-text="submitting ? 'Submitting...' : 'Submit Request'"></span>
                 </button>
             </div>
         </form>

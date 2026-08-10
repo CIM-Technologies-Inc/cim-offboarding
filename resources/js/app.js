@@ -12,6 +12,10 @@ import { Calendar } from '@fullcalendar/core';
 import Swal from 'sweetalert2';
 // Email template workspace (Alpine component used by resources/views/pages/email-templates)
 import { emailWorkspace } from './components/email-workspace';
+// Offboarding request modal form (Alpine component used by the dashboard's New Offboarding Request modal)
+import { offboardingRequestForm } from './components/offboarding-request';
+// Generic flash-message toast (session success / validation error) shared across pages
+import { flashToast } from './components/flash-toast';
 
 
 
@@ -21,6 +25,8 @@ window.flatpickr = flatpickr;
 window.FullCalendar = Calendar;
 window.Swal = Swal;
 window.emailWorkspace = emailWorkspace;
+window.offboardingRequestForm = offboardingRequestForm;
+window.flashToast = flashToast;
 
 Alpine.start();
 

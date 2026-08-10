@@ -8,23 +8,8 @@
         </p>
     </div>
 
-    @if (session('success'))
-        <div class="mb-6 rounded-lg border border-[#145a3a]/30 bg-[#145a3a]/10 px-4 py-3 text-sm font-medium text-[#145a3a] dark:bg-[#145a3a]/15 dark:text-[#3aa876]">
-            {{ session('success') }}
-        </div>
-    @endif
-
-    @if ($errors->any())
-        <div class="mb-6 rounded-lg border border-error-500 bg-error-50 px-4 py-3 text-sm text-error-600 dark:border-error-500/30 dark:bg-error-500/10 dark:text-error-400">
-            <ul class="list-inside list-disc space-y-1">
-                @foreach ($errors->all() as $error)
-                    <li>{{ $error }}</li>
-                @endforeach
-            </ul>
-        </div>
-    @endif
-
-    <div x-data="emailWorkspace()" @open-view-template-modal.window="viewing = $event.detail">
+    <div x-data="emailWorkspace(@js(session('success')), @js($errors->any() ? $errors->first() : null))"
+        @open-view-template-modal.window="viewing = $event.detail">
         <div class="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,1fr)]">
             <!-- LEFT (25%) -->
             <div class="h-fit rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-white/[0.03]">
@@ -47,28 +32,29 @@
                                     class="rounded-md border border-gray-200 px-2.5 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
                                     Edit
                                 </a>
-                                <form method="POST" action="{{ route('email-templates.toggle-status', $item) }}">
-                                    @csrf
-                                    @method('PATCH')
-                                    <label class="relative inline-flex cursor-pointer items-center" title="{{ $item->is_active ? 'Active' : 'Inactive' }}">
-                                        <input type="checkbox" class="peer sr-only" onchange="this.form.requestSubmit()" @checked($item->is_active) />
-                                        <div
-                                            class="peer h-5 w-9 rounded-full bg-gray-200 transition-colors duration-200 peer-checked:bg-[#145a3a] peer-focus:outline-hidden after:absolute after:top-0.5 after:left-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:transition-all after:duration-200 after:content-[''] peer-checked:after:translate-x-4 dark:bg-gray-700">
-                                        </div>
-                                    </label>
-                                </form>
-                                <form method="POST" action="{{ route('email-templates.destroy', $item) }}" class="ml-auto"
-                                    @submit.prevent="Swal.fire({
-                                        title: 'Delete this template?',
-                                        text: 'You are about to delete &quot;{{ $item->template_name }}&quot;. This cannot be undone.',
-                                        icon: 'warning',
-                                        showCancelButton: true,
-                                        confirmButtonText: 'Yes, delete it',
-                                        cancelButtonText: 'Cancel',
-                                        confirmButtonColor: '#dc2626',
-                                        cancelButtonColor: '#6b7280',
-                                        reverseButtons: true
-                                    }).then((result) => { if (result.isConfirmed) { $el.submit(); } })">
+                                <label class="relative inline-flex cursor-pointer items-center" title="{{ $item->is_active ? 'Active' : 'Inactive' }}">
+                                    <input type="checkbox" class="peer sr-only"
+                                        @change="toggleTemplateStatus($event, '{{ route('email-templates.toggle-status', $item) }}')"
+                                        @checked($item->is_active) />
+                                    <div
+                                        class="peer h-5 w-9 rounded-full bg-gray-200 transition-colors duration-200 peer-checked:bg-[#145a3a] peer-focus:outline-hidden after:absolute after:top-0.5 after:left-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:transition-all after:duration-200 after:content-[''] peer-checked:after:translate-x-4 dark:bg-gray-700">
+                                    </div>
+                                </label>
+                                <form method="POST" action="{{ route('email-templates.destroy', $item) }}" class="ml-auto" x-data="{ confirmed: false }"
+                                    @submit="if (!confirmed) {
+                                        $event.preventDefault();
+                                        Swal.fire({
+                                            title: 'Delete this template?',
+                                            text: 'You are about to delete &quot;{{ $item->template_name }}&quot;. This cannot be undone.',
+                                            icon: 'warning',
+                                            showCancelButton: true,
+                                            confirmButtonText: 'Delete',
+                                            cancelButtonText: 'Cancel',
+                                            confirmButtonColor: '#dc2626',
+                                            cancelButtonColor: '#145a3a',
+                                            reverseButtons: true
+                                        }).then((result) => { if (result.isConfirmed) { confirmed = true; $el.requestSubmit(); } });
+                                    }">
                                     @csrf
                                     @method('DELETE')
                                     <button type="submit"
@@ -115,21 +101,35 @@
                         </div>
 
                         <div>
-                            <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
-                                Email Body
-                            </label>
+                            <div class="mb-1.5 flex items-center justify-between">
+                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-400">
+                                    Email Body
+                                </label>
+                                <button type="button" @click="undoDraggedNames()"
+                                    class="flex items-center gap-1 rounded-md border border-gray-200 px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
+                                    <svg width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path d="M7.5 4.16667L3.33333 8.33333L7.5 12.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                                        <path d="M3.33333 8.33333H12.5C14.8012 8.33333 16.6667 10.1989 16.6667 12.5C16.6667 14.8012 14.8012 16.6667 12.5 16.6667H8.33333" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                                    </svg>
+                                    Undo
+                                </button>
+                            </div>
                             @php
                                 $defaultBody = old('html_content', $template->html_content ?? '');
                                 if ($defaultBody === '') {
-                                    $defaultBody = '<p>Good day Mrs/Mr. employee,</p>'
-                                        . '<p>Please be informed that you have pending for approval for employee.</p>';
-                                }
+                                    $defaultBody = '<p>Good day Mrs/Mr. approver,</p>'
+                                        . '<p>Please be informed that you have pending for approval for offboardee.</p>'
+                                        . '<p>CIM Offboarding link.</p>'
+                                        . '<p>Thank you.</p>'
+                                        . '<p>Best regards,</p>'
+                                        . '<p>HR</p>';
+                                    }
                             @endphp
                             <!-- <textarea name="html_content" id="templateBody" class="summernote" data-height="420">{{ $defaultBody }}</textarea> -->
                             <textarea name="html_content" id="templateBody" class="w-full h-40"
                                 @dragover.prevent
                                 @drop.prevent="handleEmployeeDrop($event)">{{ $defaultBody }}</textarea>
-                            <p class="mt-1.5 text-xs text-gray-400">Tip: drag an employee's name from the list on the right and drop it onto {employee} to replace it.</p>
+                            <p class="mt-1.5 text-xs text-gray-400">Tip: drag an employee's name from the list on the right and drop it onto "approver", "offboardee", or "employee" to replace it. Click Undo to remove all dragged names and restore the placeholders. You can also type <code>@{{offboarding_link}}</code> to insert a dynamic sign-in link.</p>
                         </div>
                     </div>
 

@@ -1,14 +1,8 @@
 @extends('layouts.app')
 
 @section('content')
-  @if (session('success'))
-    <div class="mb-4 rounded-lg border border-success-500 bg-success-50 px-4 py-3 text-sm text-success-600 dark:border-success-500/30 dark:bg-success-500/10 dark:text-success-400">
-        {{ session('success') }}
-    </div>
-  @endif
-
   <div class="mb-4 flex items-center justify-end md:mb-6">
-    <x-offboarding.new-request-modal :employees="$employeesNotOffboarded" />
+    <x-offboarding.new-request-modal :employees="$employeesNotOffboarded" :email-templates="$emailTemplates" />
   </div>
 
   <div class="grid grid-cols-12 gap-4 md:gap-6">

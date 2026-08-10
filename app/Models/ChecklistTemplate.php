@@ -11,7 +11,9 @@ class ChecklistTemplate extends Model
 {
     protected $fillable = [
         'title',
+        'department_head_id',
         'department',
+        'is_final_pay_checklist',
         'is_active',
         'created_by',
     ];
@@ -20,6 +22,7 @@ class ChecklistTemplate extends Model
     {
         return [
             'is_active' => 'boolean',
+            'is_final_pay_checklist' => 'boolean',
         ];
     }
 
@@ -31,6 +34,11 @@ class ChecklistTemplate extends Model
     public function creator(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by');
+    }
+
+    public function departmentHead(): BelongsTo
+    {
+        return $this->belongsTo(Employee::class, 'department_head_id');
     }
 
     public function offboardingRequests(): BelongsToMany

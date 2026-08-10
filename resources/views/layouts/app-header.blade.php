@@ -49,7 +49,7 @@
             </button>
 
             <!-- Logo (mobile only) -->
-            <a href="/" class="xl:hidden">
+            <a href="{{ \App\Helpers\MenuHelper::homePath() }}" class="xl:hidden">
                 <img class="dark:hidden" src="/images/logo/logo.svg" alt="Logo" width="170" height="50" />
                 <img class="hidden dark:block" src="/images/logo/logo-dark.svg" alt="Logo" />
             </a>

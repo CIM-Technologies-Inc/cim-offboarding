@@ -72,23 +72,31 @@
                             </button>
                             <form method="POST" action="{{ route('approvals.decline', $approval['id']) }}" class="flex-1"
                                 @click.stop
-                                @submit.prevent="Swal.fire({
-                                    title: 'Decline this request?',
-                                    text: 'You are about to decline {{ $approval['name'] }}\'s offboarding request. This action cannot be undone.',
-                                    icon: 'warning',
-                                    showCancelButton: true,
-                                    confirmButtonText: 'Yes, decline it',
-                                    cancelButtonText: 'Cancel',
-                                    confirmButtonColor: '#dc2626',
-                                    cancelButtonColor: '#145a3a',
-                                    reverseButtons: true
-                                }).then((result) => {
-                                    if (result.isConfirmed) {
-                                        processing = true;
-                                        $el.submit();
-                                    }
-                                })">
+                                @submit="if (!processing) {
+                                    $event.preventDefault();
+                                    Swal.fire({
+                                        title: 'Decline this request?',
+                                        text: 'You are about to decline {{ $approval['name'] }}\'s offboarding request. This action cannot be undone.',
+                                        icon: 'warning',
+                                        input: 'textarea',
+                                        inputLabel: 'Reason (optional)',
+                                        inputPlaceholder: 'e.g. Company equipment has not yet been returned.',
+                                        showCancelButton: true,
+                                        confirmButtonText: 'Decline',
+                                        cancelButtonText: 'Cancel',
+                                        confirmButtonColor: '#dc2626',
+                                        cancelButtonColor: '#145a3a',
+                                        reverseButtons: true
+                                    }).then((result) => {
+                                        if (result.isConfirmed) {
+                                            $el.querySelector('input[name=comment]').value = result.value || '';
+                                            processing = true;
+                                            $el.requestSubmit();
+                                        }
+                                    });
+                                }">
                                 @csrf
+                                <input type="hidden" name="comment" value="" />
                                 <button type="submit" :disabled="processing"
                                     :class="processing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-error-50 dark:hover:bg-error-500/10'"
                                     class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-error-500 dark:border-gray-700">

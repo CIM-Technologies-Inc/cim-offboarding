@@ -29,6 +29,7 @@ class ChecklistTemplateController extends Controller
         return view('pages.checklist-templates.create', [
             'title' => 'New Checklist Template',
             'employees' => Employee::orderBy('name')->get(['id', 'name', 'department']),
+            'departmentHeads' => $this->departmentHeadOptions(),
         ]);
     }
 
@@ -36,7 +37,9 @@ class ChecklistTemplateController extends Controller
     {
         $validated = $request->validate([
             'title' => ['required', 'string', 'max:255'],
-            'department' => ['required', 'string', 'in:HR,IT,Accounting,Sales'],
+            'department_head_id' => ['nullable', 'exists:employees,id'],
+            'department' => ['nullable', 'string', 'in:HR,IT,Accounting,Sales'],
+            'is_final_pay_checklist' => ['nullable', 'boolean'],
             'items' => ['required', 'array', 'min:1'],
             'items.*.title' => ['required', 'string', 'max:255'],
             'items.*.signatory_id' => ['nullable', 'exists:employees,id'],
@@ -45,7 +48,9 @@ class ChecklistTemplateController extends Controller
         DB::transaction(function () use ($validated, $request) {
             $template = ChecklistTemplate::create([
                 'title' => $validated['title'],
-                'department' => $validated['department'],
+                'department_head_id' => $validated['department_head_id'] ?: null,
+                'department' => $validated['department'] ?? null,
+                'is_final_pay_checklist' => $request->boolean('is_final_pay_checklist'),
                 'is_active' => true,
                 'created_by' => $request->user()->id,
             ]);
@@ -80,6 +85,7 @@ class ChecklistTemplateController extends Controller
             'title' => 'Edit Checklist Template',
             'template' => $checklistTemplate,
             'employees' => Employee::orderBy('name')->get(['id', 'name', 'department']),
+            'departmentHeads' => $this->departmentHeadOptions(),
         ]);
     }
 
@@ -87,16 +93,20 @@ class ChecklistTemplateController extends Controller
     {
         $validated = $request->validate([
             'title' => ['required', 'string', 'max:255'],
+            'department_head_id' => ['nullable', 'exists:employees,id'],
             'department' => ['required', 'string', 'in:HR,IT,Accounting,Sales'],
+            'is_final_pay_checklist' => ['nullable', 'boolean'],
             'items' => ['required', 'array', 'min:1'],
             'items.*.title' => ['required', 'string', 'max:255'],
             'items.*.signatory_id' => ['nullable', 'exists:employees,id'],
         ]);
 
-        DB::transaction(function () use ($validated, $checklistTemplate) {
+        DB::transaction(function () use ($validated, $request, $checklistTemplate) {
             $checklistTemplate->update([
                 'title' => $validated['title'],
+                'department_head_id' => $validated['department_head_id'] ?: null,
                 'department' => $validated['department'],
+                'is_final_pay_checklist' => $request->boolean('is_final_pay_checklist'),
             ]);
 
             $checklistTemplate->items()->delete();
@@ -126,5 +136,15 @@ class ChecklistTemplateController extends Controller
 
         return redirect()->route('checklist-templates.index')
             ->with('success', 'Checklist template marked as ' . ($checklistTemplate->is_active ? 'active' : 'inactive') . '.');
+    }
+
+    /**
+     * Employees eligible to be picked as a department head: managers and above.
+     */
+    private function departmentHeadOptions()
+    {
+        return Employee::whereIn('designation', Employee::MANAGEMENT_DESIGNATIONS)
+            ->orderBy('name')
+            ->get(['id', 'name', 'department', 'designation']);
     }
 }

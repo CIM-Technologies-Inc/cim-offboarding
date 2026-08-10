@@ -6,7 +6,9 @@ use App\Http\Requests\StoreEmailTemplateRequest;
 use App\Http\Requests\UpdateEmailTemplateRequest;
 use App\Models\Employee;
 use App\Models\EmailTemplate;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
 use Illuminate\View\View;
 
 class EmailTemplateController extends Controller
@@ -62,11 +64,19 @@ class EmailTemplateController extends Controller
             ->with('success', 'Template deleted successfully.');
     }
 
-    public function toggleStatus(EmailTemplate $emailTemplate): RedirectResponse
+    public function toggleStatus(Request $request, EmailTemplate $emailTemplate): RedirectResponse|JsonResponse
     {
         $emailTemplate->update(['is_active' => ! $emailTemplate->is_active]);
 
-        return redirect()->back()
-            ->with('success', 'Template marked as ' . ($emailTemplate->is_active ? 'active' : 'inactive') . '.');
+        $message = 'Template marked as ' . ($emailTemplate->is_active ? 'active' : 'inactive') . '.';
+
+        if ($request->wantsJson()) {
+            return response()->json([
+                'is_active' => $emailTemplate->is_active,
+                'message' => $message,
+            ]);
+        }
+
+        return redirect()->back()->with('success', $message);
     }
 }

@@ -6,57 +6,63 @@ class MenuHelper
 {
     public static function getMainNavItems()
     {
-        return [
+        $role = auth()->user()?->role;
+
+        $items = [
             [
                 'icon' => 'dashboard',
                 'name' => 'Dashboard',
                 'path' => '/',
+                'roles' => ['admin'],
             ],
             [
                 'icon' => 'user-profile',
                 'name' => 'User Profile',
                 'path' => '/profile',
+                'roles' => ['admin', 'approver'],
             ],
             [
                 'icon' => 'task',
                 'name' => 'Offboarding Checklist',
                 'path' => '/offboarding-checklists',
+                'roles' => ['admin'],
             ],
             [
                 'icon' => 'offboardee',
                 'name' => 'Offboardee',
                 'path' => '/offboardees',
+                'roles' => ['admin'],
             ],
             [
                 'icon' => 'approval',
                 'name' => 'Approval',
                 'path' => '/approvals',
+                'roles' => ['admin', 'approver'],
             ],
             [
                 'icon' => 'calendar',
                 'name' => 'Calendar',
                 'path' => '/calendar',
+                'roles' => ['admin', 'approver'],
             ],
             [
                 'icon' => 'email',
                 'name' => 'Email Templates',
                 'path' => '/email-templates',
+                'roles' => ['admin'],
             ],
         ];
+
+        return array_values(array_filter($items, fn ($item) => in_array($role, $item['roles'], true)));
     }
 
-    public static function getOthersItems()
+    /**
+     * Where the logo/home links should point: the dashboard for admins,
+     * since approvers can't access it, Approvals instead.
+     */
+    public static function homePath(): string
     {
-        return [
-            [
-                'icon' => 'authentication',
-                'name' => 'Authentication',
-                'subItems' => [
-                    ['name' => 'Sign In', 'path' => '/signin', 'pro' => false],
-                    ['name' => 'Sign Up', 'path' => '/signup', 'pro' => false],
-                ],
-            ],
-        ];
+        return auth()->user()?->isAdmin() ? '/' : '/approvals';
     }
 
     public static function getMenuGroups()
@@ -66,10 +72,6 @@ class MenuHelper
                 'title' => 'Menu',
                 'items' => self::getMainNavItems()
             ],
-            [
-                'title' => 'Others',
-                'items' => self::getOthersItems()
-            ]
         ];
     }
 

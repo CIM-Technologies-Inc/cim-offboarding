@@ -10,6 +10,7 @@ use App\Http\Controllers\OffboardeeController;
 use App\Http\Controllers\CalendarController;
 use App\Http\Controllers\ApprovalController;
 use App\Http\Controllers\EmailTemplateController;
+use App\Http\Controllers\NotificationController;
 
 // authentication pages
 Route::get('/signin', [AuthController::class, 'create'])->name('login');
@@ -18,19 +19,30 @@ Route::post('/logout', [AuthController::class, 'destroy'])->name('logout');
 
 Route::middleware('auth')->group(function () {
 
-// dashboard pages
-Route::get('/', [DashboardController::class, 'index'])->name('dashboard');
-
-// calender pages
+// pages shared by both admin and approver roles
 Route::get('/calendar', [CalendarController::class, 'index'])->name('calendar');
 
-// profile pages
 Route::get('/profile', function () {
     return view('pages.profile', ['title' => 'Profile']);
 })->name('profile');
 
 Route::patch('/profile/personal-info', [ProfileController::class, 'updatePersonalInfo'])->name('profile.personal-info.update');
 Route::patch('/profile/address', [ProfileController::class, 'updateAddress'])->name('profile.address.update');
+
+// notifications
+Route::post('/notifications/{notification}/read', [NotificationController::class, 'read'])->name('notifications.read');
+Route::post('/notifications/mark-all-read', [NotificationController::class, 'readAll'])->name('notifications.read-all');
+
+// approvals
+Route::get('/approvals', [ApprovalController::class, 'index'])->name('approvals.index');
+Route::post('/approvals/{offboardingRequestApprover}/approve', [ApprovalController::class, 'approve'])->name('approvals.approve');
+Route::post('/approvals/{offboardingRequestApprover}/decline', [ApprovalController::class, 'decline'])->name('approvals.decline');
+
+// pages restricted to the admin role
+Route::middleware('role:admin')->group(function () {
+
+// dashboard pages
+Route::get('/', [DashboardController::class, 'index'])->name('dashboard');
 
 // offboarding requests
 Route::post('/offboarding-requests', [OffboardingRequestController::class, 'store'])->name('offboarding-requests.store');
@@ -48,10 +60,8 @@ Route::delete('/offboarding-checklists/{checklistTemplate}', [ChecklistTemplateC
 // offboardees
 Route::get('/offboardees', [OffboardeeController::class, 'index'])->name('offboardees.index');
 
-// approvals
-Route::get('/approvals', [ApprovalController::class, 'index'])->name('approvals.index');
-Route::post('/approvals/{offboardingRequest}/approve', [ApprovalController::class, 'approve'])->name('approvals.approve');
-Route::post('/approvals/{offboardingRequest}/decline', [ApprovalController::class, 'decline'])->name('approvals.decline');
+// approver reminders (HR/Admin only)
+Route::post('/approvals/{offboardingRequestApprover}/remind', [ApprovalController::class, 'remind'])->name('approvals.remind');
 
 // email templates
 Route::get('/email-templates', [EmailTemplateController::class, 'index'])->name('email-templates.index');
@@ -61,6 +71,8 @@ Route::get('/email-templates/{emailTemplate}/edit', [EmailTemplateController::cl
 Route::put('/email-templates/{emailTemplate}', [EmailTemplateController::class, 'update'])->name('email-templates.update');
 Route::delete('/email-templates/{emailTemplate}', [EmailTemplateController::class, 'destroy'])->name('email-templates.destroy');
 Route::patch('/email-templates/{emailTemplate}/toggle-status', [EmailTemplateController::class, 'toggleStatus'])->name('email-templates.toggle-status');
+
+});
 
 });
 

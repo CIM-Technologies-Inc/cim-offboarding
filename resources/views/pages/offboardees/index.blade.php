@@ -201,6 +201,6 @@
         @endif
 
         <!-- Offboardee Status Modal -->
-        <x-offboarding.status-timeline-modal />
+        <x-offboarding.status-timeline-modal :initial="$deepLinkOffboardee" />
     </div>
 @endsection

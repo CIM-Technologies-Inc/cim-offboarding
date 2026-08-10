@@ -31,12 +31,12 @@
 
                     <div>
                         <p class="mb-2 text-xs leading-normal text-gray-500 dark:text-gray-400">Current Position</p>
-                        <p class="text-sm font-medium text-gray-800 dark:text-white/90">{{ $user->position ?? 'Not set' }}</p>
+                        <p class="text-sm font-medium text-gray-800 dark:text-white/90">{{ $user->position ?? $user->employee?->designation ?? 'Not set' }}</p>
                     </div>
 
                     <div>
                         <p class="mb-2 text-xs leading-normal text-gray-500 dark:text-gray-400">Current Department</p>
-                        <p class="text-sm font-medium text-gray-800 dark:text-white/90">{{ $user->department ?? 'Not set' }}</p>
+                        <p class="text-sm font-medium text-gray-800 dark:text-white/90">{{ $user->department ?? $user->employee?->department ?? 'Not set' }}</p>
                     </div>
                 </div>
             </div>

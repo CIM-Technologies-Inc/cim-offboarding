@@ -4,6 +4,7 @@ namespace App\Models;
 
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 
@@ -20,6 +21,7 @@ class User extends Authenticatable
     protected $fillable = [
         'name',
         'username',
+        'role',
         'email',
         'password',
         'mobile_number',
@@ -27,6 +29,28 @@ class User extends Authenticatable
         'department',
         'address',
     ];
+
+    public const ROLE_ADMIN = 'admin';
+    public const ROLE_APPROVER = 'approver';
+
+    public function isAdmin(): bool
+    {
+        return $this->role === self::ROLE_ADMIN;
+    }
+
+    public function isApprover(): bool
+    {
+        return $this->role === self::ROLE_APPROVER;
+    }
+
+    /**
+     * The employee record this account belongs to, matched by the
+     * convention that `username` equals the employee's `employee_code`.
+     */
+    public function employee(): HasOne
+    {
+        return $this->hasOne(Employee::class, 'employee_code', 'username');
+    }
 
     /**
      * The attributes that should be hidden for serialization.

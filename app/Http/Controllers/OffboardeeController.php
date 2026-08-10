@@ -18,8 +18,13 @@ class OffboardeeController extends Controller
 
         $departmentFilter = $request->query('department') ?: null;
 
-        $employees = Employee::where('status', 'offboarding')
-            ->with(['latestOffboardingRequest.checklistTemplates'])
+        $openOffboardeeId = $request->query('offboardee') ? (int) $request->query('offboardee') : null;
+
+        $employees = Employee::where(function ($query) {
+                $query->where('status', 'offboarding')
+                    ->orWhereHas('latestOffboardingRequest', fn ($q) => $q->where('status', 'cancelled'));
+            })
+            ->with(['latestOffboardingRequest.checklistTemplates', 'latestOffboardingRequest.approvers.checklistTemplate', 'latestOffboardingRequest.approvers.employee'])
             ->orderBy('name')
             ->get();
 
@@ -37,7 +42,7 @@ class OffboardeeController extends Controller
             );
         }
 
-        $offboardees = $employees->map(fn (Employee $employee) => [
+        $mapEmployee = fn (Employee $employee) => [
             'id' => $employee->id,
             'name' => $employee->name,
             'employeeCode' => $employee->employee_code,
@@ -46,8 +51,24 @@ class OffboardeeController extends Controller
             'status' => $employee->latestOffboardingRequest?->status ?? 'pending',
             'lastWorkingDay' => $employee->latestOffboardingRequest?->last_working_day?->format('M d, Y'),
             'checklistTemplates' => $employee->latestOffboardingRequest?->checklistTemplates->pluck('title')->all() ?? [],
-            'timeline' => $employee->latestOffboardingRequest?->timeline() ?? [],
-        ])->values();
+            'timeline' => $employee->latestOffboardingRequest?->approverActivityTimeline() ?? [],
+        ];
+
+        $offboardees = $employees->map($mapEmployee)->values();
+
+        // A declined request reverts the employee to "active", so they may no
+        // longer be in the list above by the time a notification links here —
+        // fetch them separately so the deep link still opens their timeline.
+        $deepLinkOffboardee = null;
+
+        if ($openOffboardeeId) {
+            $deepLinkOffboardee = $offboardees->firstWhere('id', $openOffboardeeId);
+
+            if (! $deepLinkOffboardee) {
+                $targetEmployee = Employee::with(['latestOffboardingRequest.checklistTemplates', 'latestOffboardingRequest.approvers.checklistTemplate', 'latestOffboardingRequest.approvers.employee'])->find($openOffboardeeId);
+                $deepLinkOffboardee = $targetEmployee ? $mapEmployee($targetEmployee) : null;
+            }
+        }
 
         return view('pages.offboardees.index', [
             'title' => 'Offboardees',
@@ -55,6 +76,7 @@ class OffboardeeController extends Controller
             'statusFilter' => $statusFilter,
             'departmentFilter' => $departmentFilter,
             'departments' => $departments,
+            'deepLinkOffboardee' => $deepLinkOffboardee,
         ]);
     }
 }

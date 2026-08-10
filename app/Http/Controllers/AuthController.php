@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\User;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -12,7 +13,7 @@ class AuthController extends Controller
     public function create(): RedirectResponse|\Illuminate\View\View
     {
         if (Auth::check()) {
-            return redirect()->route('dashboard');
+            return redirect()->route($this->homeRouteFor(Auth::user()));
         }
 
         return view('pages.auth.signin', ['title' => 'Sign In']);
@@ -35,7 +36,15 @@ class AuthController extends Controller
 
         $request->session()->regenerate();
 
-        return redirect()->intended(route('dashboard'));
+        return redirect()->intended(route($this->homeRouteFor(Auth::user())));
+    }
+
+    /**
+     * The approver role can't see the dashboard, so it lands on Approvals instead.
+     */
+    private function homeRouteFor(User $user): string
+    {
+        return $user->isAdmin() ? 'dashboard' : 'approvals.index';
     }
 
     public function destroy(Request $request): RedirectResponse
