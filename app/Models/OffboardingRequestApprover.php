@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class OffboardingRequestApprover extends Model
 {
@@ -18,6 +19,10 @@ class OffboardingRequestApprover extends Model
         'declined_at',
         'decline_reason',
         'reminder_sent_at',
+        'delegated_employee_id',
+        'delegation_status',
+        'delegated_at',
+        'delegate_completed_at',
     ];
 
     protected function casts(): array
@@ -28,6 +33,8 @@ class OffboardingRequestApprover extends Model
             'approved_at' => 'datetime',
             'declined_at' => 'datetime',
             'reminder_sent_at' => 'datetime',
+            'delegated_at' => 'datetime',
+            'delegate_completed_at' => 'datetime',
         ];
     }
 
@@ -44,6 +51,26 @@ class OffboardingRequestApprover extends Model
     public function employee(): BelongsTo
     {
         return $this->belongsTo(Employee::class);
+    }
+
+    public function delegatedEmployee(): BelongsTo
+    {
+        return $this->belongsTo(Employee::class, 'delegated_employee_id');
+    }
+
+    public function itemProgress(): HasMany
+    {
+        return $this->hasMany(ChecklistItemProgress::class);
+    }
+
+    public function delegations(): HasMany
+    {
+        return $this->hasMany(ChecklistDelegation::class)->orderBy('assigned_at');
+    }
+
+    public function isDelegated(): bool
+    {
+        return $this->delegated_employee_id !== null;
     }
 
     public function department(): ?string

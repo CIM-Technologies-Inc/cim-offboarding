@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\EmailTemplate;
 use App\Models\Employee;
 use App\Models\OffboardingRequest;
 use Illuminate\Support\Carbon;
@@ -14,8 +13,8 @@ class DashboardController extends Controller
         $totalEmployees = Employee::count();
         $activeEmployees = Employee::where('status', 'active')->count();
 
-        $pendingCount = OffboardingRequest::where('status', 'pending')->count();
-        $inProgressCount = OffboardingRequest::where('status', 'in_progress')->count();
+        $pendingCount = OffboardingRequest::displayPending()->count();
+        $inProgressCount = OffboardingRequest::displayInProgress()->count();
         $completedCount = OffboardingRequest::where('status', 'completed')->count();
 
         $startOfMonth = Carbon::now()->startOfMonth();
@@ -48,11 +47,7 @@ class DashboardController extends Controller
             ->orderBy('name')
             ->get(['id', 'name', 'employee_code', 'department']);
 
-        $emailTemplates = EmailTemplate::where('is_active', true)
-            ->orderBy('template_name')
-            ->get(['id', 'template_name']);
-
-        $recentRequests = OffboardingRequest::with('employee')
+        $recentRequests = OffboardingRequest::with('employee', 'approvers')
             ->latest()
             ->take(6)
             ->get()
@@ -61,7 +56,7 @@ class DashboardController extends Controller
                 'department' => $request->employee->department,
                 'reason' => ucfirst(str_replace('_', ' ', $request->reason)),
                 'last_working_day' => $request->last_working_day->format('M d, Y'),
-                'status' => $request->status,
+                'status' => $request->displayStatus(),
             ])->all();
 
         return view('pages.dashboard.offboarding', [
@@ -80,7 +75,6 @@ class DashboardController extends Controller
             'departments' => $departments,
             'recentRequests' => $recentRequests,
             'employeesNotOffboarded' => $employeesNotOffboarded,
-            'emailTemplates' => $emailTemplates,
         ]);
     }
 

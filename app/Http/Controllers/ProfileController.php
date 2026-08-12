@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 
 class ProfileController extends Controller
@@ -36,5 +37,43 @@ class ProfileController extends Controller
         $user->update($validated);
 
         return back()->with('success', 'Address updated.');
+    }
+
+    /**
+     * Uploads (or replaces) the user's electronic signature. The old file is
+     * deleted once the new one is safely stored, so a failed upload never
+     * leaves the user without their previous signature.
+     */
+    public function updateSignature(Request $request): RedirectResponse
+    {
+        $user = $request->user();
+
+        $validated = $request->validate([
+            'signature' => ['required', 'image', 'mimes:png,jpg,jpeg', 'max:1900'],
+        ]);
+
+        $path = $validated['signature']->store('signatures', 'public');
+
+        $previousPath = $user->signature_path;
+
+        $user->update(['signature_path' => $path]);
+
+        if ($previousPath) {
+            Storage::disk('public')->delete($previousPath);
+        }
+
+        return back()->with('success', 'E-signature uploaded.');
+    }
+
+    public function removeSignature(Request $request): RedirectResponse
+    {
+        $user = $request->user();
+
+        if ($user->signature_path) {
+            Storage::disk('public')->delete($user->signature_path);
+            $user->update(['signature_path' => null]);
+        }
+
+        return back()->with('success', 'E-signature removed.');
     }
 }

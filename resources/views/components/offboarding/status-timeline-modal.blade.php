@@ -100,6 +100,23 @@
                                             </template>
                                         </div>
 
+                                        <template x-if="step.delegatedTo">
+                                            <div class="mt-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs dark:border-gray-800 dark:bg-white/[0.03]">
+                                                <p class="text-gray-500 dark:text-gray-400">
+                                                    Assigned To: <span class="font-medium text-gray-700 dark:text-gray-300" x-text="step.delegatedTo + ' (' + step.delegatedToCode + ')'"></span>
+                                                </p>
+                                                <p class="mt-0.5 text-gray-500 dark:text-gray-400">
+                                                    Delegated Approver Status:
+                                                    <span class="font-medium capitalize text-gray-700 dark:text-gray-300" x-text="step.delegationStatus === 'done' ? '✓ Done' : step.delegationStatus"></span>
+                                                </p>
+                                                <template x-if="step.delegateCompletedAt">
+                                                    <p class="mt-0.5 text-gray-500 dark:text-gray-400">
+                                                        Completed: <span class="font-medium text-gray-700 dark:text-gray-300" x-text="step.delegateCompletedAt"></span>
+                                                    </p>
+                                                </template>
+                                            </div>
+                                        </template>
+
                                         <div class="mt-2 space-y-2">
                                             <template x-if="step.reminderSentAt">
                                                 <p class="text-xs text-gray-400">Last reminder sent: <span x-text="step.reminderSentAt"></span></p>
@@ -137,7 +154,25 @@
                         </template>
                     </div>
 
-                    <div class="mt-6 flex justify-end">
+                    <div class="mt-6 flex flex-wrap items-center justify-end gap-3">
+                        <template x-if="selected.status === 'completed' && selected.clearanceFormUrl">
+                            <a :href="selected.clearanceFormUrl" target="_blank" rel="noopener"
+                                class="flex items-center justify-center gap-1.5 rounded-lg border border-gray-300 px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
+                                <svg width="16" height="16" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <path d="M4.5 12V15.75C4.5 16.1642 4.83579 16.5 5.25 16.5H12.75C13.1642 16.5 13.5 16.1642 13.5 15.75V12M9 1.5V11.25M9 11.25L5.625 7.875M9 11.25L12.375 7.875" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                                </svg>
+                                Generate Clearance Form
+                            </a>
+                        </template>
+                        <template x-if="selected.status === 'completed' && selected.printClearanceFormUrl">
+                            <a :href="selected.printClearanceFormUrl" target="_blank" rel="noopener"
+                                class="flex items-center justify-center gap-1.5 rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white hover:bg-[#0f4630]">
+                                <svg width="16" height="16" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <path d="M4.5 6.75V2.25H13.5V6.75M4.5 14.25H3C2.17157 14.25 1.5 13.5784 1.5 12.75V8.25C1.5 7.42157 2.17157 6.75 3 6.75H15C15.8284 6.75 16.5 7.42157 16.5 8.25V12.75C16.5 13.5784 15.8284 14.25 15 14.25H13.5M4.5 14.25V16.5H13.5V14.25M4.5 14.25H13.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                                </svg>
+                                Print Clearance Form
+                            </a>
+                        </template>
                         <button @click="open = false" type="button"
                             class="flex justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03]">
                             Close

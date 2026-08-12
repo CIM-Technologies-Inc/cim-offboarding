@@ -3,13 +3,18 @@
 namespace App\Http\Controllers;
 
 use App\Mail\ChecklistSignatoryAnnouncementMail;
+use App\Models\ChecklistItemProgress;
+use App\Models\ChecklistTemplate;
 use App\Models\EmailTemplate;
+use App\Models\Employee;
 use App\Models\OffboardingRequest;
 use App\Models\OffboardingRequestApprover;
 use App\Models\User;
 use App\Notifications\OffboardingApprovalUpdated;
+use App\Services\ChecklistApprovalNotifier;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Notification;
@@ -22,6 +27,12 @@ class ApprovalController extends Controller
      */
     private const REMINDER_TEMPLATE = 'Offboarding Reminder';
 
+    /**
+     * Email template used to notify Final Pay Checklist approvers once every
+     * regular checklist has been approved.
+     */
+    private const FINAL_PAY_APPROVAL_TEMPLATE = 'Final Pay Checklist Approval';
+
     public function index(): View
     {
         $reasonLabels = [
@@ -33,34 +44,44 @@ class ApprovalController extends Controller
         ];
 
         $user = auth()->user();
+        $employee = $user->employee;
 
         $assignments = OffboardingRequestApprover::query()
-            ->where('status', 'pending')
+            ->whereIn('status', ['pending', 'viewed'])
             ->whereHas('offboardingRequest', fn ($q) => $q->where('status', 'pending'))
-            ->when(! $user->isAdmin(), function ($query) use ($user) {
-                $employee = $user->employee;
-
+            ->when(! $user->isAdmin(), function ($query) use ($employee) {
                 $employee
-                    ? $query->where('employee_id', $employee->id)
+                    ? $query->where(fn ($q) => $q->where('employee_id', $employee->id)
+                        ->orWhere('delegated_employee_id', $employee->id))
                     : $query->whereRaw('1 = 0');
             })
-            ->with(['offboardingRequest.employee', 'checklistTemplate.items'])
+            ->with(['offboardingRequest.employee', 'checklistTemplate.items', 'employee', 'delegatedEmployee', 'itemProgress'])
             ->get()
             ->filter(fn (OffboardingRequestApprover $assignment) => $assignment->offboardingRequest?->employee);
 
-        // Loading your own queue counts as "viewing" whatever's still pending in it.
-        if (! $user->isAdmin()) {
-            $assignments->each(function (OffboardingRequestApprover $assignment) {
-                if (! $assignment->first_viewed_at) {
+        // Loading your own queue counts as "viewing" whatever's still pending in
+        // it — but only for the primary approver. A delegate merely opening
+        // their queue must never flip the primary assignment's status.
+        if (! $user->isAdmin() && $employee) {
+            $assignments->each(function (OffboardingRequestApprover $assignment) use ($employee) {
+                if ($assignment->employee_id === $employee->id && ! $assignment->first_viewed_at) {
                     $assignment->update(['first_viewed_at' => now(), 'status' => 'viewed']);
                 }
             });
         }
 
         $approvals = $assignments
-            ->map(function (OffboardingRequestApprover $assignment) use ($reasonLabels) {
+            ->map(function (OffboardingRequestApprover $assignment) use ($reasonLabels, $user, $employee) {
                 $request = $assignment->offboardingRequest;
                 $template = $assignment->checklistTemplate;
+
+                $isPrimaryApprover = $user->isAdmin() || ($employee && $assignment->employee_id === $employee->id);
+
+                $progressByItemId = $assignment->itemProgress->keyBy('checklist_item_id');
+
+                $displayStatus = in_array($assignment->status, ['approved', 'declined'], true)
+                    ? $assignment->status
+                    : ($assignment->delegation_status ?? 'pending');
 
                 return [
                     'id' => $assignment->id,
@@ -69,6 +90,7 @@ class ApprovalController extends Controller
                     'department' => $request->employee->department,
                     'designation' => $request->employee->designation,
                     'status' => $request->status,
+                    'displayStatus' => $displayStatus,
                     'reason' => $reasonLabels[$request->reason] ?? ucfirst($request->reason),
                     'resignationType' => $request->resignation_type,
                     'noticeDate' => $request->notice_date?->format('M d, Y'),
@@ -81,9 +103,23 @@ class ApprovalController extends Controller
                             'id' => $item->id,
                             'title' => $item->title,
                             'templateTitle' => $template->title,
+                            'checked' => (bool) ($progressByItemId->get($item->id)?->is_checked ?? false),
+                            'remark' => $progressByItemId->get($item->id)?->remark,
                         ])->values()->all()
                         : [],
+                    'isPrimaryApprover' => $isPrimaryApprover,
+                    'assignedByName' => $assignment->employee?->name,
+                    'assignedByCode' => $assignment->employee?->employee_code,
+                    'delegation' => $assignment->isDelegated() ? [
+                        'delegatedEmployeeName' => $assignment->delegatedEmployee?->name,
+                        'delegatedEmployeeCode' => $assignment->delegatedEmployee?->employee_code,
+                        'delegationStatus' => $assignment->delegation_status,
+                        'delegatedAt' => $assignment->delegated_at?->format('M d, Y g:i A'),
+                        'delegateCompletedAt' => $assignment->delegate_completed_at?->format('M d, Y g:i A'),
+                    ] : null,
                     'approveUrl' => route('approvals.approve', $assignment->id),
+                    'assignUrl' => route('approvals.assign', $assignment->id),
+                    'saveProgressUrl' => route('approvals.save-progress', $assignment->id),
                     'timeline' => $request->timeline(),
                 ];
             })
@@ -92,10 +128,11 @@ class ApprovalController extends Controller
         return view('pages.approvals.index', [
             'title' => 'Approvals',
             'approvals' => $approvals,
+            'employees' => Employee::where('status', 'active')->orderBy('name')->get(['id', 'name', 'employee_code', 'department']),
         ]);
     }
 
-    public function approve(OffboardingRequestApprover $offboardingRequestApprover): RedirectResponse
+    public function approve(Request $request, OffboardingRequestApprover $offboardingRequestApprover): RedirectResponse
     {
         $this->authorizeAssignment($offboardingRequestApprover);
 
@@ -105,17 +142,143 @@ class ApprovalController extends Controller
             'This has already been actioned.'
         );
 
+        $validated = $request->validate([
+            'items' => ['nullable', 'array'],
+            'items.*.checklist_item_id' => ['required', 'exists:checklist_items,id'],
+            'items.*.is_checked' => ['nullable', 'boolean'],
+            'items.*.remark' => ['nullable', 'string'],
+        ]);
+
+        // The primary approver may check items/add remarks themselves (most
+        // relevant when there's no delegate) — Submit saves that state and
+        // approves in the same action, since they have no separate "Save
+        // Progress" step.
+        ChecklistItemProgress::syncForAssignment($offboardingRequestApprover, $validated['items'] ?? [], auth()->id());
+
         $offboardingRequestApprover->update(['status' => 'approved', 'approved_at' => now()]);
 
         $offboardingRequest = $offboardingRequestApprover->offboardingRequest;
 
         $this->recordActivityAndNotify($offboardingRequest, 'approved', null);
 
-        if ($offboardingRequest->approvers()->where('status', '!=', 'approved')->doesntExist()) {
-            $offboardingRequest->update(['status' => 'in_progress']);
+        if ($offboardingRequestApprover->checklistTemplate->is_final_pay_checklist) {
+            $this->checkFinalPayCompletion($offboardingRequest);
+        } else {
+            $this->checkRegularChecklistsCompletion($offboardingRequest);
         }
 
         return back()->with('success', $offboardingRequest->employee->name . '\'s offboarding request was approved.');
+    }
+
+    /**
+     * Once every regular (non-final-pay) checklist assignment on this
+     * request is approved, either finish up as before (if no Final Pay
+     * Checklist is configured) or attach + notify the Final Pay Checklist
+     * approver(s). Guarded by `final_pay_notified_at` under a row lock so
+     * two near-simultaneous approvals can never trigger this twice.
+     */
+    private function checkRegularChecklistsCompletion(OffboardingRequest $offboardingRequest): void
+    {
+        $allRegularApproved = $offboardingRequest->approvers()
+            ->whereHas('checklistTemplate', fn ($q) => $q->where('is_final_pay_checklist', false))
+            ->where('status', '!=', 'approved')
+            ->doesntExist();
+
+        if (! $allRegularApproved) {
+            return;
+        }
+
+        DB::transaction(function () use ($offboardingRequest) {
+            $locked = OffboardingRequest::whereKey($offboardingRequest->id)
+                ->whereNull('final_pay_notified_at')
+                ->lockForUpdate()
+                ->first();
+
+            if (! $locked) {
+                // Already claimed by a concurrent approval — nothing more to do here.
+                return;
+            }
+
+            $locked->activities()->create([
+                'action' => 'all_checklists_approved',
+                'status' => $locked->status,
+            ]);
+
+            $finalPayTemplates = ChecklistTemplate::where('is_active', true)
+                ->where('is_final_pay_checklist', true)
+                ->with('departmentHead')
+                ->get();
+
+            $locked->update(['final_pay_notified_at' => now()]);
+
+            if ($finalPayTemplates->isEmpty()) {
+                $locked->update(['status' => 'in_progress']);
+
+                return;
+            }
+
+            $emailTemplate = EmailTemplate::where('is_active', true)
+                ->where('template_name', self::FINAL_PAY_APPROVAL_TEMPLATE)
+                ->latest('updated_at')
+                ->first();
+
+            if (! $emailTemplate) {
+                Log::warning('No "' . self::FINAL_PAY_APPROVAL_TEMPLATE . '" email template found — final pay approvers were not emailed.', [
+                    'offboarding_request_id' => $locked->id,
+                ]);
+            }
+
+            $notified = app(ChecklistApprovalNotifier::class)->attachAndNotify(
+                $locked,
+                $finalPayTemplates,
+                $emailTemplate
+            );
+
+            $locked->activities()->create([
+                'action' => 'final_pay_notified',
+                'status' => $locked->status,
+                'comment' => 'Sent to: ' . (count($notified) ? implode(', ', $notified) : 'no one — check the department heads\' emails'),
+            ]);
+        });
+    }
+
+    /**
+     * Once every Final Pay Checklist assignment is approved, the whole
+     * offboarding process is complete. Guarded the same way as the regular
+     * -> final-pay trigger: locked inside a transaction so two final-pay
+     * approvers finishing at nearly the same moment can never both mark the
+     * request completed / create duplicate completion records.
+     */
+    private function checkFinalPayCompletion(OffboardingRequest $offboardingRequest): void
+    {
+        $allFinalPayApproved = $offboardingRequest->approvers()
+            ->whereHas('checklistTemplate', fn ($q) => $q->where('is_final_pay_checklist', true))
+            ->where('status', '!=', 'approved')
+            ->doesntExist();
+
+        if (! $allFinalPayApproved) {
+            return;
+        }
+
+        DB::transaction(function () use ($offboardingRequest) {
+            $locked = OffboardingRequest::whereKey($offboardingRequest->id)
+                ->where('status', '!=', 'completed')
+                ->lockForUpdate()
+                ->first();
+
+            if (! $locked) {
+                // Already completed by a concurrent approval.
+                return;
+            }
+
+            $locked->update(['status' => 'completed', 'completed_at' => now()]);
+
+            $locked->activities()->create([
+                'action' => 'completed',
+                'status' => 'completed',
+                'comment' => 'All required Final Pay Checklist approvals have been completed.',
+            ]);
+        });
     }
 
     public function decline(Request $request, OffboardingRequestApprover $offboardingRequestApprover): RedirectResponse
@@ -148,12 +311,24 @@ class ApprovalController extends Controller
     }
 
     /**
-     * HR/Admin-only reminder for an approver who hasn't acted yet. Uses the
-     * existing email template mechanism (fixed-name lookup, same convention
-     * as the initial announcement) rather than hard-coding the message.
+     * HR/Admin-only reminder for an approver who hasn't approved/declined
+     * yet. Uses the existing email template mechanism (fixed-name lookup,
+     * same convention as the initial announcement) rather than hard-coding
+     * the message. Authorized here explicitly (not just via route
+     * middleware), and every reminder is logged as its own timeline
+     * activity — who sent it and who it went to — not just the inline
+     * `reminder_sent_at` timestamp on the assignment.
      */
     public function remind(OffboardingRequestApprover $offboardingRequestApprover): RedirectResponse
     {
+        abort_unless(auth()->user()->isAdmin(), 403);
+
+        abort_if(
+            in_array($offboardingRequestApprover->status, ['approved', 'declined'], true),
+            422,
+            'This approver has already acted — no reminder needed.'
+        );
+
         $offboardingRequest = $offboardingRequestApprover->offboardingRequest;
         $offboardee = $offboardingRequest->employee;
         $approverEmployee = $offboardingRequestApprover->employee;
@@ -176,6 +351,14 @@ class ApprovalController extends Controller
         try {
             Mail::to($approverEmployee->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
             $offboardingRequestApprover->update(['reminder_sent_at' => now()]);
+
+            $offboardingRequest->activities()->create([
+                'user_id' => auth()->id(),
+                'offboarding_request_approver_id' => $offboardingRequestApprover->id,
+                'action' => 'reminder_sent',
+                'status' => $offboardingRequest->status,
+                'comment' => 'Sent to: ' . $approverEmployee->name,
+            ]);
 
             return redirect()
                 ->route('offboardees.index', ['offboardee' => $offboardee->id])

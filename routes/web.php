@@ -9,8 +9,10 @@ use App\Http\Controllers\ChecklistTemplateController;
 use App\Http\Controllers\OffboardeeController;
 use App\Http\Controllers\CalendarController;
 use App\Http\Controllers\ApprovalController;
+use App\Http\Controllers\ChecklistDelegationController;
 use App\Http\Controllers\EmailTemplateController;
 use App\Http\Controllers\NotificationController;
+use App\Http\Controllers\ClearanceFormController;
 
 // authentication pages
 Route::get('/signin', [AuthController::class, 'create'])->name('login');
@@ -28,6 +30,8 @@ Route::get('/profile', function () {
 
 Route::patch('/profile/personal-info', [ProfileController::class, 'updatePersonalInfo'])->name('profile.personal-info.update');
 Route::patch('/profile/address', [ProfileController::class, 'updateAddress'])->name('profile.address.update');
+Route::post('/profile/signature', [ProfileController::class, 'updateSignature'])->name('profile.signature.update');
+Route::delete('/profile/signature', [ProfileController::class, 'removeSignature'])->name('profile.signature.destroy');
 
 // notifications
 Route::post('/notifications/{notification}/read', [NotificationController::class, 'read'])->name('notifications.read');
@@ -37,6 +41,10 @@ Route::post('/notifications/mark-all-read', [NotificationController::class, 'rea
 Route::get('/approvals', [ApprovalController::class, 'index'])->name('approvals.index');
 Route::post('/approvals/{offboardingRequestApprover}/approve', [ApprovalController::class, 'approve'])->name('approvals.approve');
 Route::post('/approvals/{offboardingRequestApprover}/decline', [ApprovalController::class, 'decline'])->name('approvals.decline');
+
+// checklist delegation (assign to another approver)
+Route::post('/approvals/{offboardingRequestApprover}/assign', [ChecklistDelegationController::class, 'assign'])->name('approvals.assign');
+Route::post('/approvals/{offboardingRequestApprover}/save-progress', [ChecklistDelegationController::class, 'saveProgress'])->name('approvals.save-progress');
 
 // pages restricted to the admin role
 Route::middleware('role:admin')->group(function () {
@@ -59,6 +67,10 @@ Route::delete('/offboarding-checklists/{checklistTemplate}', [ChecklistTemplateC
 
 // offboardees
 Route::get('/offboardees', [OffboardeeController::class, 'index'])->name('offboardees.index');
+
+// clearance form (available once an offboarding request is fully completed)
+Route::get('/offboarding-requests/{offboardingRequest}/clearance-form', [ClearanceFormController::class, 'pdf'])->name('clearance-form.pdf');
+Route::get('/offboarding-requests/{offboardingRequest}/clearance-form/print', [ClearanceFormController::class, 'print'])->name('clearance-form.print');
 
 // approver reminders (HR/Admin only)
 Route::post('/approvals/{offboardingRequestApprover}/remind', [ApprovalController::class, 'remind'])->name('approvals.remind');

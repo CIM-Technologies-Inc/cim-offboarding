@@ -12,6 +12,7 @@ class EmailTemplate extends Model
         'subject',
         'html_content',
         'is_active',
+        'is_default_announcement',
         'created_by',
     ];
 
@@ -19,12 +20,25 @@ class EmailTemplate extends Model
     {
         return [
             'is_active' => 'boolean',
+            'is_default_announcement' => 'boolean',
         ];
     }
 
     public function creator(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by');
+    }
+
+    /**
+     * The single active template flagged as the default Offboarding
+     * Announcement email — used automatically on request submission instead
+     * of requiring the submitter to pick one manually.
+     */
+    public static function activeDefaultAnnouncement(): ?self
+    {
+        return static::where('is_active', true)
+            ->where('is_default_announcement', true)
+            ->first();
     }
 
     /**

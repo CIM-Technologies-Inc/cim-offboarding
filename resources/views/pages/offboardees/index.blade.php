@@ -3,6 +3,10 @@
 @section('content')
     <x-common.page-breadcrumb pageTitle="Offboardees" />
 
+    <div class="mb-4 flex items-center justify-end md:mb-6">
+        <x-offboarding.new-request-modal :employees="$employeesNotOffboarded" />
+    </div>
+
     <div x-data="{
         search: '',
         names: @js($offboardees->pluck('name')->map(fn ($name) => Str::lower($name))),

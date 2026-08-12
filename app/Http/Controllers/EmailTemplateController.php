@@ -9,6 +9,7 @@ use App\Models\EmailTemplate;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\View\View;
 
 class EmailTemplateController extends Controller
@@ -40,9 +41,17 @@ class EmailTemplateController extends Controller
 
     public function store(StoreEmailTemplateRequest $request): RedirectResponse
     {
-        EmailTemplate::create($request->validated() + [
-            'created_by' => $request->user()->id,
-        ]);
+        $validated = $request->validated();
+
+        DB::transaction(function () use ($request, $validated) {
+            if ($validated['is_default_announcement']) {
+                $this->clearOtherDefaultAnnouncements();
+            }
+
+            EmailTemplate::create($validated + [
+                'created_by' => $request->user()->id,
+            ]);
+        });
 
         return redirect()->route('email-templates.create')
             ->with('success', 'Template saved successfully.');
@@ -50,10 +59,31 @@ class EmailTemplateController extends Controller
 
     public function update(UpdateEmailTemplateRequest $request, EmailTemplate $emailTemplate): RedirectResponse
     {
-        $emailTemplate->update($request->validated());
+        $validated = $request->validated();
+
+        DB::transaction(function () use ($validated, $emailTemplate) {
+            if ($validated['is_default_announcement']) {
+                $this->clearOtherDefaultAnnouncements($emailTemplate->id);
+            }
+
+            $emailTemplate->update($validated);
+        });
 
         return redirect()->route('email-templates.create')
             ->with('success', 'Template updated successfully.');
+    }
+
+    /**
+     * Only one template may be the default Offboarding Announcement
+     * template — enforced here rather than relying on the checkbox alone,
+     * since a client could submit `is_default_announcement=true` for more
+     * than one template.
+     */
+    private function clearOtherDefaultAnnouncements(?int $exceptId = null): void
+    {
+        EmailTemplate::where('is_default_announcement', true)
+            ->when($exceptId, fn ($query) => $query->whereKeyNot($exceptId))
+            ->update(['is_default_announcement' => false]);
     }
 
     public function destroy(EmailTemplate $emailTemplate): RedirectResponse

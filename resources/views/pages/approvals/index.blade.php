@@ -14,6 +14,17 @@
             Review pending offboarding requests and approve or decline them.
         </p>
 
+        @php
+            $statusBadges = [
+                'pending' => ['label' => 'Pending', 'class' => 'bg-yellow-50 text-yellow-700 dark:bg-yellow-500/15 dark:text-yellow-400'],
+                'assigned' => ['label' => 'Assigned', 'class' => 'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400'],
+                'in_progress' => ['label' => 'In Progress', 'class' => 'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400'],
+                'done' => ['label' => 'Done', 'class' => 'bg-teal-50 text-teal-700 dark:bg-teal-500/15 dark:text-teal-400'],
+                'approved' => ['label' => 'Approved', 'class' => 'bg-success-50 text-success-700 dark:bg-success-500/15 dark:text-success-400'],
+                'declined' => ['label' => 'Declined', 'class' => 'bg-error-50 text-error-700 dark:bg-error-500/15 dark:text-error-400'],
+            ];
+        @endphp
+
         @if ($approvals->isEmpty())
             <div class="rounded-2xl border border-gray-200 bg-white p-10 text-center dark:border-gray-800 dark:bg-white/[0.03]">
                 <p class="text-sm text-gray-500 dark:text-gray-400">
@@ -23,14 +34,17 @@
         @else
             <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3">
                 @foreach ($approvals as $approval)
-                    <div x-data="{ processing: false }" @click="$dispatch('open-offboardee-modal', @js($approval))"
+                    @php
+                        $badge = $statusBadges[$approval['displayStatus']] ?? $statusBadges['pending'];
+                    @endphp
+                    <div @click="$dispatch('open-offboardee-modal', @js($approval))"
                         class="group cursor-pointer rounded-2xl border border-gray-200 bg-white p-5 transition-all duration-200 hover:-translate-y-1 hover:border-[#145a3a]/40 hover:shadow-lg dark:border-gray-800 dark:bg-white/[0.03] dark:hover:border-[#3aa876]/40">
                         <div class="flex items-start justify-between">
                             <div class="flex h-12 w-12 items-center justify-center rounded-full bg-gray-100 text-base font-semibold text-gray-600 dark:bg-gray-800 dark:text-gray-300">
                                 {{ collect(explode(' ', $approval['name']))->map(fn ($part) => mb_substr($part, 0, 1))->take(2)->implode('') }}
                             </div>
-                            <span class="rounded-full bg-yellow-50 px-2.5 py-1 text-xs font-medium text-yellow-700 dark:bg-yellow-500/15 dark:text-yellow-400">
-                                Pending
+                            <span class="rounded-full px-2.5 py-1 text-xs font-medium {{ $badge['class'] }}">
+                                {{ $badge['label'] }}
                             </span>
                         </div>
 
@@ -38,6 +52,12 @@
                             {{ $approval['name'] }}
                         </h4>
                         <p class="text-sm text-gray-500 dark:text-gray-400">{{ $approval['designation'] }}</p>
+
+                        @unless ($approval['isPrimaryApprover'])
+                            <p class="mt-1 text-xs text-gray-400">
+                                Assigned by: {{ $approval['assignedByCode'] }}
+                            </p>
+                        @endunless
 
                         <div class="mt-4 space-y-1.5 border-t border-gray-100 pt-4 dark:border-gray-800">
                             <div class="flex items-center justify-between text-xs">
@@ -60,6 +80,12 @@
                                 <span class="text-gray-400">Approval Mode</span>
                                 <span class="font-medium text-gray-700 dark:text-gray-300">{{ $approval['approvalMode'] }}</span>
                             </div>
+                            @if ($approval['delegation'])
+                                <div class="flex items-center justify-between text-xs">
+                                    <span class="text-gray-400">Assigned To</span>
+                                    <span class="font-medium text-gray-700 dark:text-gray-300">{{ $approval['delegation']['delegatedEmployeeName'] }}</span>
+                                </div>
+                            @endif
                         </div>
 
                         <div class="mt-4 flex items-center gap-2 border-t border-gray-100 pt-4 dark:border-gray-800">
@@ -70,42 +96,15 @@
                                 </svg>
                                 View Checklist
                             </button>
-                            <form method="POST" action="{{ route('approvals.decline', $approval['id']) }}" class="flex-1"
-                                @click.stop
-                                @submit="if (!processing) {
-                                    $event.preventDefault();
-                                    Swal.fire({
-                                        title: 'Decline this request?',
-                                        text: 'You are about to decline {{ $approval['name'] }}\'s offboarding request. This action cannot be undone.',
-                                        icon: 'warning',
-                                        input: 'textarea',
-                                        inputLabel: 'Reason (optional)',
-                                        inputPlaceholder: 'e.g. Company equipment has not yet been returned.',
-                                        showCancelButton: true,
-                                        confirmButtonText: 'Decline',
-                                        cancelButtonText: 'Cancel',
-                                        confirmButtonColor: '#dc2626',
-                                        cancelButtonColor: '#145a3a',
-                                        reverseButtons: true
-                                    }).then((result) => {
-                                        if (result.isConfirmed) {
-                                            $el.querySelector('input[name=comment]').value = result.value || '';
-                                            processing = true;
-                                            $el.requestSubmit();
-                                        }
-                                    });
-                                }">
-                                @csrf
-                                <input type="hidden" name="comment" value="" />
-                                <button type="submit" :disabled="processing"
-                                    :class="processing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-error-50 dark:hover:bg-error-500/10'"
-                                    class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-error-500 dark:border-gray-700">
-                                    <svg width="16" height="16" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                        <path d="M13.5 4.5L4.5 13.5M4.5 4.5L13.5 13.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                            @if ($approval['isPrimaryApprover'])
+                                <button type="button" title="Assign To" @click.stop="$dispatch('open-assign-modal', @js($approval))"
+                                    class="flex items-center justify-center gap-1.5 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
+                                    <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path d="M10 10a3.75 3.75 0 100-7.5 3.75 3.75 0 000 7.5ZM3.5 17.25a6.5 6.5 0 0113 0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                                        <path d="M16.25 6.25v4M18.25 8.25h-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
                                     </svg>
-                                    Decline
                                 </button>
-                            </form>
+                            @endif
                         </div>
                     </div>
                 @endforeach
@@ -117,5 +116,8 @@
 
         <!-- Approval Checklist Modal -->
         <x-approvals.checklist-modal />
+
+        <!-- Assign To Modal -->
+        <x-approvals.assign-modal :employees="$employees" />
     </div>
 @endsection

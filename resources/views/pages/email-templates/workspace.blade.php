@@ -18,9 +18,16 @@
                 <div class="max-h-[70vh] space-y-2 overflow-y-auto custom-scrollbar">
                     @forelse ($templates as $item)
                         <div class="rounded-lg border p-3 {{ $template && $template->id === $item->id ? 'border-[#145a3a]/40 bg-[#145a3a]/5' : 'border-gray-200 dark:border-gray-800' }}">
-                            <p class="truncate text-sm font-medium {{ $template && $template->id === $item->id ? 'text-[#145a3a] dark:text-[#3aa876]' : 'text-gray-700 dark:text-gray-300' }}">
-                                {{ $item->template_name }}
-                            </p>
+                            <div class="flex items-center gap-1.5">
+                                <p class="truncate text-sm font-medium {{ $template && $template->id === $item->id ? 'text-[#145a3a] dark:text-[#3aa876]' : 'text-gray-700 dark:text-gray-300' }}">
+                                    {{ $item->template_name }}
+                                </p>
+                                @if ($item->is_default_announcement)
+                                    <span class="shrink-0 rounded-full bg-[#145a3a]/10 px-2 py-0.5 text-[10px] font-medium text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]">
+                                        Default
+                                    </span>
+                                @endif
+                            </div>
 
                             <div class="mt-2 flex items-center gap-1.5">
                                 <button type="button"
@@ -100,6 +107,15 @@
                                 class="h-11 w-full rounded-xl border border-gray-300 bg-transparent px-4 py-2.5 text-sm text-gray-800 shadow-sm placeholder:text-gray-400 focus:border-[#145a3a]/50 focus:outline-hidden focus:ring-3 focus:ring-[#145a3a]/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30" />
                         </div>
 
+                        <div class="flex items-center gap-2">
+                            <input type="checkbox" id="is_default_announcement" name="is_default_announcement" value="1"
+                                @checked(old('is_default_announcement', $template->is_default_announcement ?? false))
+                                class="h-4 w-4 rounded border-gray-300 text-[#145a3a] accent-[#145a3a] focus:ring-[#145a3a]/40 dark:border-gray-700" />
+                            <label for="is_default_announcement" class="text-sm font-medium text-gray-700 dark:text-gray-400">
+                                Default Template (Offboarding Announcement)
+                            </label>
+                        </div>
+
                         <div>
                             <div class="mb-1.5 flex items-center justify-between">
                                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-400">
@@ -154,7 +170,7 @@
                 <div class="max-h-[75vh] space-y-1 overflow-y-auto custom-scrollbar">
                     @forelse ($employees as $employee)
                         <div draggable="true"
-                            @dragstart="$event.dataTransfer.setData('text/plain', '{{ $employee->name }}')"
+                            @dragstart="$event.dataTransfer.setData('text/plain', @js($employee->name))"
                             class="flex cursor-grab items-center justify-between gap-2 rounded-lg px-3 py-2 hover:bg-gray-50 active:cursor-grabbing dark:hover:bg-white/5">
                             <div class="min-w-0">
                                 <p class="truncate text-sm font-medium text-gray-700 dark:text-gray-300">{{ $employee->name }}</p>
@@ -162,7 +178,7 @@
                                     <p class="truncate text-xs text-gray-400">{{ $employee->department }}</p>
                                 @endif
                             </div>
-                            <button type="button" @click="insertEmployeeName('{{ $employee->name }}')"
+                            <button type="button" @click="insertEmployeeName(@js($employee->name))"
                                 class="shrink-0 rounded-md bg-[#145a3a]/10 px-2 py-1 text-[11px] font-medium text-[#145a3a] hover:bg-[#145a3a]/20 dark:text-[#3aa876]">
                                 Insert
                             </button>

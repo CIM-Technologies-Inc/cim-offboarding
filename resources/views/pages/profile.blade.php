@@ -7,5 +7,6 @@
         <x-profile.profile-card />
         <x-profile.personal-info-card />
         <x-profile.address-card />
+        <x-profile.signature-card />
     </div>
 @endsection

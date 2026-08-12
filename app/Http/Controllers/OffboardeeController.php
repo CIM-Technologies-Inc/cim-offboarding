@@ -32,7 +32,7 @@ class OffboardeeController extends Controller
 
         if ($statusFilter) {
             $employees = $employees->filter(
-                fn (Employee $employee) => ($employee->latestOffboardingRequest?->status ?? 'pending') === $statusFilter
+                fn (Employee $employee) => ($employee->latestOffboardingRequest?->displayStatus() ?? 'pending') === $statusFilter
             );
         }
 
@@ -48,10 +48,16 @@ class OffboardeeController extends Controller
             'employeeCode' => $employee->employee_code,
             'department' => $employee->department,
             'designation' => $employee->designation,
-            'status' => $employee->latestOffboardingRequest?->status ?? 'pending',
+            'status' => $employee->latestOffboardingRequest?->displayStatus() ?? 'pending',
             'lastWorkingDay' => $employee->latestOffboardingRequest?->last_working_day?->format('M d, Y'),
             'checklistTemplates' => $employee->latestOffboardingRequest?->checklistTemplates->pluck('title')->all() ?? [],
             'timeline' => $employee->latestOffboardingRequest?->approverActivityTimeline() ?? [],
+            'clearanceFormUrl' => $employee->latestOffboardingRequest && $employee->latestOffboardingRequest->status === 'completed'
+                ? route('clearance-form.pdf', $employee->latestOffboardingRequest)
+                : null,
+            'printClearanceFormUrl' => $employee->latestOffboardingRequest && $employee->latestOffboardingRequest->status === 'completed'
+                ? route('clearance-form.print', $employee->latestOffboardingRequest)
+                : null,
         ];
 
         $offboardees = $employees->map($mapEmployee)->values();
@@ -70,6 +76,10 @@ class OffboardeeController extends Controller
             }
         }
 
+        $employeesNotOffboarded = Employee::where('status', 'active')
+            ->orderBy('name')
+            ->get(['id', 'name', 'employee_code', 'department']);
+
         return view('pages.offboardees.index', [
             'title' => 'Offboardees',
             'offboardees' => $offboardees,
@@ -77,6 +87,7 @@ class OffboardeeController extends Controller
             'departmentFilter' => $departmentFilter,
             'departments' => $departments,
             'deepLinkOffboardee' => $deepLinkOffboardee,
+            'employeesNotOffboarded' => $employeesNotOffboarded,
         ]);
     }
 }

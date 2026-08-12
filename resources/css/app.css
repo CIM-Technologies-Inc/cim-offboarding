@@ -177,6 +177,17 @@
 }
 
 /*
+  SweetAlert2's own stacking context defaults to a much lower z-index than
+  our modal component's z-99999 backdrop, so a Swal confirmation triggered
+  from inside an already-open modal would render visually on top but be
+  unclickable (the modal's backdrop intercepts the click). Force it above
+  every app modal.
+*/
+.swal2-container {
+  z-index: var(--z-index-999999);
+}
+
+/*
   The default border color has changed to `currentColor` in Tailwind CSS v4,
   so we've added these compatibility styles to make sure everything still
   looks the same as it did with Tailwind CSS v3.

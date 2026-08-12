@@ -28,6 +28,7 @@ class User extends Authenticatable
         'position',
         'department',
         'address',
+        'signature_path',
     ];
 
     public const ROLE_ADMIN = 'admin';
@@ -50,6 +51,33 @@ class User extends Authenticatable
     public function employee(): HasOne
     {
         return $this->hasOne(Employee::class, 'employee_code', 'username');
+    }
+
+    /**
+     * A root-relative URL (not an absolute one built from the static
+     * `APP_URL` config) so it resolves correctly regardless of the actual
+     * host/port the app is served from — matching how every other image in
+     * this app is referenced (e.g. `/images/user/owner.png`).
+     */
+    public function signatureUrl(): ?string
+    {
+        return $this->signature_path ? '/storage/'.$this->signature_path : null;
+    }
+
+    /**
+     * Finds the existing approver account for this employee, or creates one
+     * using the established convention: username = password = employee_code.
+     * Never promotes/downgrades an existing account's role.
+     */
+    public static function findOrCreateApprover(Employee $employee): self
+    {
+        return static::firstWhere('username', $employee->employee_code) ?? static::create([
+            'name' => $employee->name,
+            'username' => $employee->employee_code,
+            'password' => $employee->employee_code,
+            'role' => self::ROLE_APPROVER,
+            'email' => $employee->email,
+        ]);
     }
 
     /**
