@@ -1,24 +1,5 @@
 <div class="doc">
-    <table class="header-table">
-        <tr>
-            <td class="logo-cell">
-                <div class="logo-text">cim <span class="logo-sub">Technologies, Inc.</span></div>
-                <div class="logo-tagline">Design &amp; Innovation for a Sustainable Future</div>
-            </td>
-            <td class="office-cell office-cell-makati">
-                <strong>MAKATI (Main Office)</strong><br>
-                706 SEDCCO 1 Bldg. 120 Rada Corner Legaspi St.<br>
-                Legaspi Village, Makati City, Philippines, 1229<br>
-                Tel.: +63 (2) 8848-2468
-            </td>
-            <td class="office-cell office-cell-cebu">
-                <strong>CEBU</strong><br>
-                Unit 18G, 18th Floor, Latitude Corporate Center,<br>
-                Mindanao Avenue, Cebu Business Park, Cebu City, Philippines, 6000<br>
-                Tel.: +63 (32) 513-1457
-            </td>
-        </tr>
-    </table>
+    <img src="{{ $headerImageSrc }}" alt="CIM Technologies, Inc." class="banner-image header-image" />
 
     <h1 class="doc-title">CLEARANCE FORM</h1>
 
@@ -117,4 +98,6 @@
     </div>
 
     <p class="form-code">CIM-HR-CAR FORM-02212025-REV.01</p>
+
+    <img src="{{ $footerImageSrc }}" alt="" class="banner-image footer-image" />
 </div>

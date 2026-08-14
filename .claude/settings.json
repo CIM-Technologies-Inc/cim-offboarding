@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p \"C:/Users/apple/AppData/Local/Temp/claude/c--xampp-htdocs-tailadmin-laravel-main-offboarding/8678aa87-dead-4833-a63b-ca01c3540848/scratchpad/screenshots\")",
+      "Bash(node verify_browser.mjs)",
+      "Bash(node debug_browser.mjs)",
+      "Bash(node verify_browser2.mjs)",
+      "Bash(node verify_department_field.mjs)",
+      "Bash(node debug_department_save.mjs)",
+      "Bash(php -l app/Mail/ChecklistItemApproverAssignedMail.php)",
+      "Bash(node verify_takeover_browser.mjs)",
+      "Bash(node verify_hold_browser.mjs)",
+      "Bash(node debug_hold.mjs)",
+      "Bash(node debug_hold2.mjs)"
+    ]
+  }
+}

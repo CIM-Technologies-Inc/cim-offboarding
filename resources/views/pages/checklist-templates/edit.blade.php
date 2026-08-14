@@ -3,7 +3,7 @@
 @section('content')
     <x-common.page-breadcrumb pageTitle="Edit Checklist Template" />
 
-    <div x-data="checklistBuilder(@js(old('title', $template->title)), @js(old('department_head_id', (string) ($template->department_head_id ?? ''))), @js(old('department', $template->department)), @js(old('items', $template->items->map(fn ($item) => ['title' => $item->title, 'signatory_id' => (string) $item->signatory_id])->values())), @js($employees->map(fn ($employee) => ['id' => (string) $employee->id, 'name' => $employee->name, 'department' => $employee->department])), @js($errors->any() ? $errors->first() : null))"
+    <div x-data="checklistBuilder(@js(old('title', $template->title)), @js(old('department_head_id', (string) ($template->department_head_id ?? ''))), @js(old('department', $template->department ?? '')), @js(old('due_in_days', (string) ($template->due_in_days ?? ''))), @js(old('items', $template->items->map(fn ($item) => ['title' => $item->title, 'signatory_id' => (string) $item->signatory_id])->values())), @js($employees->map(fn ($employee) => ['id' => (string) $employee->id, 'name' => $employee->name, 'department' => $employee->department])), @js($errors->any() ? $errors->first() : null))"
         class="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-white/[0.03] lg:p-6">
         <form method="POST" action="{{ route('checklist-templates.update', $template) }}" class="flex flex-col">
             @csrf
@@ -29,7 +29,7 @@
                     @endforeach
                 </select>
                 <p class="mt-1.5 text-xs text-gray-400">
-                    If set, this department head is automatically applied as the signatory for every item below, and the Signatory field is disabled.
+                    This department head has decline authority over the whole checklist. Each item below can have its own independent approver — if any item's approver differs from the department head, the checklist auto-approves once every item is checked, with no manual approval step.
                 </p>
             </div>
 
@@ -45,6 +45,17 @@
                     <option value="Accounting">Accounting</option>
                     <option value="Sales">Sales</option>
                 </select>
+            </div>
+
+            <div class="mt-5">
+                <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                    Due (Days)
+                </label>
+                <input type="number" name="due_in_days" x-model="dueInDays" min="0" placeholder="e.g. 5"
+                    class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
+                <p class="mt-1.5 text-xs text-gray-400">
+                    Days after this checklist is assigned before it becomes overdue. Leave blank for no due date.
+                </p>
             </div>
 
             <div class="mt-5">
@@ -87,13 +98,11 @@
                                 <input type="hidden" :name="`items[${index}][signatory_id]`" :value="item.signatory_id" />
                                 <div class="relative">
                                     <input type="text" x-model="item.signatory_query" autocomplete="off"
-                                        :disabled="hasDepartmentHead()"
                                         @focus="item.signatory_open = true"
                                         @input="item.signatory_id = ''; item.signatory_open = true"
                                         placeholder="Search employee..."
-                                        :class="hasDepartmentHead() ? 'cursor-not-allowed bg-gray-100 dark:bg-gray-800' : ''"
                                         class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 pr-9 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
-                                    <button type="button" x-show="item.signatory_id && !hasDepartmentHead()" @click="clearSignatory(item)"
+                                    <button type="button" x-show="item.signatory_id" @click="clearSignatory(item)"
                                         class="absolute top-1/2 right-3 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
                                         <svg width="16" height="16" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
                                             <path d="M13.5 4.5L4.5 13.5M4.5 4.5L13.5 13.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
@@ -143,16 +152,14 @@
     </div>
 
     <script>
-        function checklistBuilder(initialTitle, initialDepartmentHeadId, initialDepartment, initialItems, employees, flashError = null) {
+        function checklistBuilder(initialTitle, initialDepartmentHeadId, initialDepartment, initialDueInDays, initialItems, employees, flashError = null) {
             return {
                 title: initialTitle,
                 departmentHeadId: initialDepartmentHeadId,
                 department: initialDepartment,
+                dueInDays: initialDueInDays,
                 employees: employees,
                 items: [],
-                hasDepartmentHead() {
-                    return this.departmentHeadId !== '';
-                },
                 init() {
                     const source = initialItems.length ? initialItems : [{ title: '', signatory_id: '' }];
                     this.items = source.map((item) => ({
@@ -161,14 +168,6 @@
                         signatory_query: this.labelFor(item.signatory_id),
                         signatory_open: false,
                     }));
-
-                    if (this.hasDepartmentHead()) {
-                        this.items.forEach((item) => this.applyDepartmentHeadTo(item));
-                    }
-
-                    this.$watch('departmentHeadId', () => {
-                        this.items.forEach((item) => this.applyDepartmentHeadTo(item));
-                    });
 
                     if (flashError) {
                         window.Swal?.fire({
@@ -205,19 +204,8 @@
                     item.signatory_query = '';
                     item.signatory_open = false;
                 },
-                applyDepartmentHeadTo(item) {
-                    if (this.hasDepartmentHead()) {
-                        item.signatory_id = this.departmentHeadId;
-                        item.signatory_query = this.labelFor(this.departmentHeadId);
-                        item.signatory_open = false;
-                    } else {
-                        this.clearSignatory(item);
-                    }
-                },
                 addItem() {
-                    const item = { title: '', signatory_id: '', signatory_query: '', signatory_open: false };
-                    this.applyDepartmentHeadTo(item);
-                    this.items.push(item);
+                    this.items.push({ title: '', signatory_id: '', signatory_query: '', signatory_open: false });
                 },
                 removeItem(index) {
                     this.items.splice(index, 1);

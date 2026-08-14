@@ -15,6 +15,7 @@ class DashboardController extends Controller
 
         $pendingCount = OffboardingRequest::displayPending()->count();
         $inProgressCount = OffboardingRequest::displayInProgress()->count();
+        $overdueCount = OffboardingRequest::displayOverdue()->count();
         $completedCount = OffboardingRequest::where('status', 'completed')->count();
 
         $startOfMonth = Carbon::now()->startOfMonth();
@@ -65,6 +66,7 @@ class DashboardController extends Controller
             'activeEmployees' => $activeEmployees,
             'pendingCount' => $pendingCount,
             'inProgressCount' => $inProgressCount,
+            'overdueCount' => $overdueCount,
             'completedCount' => $completedCount,
             'completionRate' => $completionRate,
             'completedThisMonth' => $completedThisMonth,

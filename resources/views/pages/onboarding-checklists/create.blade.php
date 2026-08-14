@@ -1,18 +1,18 @@
 @extends('layouts.app')
 
 @section('content')
-    <x-common.page-breadcrumb pageTitle="New Checklist Template" />
+    <x-common.page-breadcrumb pageTitle="New Onboarding Checklist Template" />
 
     <div x-data="checklistBuilder(@js(old('title', '')), @js(old('department_head_id', '')), @js(old('department', '')), @js(old('due_in_days', '')), @js(old('items', [['title' => '', 'signatory_id' => '']])), @js($employees->map(fn ($employee) => ['id' => (string) $employee->id, 'name' => $employee->name, 'department' => $employee->department])), @js($errors->any() ? $errors->first() : null))"
         class="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-white/[0.03] lg:p-6">
-        <form method="POST" action="{{ route('checklist-templates.store') }}" class="flex flex-col">
+        <form method="POST" action="{{ route('onboarding-checklists.store') }}" class="flex flex-col">
             @csrf
 
             <div>
                 <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
                     List Title
                 </label>
-                <input type="text" name="title" x-model="title" placeholder="e.g. IT Clearance Checklist"
+                <input type="text" name="title" x-model="title" placeholder="e.g. IT Onboarding Checklist"
                     class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
             </div>
 
@@ -28,7 +28,7 @@
                     @endforeach
                 </select>
                 <p class="mt-1.5 text-xs text-gray-400">
-                    This department head has decline authority over the whole checklist. Each item below can have its own independent approver — if any item's approver differs from the department head, the checklist auto-approves once every item is checked, with no manual approval step.
+                    This department head oversees the whole checklist. Each item below can have its own independent signatory.
                 </p>
             </div>
 
@@ -57,19 +57,10 @@
                 </p>
             </div>
 
-            <div class="mt-5">
-                <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
-                    <input type="checkbox" name="is_final_pay_checklist" value="1"
-                        @checked(old('is_final_pay_checklist'))
-                        class="h-4 w-4 accent-brand-500" />
-                    Final Pay Checklist
-                </label>
-            </div>
-
             <div class="mt-7">
                 <div class="mb-4 flex items-center justify-between">
                     <h5 class="text-lg font-medium text-gray-800 dark:text-white/90">
-                        Clearance Items
+                        Onboarding Items
                     </h5>
                     <button type="button" @click="addItem()"
                         class="shadow-theme-xs flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03]">
@@ -85,9 +76,9 @@
                         <div class="flex flex-col gap-3 rounded-xl border border-gray-200 p-4 dark:border-gray-800 sm:flex-row sm:items-start">
                             <div class="flex-1">
                                 <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
-                                    Items for turn over
+                                    Items to complete
                                 </label>
-                                <input type="text" x-model="item.title" :name="`items[${index}][title]`" placeholder="e.g. Return company laptop"
+                                <input type="text" x-model="item.title" :name="`items[${index}][title]`" placeholder="e.g. Issue company laptop"
                                     class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
                             </div>
                             <div class="relative sm:w-72" @click.away="item.signatory_open = false">
@@ -138,7 +129,7 @@
             </div>
 
             <div class="mt-7 flex items-center gap-3 lg:justify-end">
-                <a href="{{ route('checklist-templates.index') }}"
+                <a href="{{ route('onboarding-checklists.index') }}"
                     class="flex w-full justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03] sm:w-auto">
                     Cancel
                 </a>

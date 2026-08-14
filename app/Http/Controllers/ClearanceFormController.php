@@ -17,7 +17,10 @@ class ClearanceFormController extends Controller
      */
     public function pdf(OffboardingRequest $offboardingRequest): Response
     {
-        $data = $this->buildData($offboardingRequest);
+        $data = $this->buildData($offboardingRequest) + [
+            'headerImageSrc' => $this->localImageDataUri(public_path('images/clearance-form/header.png')),
+            'footerImageSrc' => $this->localImageDataUri(public_path('images/clearance-form/footer.png')),
+        ];
 
         $pdf = Pdf::loadView('clearance-form.pdf', $data)->setPaper('letter');
 
@@ -32,7 +35,12 @@ class ClearanceFormController extends Controller
      */
     public function print(OffboardingRequest $offboardingRequest): View
     {
-        return view('clearance-form.print', $this->buildData($offboardingRequest));
+        $data = $this->buildData($offboardingRequest) + [
+            'headerImageSrc' => asset('images/clearance-form/header.png'),
+            'footerImageSrc' => asset('images/clearance-form/footer.png'),
+        ];
+
+        return view('clearance-form.print', $data);
     }
 
     /**
@@ -101,5 +109,20 @@ class ClearanceFormController extends Controller
         $contents = Storage::disk('public')->get($signaturePath);
 
         return 'data:'.$mime.';base64,'.base64_encode($contents);
+    }
+
+    /**
+     * Same base64-embedding approach as `signatureDataUri()`, for the static
+     * header/footer banner images bundled with the app (not user uploads).
+     */
+    private function localImageDataUri(string $absolutePath): ?string
+    {
+        if (! is_file($absolutePath)) {
+            return null;
+        }
+
+        $mime = mime_content_type($absolutePath) ?: 'image/png';
+
+        return 'data:'.$mime.';base64,'.base64_encode(file_get_contents($absolutePath));
     }
 }

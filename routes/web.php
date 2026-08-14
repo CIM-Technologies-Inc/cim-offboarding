@@ -13,6 +13,8 @@ use App\Http\Controllers\ChecklistDelegationController;
 use App\Http\Controllers\EmailTemplateController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\ClearanceFormController;
+use App\Http\Controllers\DepartmentHeadController;
+use App\Http\Controllers\OnboardingChecklistTemplateController;
 
 // authentication pages
 Route::get('/signin', [AuthController::class, 'create'])->name('login');
@@ -45,6 +47,8 @@ Route::post('/approvals/{offboardingRequestApprover}/decline', [ApprovalControll
 // checklist delegation (assign to another approver)
 Route::post('/approvals/{offboardingRequestApprover}/assign', [ChecklistDelegationController::class, 'assign'])->name('approvals.assign');
 Route::post('/approvals/{offboardingRequestApprover}/save-progress', [ChecklistDelegationController::class, 'saveProgress'])->name('approvals.save-progress');
+Route::post('/approvals/{offboardingRequestApprover}/items/{checklistItem}/hold', [ChecklistDelegationController::class, 'holdItem'])->name('approvals.items.hold');
+Route::post('/approvals/{offboardingRequestApprover}/items/{checklistItem}/assign', [ChecklistDelegationController::class, 'assignItem'])->name('approvals.items.assign');
 
 // pages restricted to the admin role
 Route::middleware('role:admin')->group(function () {
@@ -64,6 +68,23 @@ Route::get('/offboarding-checklists/{checklistTemplate}/edit', [ChecklistTemplat
 Route::put('/offboarding-checklists/{checklistTemplate}', [ChecklistTemplateController::class, 'update'])->name('checklist-templates.update');
 Route::patch('/offboarding-checklists/{checklistTemplate}/toggle-status', [ChecklistTemplateController::class, 'toggleStatus'])->name('checklist-templates.toggle-status');
 Route::delete('/offboarding-checklists/{checklistTemplate}', [ChecklistTemplateController::class, 'destroy'])->name('checklist-templates.destroy');
+
+// onboarding checklist templates
+Route::get('/onboarding-checklists', [OnboardingChecklistTemplateController::class, 'index'])->name('onboarding-checklists.index');
+Route::get('/onboarding-checklists/create', [OnboardingChecklistTemplateController::class, 'create'])->name('onboarding-checklists.create');
+Route::post('/onboarding-checklists', [OnboardingChecklistTemplateController::class, 'store'])->name('onboarding-checklists.store');
+Route::get('/onboarding-checklists/{onboardingChecklist}', [OnboardingChecklistTemplateController::class, 'show'])->name('onboarding-checklists.show');
+Route::get('/onboarding-checklists/{onboardingChecklist}/edit', [OnboardingChecklistTemplateController::class, 'edit'])->name('onboarding-checklists.edit');
+Route::put('/onboarding-checklists/{onboardingChecklist}', [OnboardingChecklistTemplateController::class, 'update'])->name('onboarding-checklists.update');
+Route::patch('/onboarding-checklists/{onboardingChecklist}/toggle-status', [OnboardingChecklistTemplateController::class, 'toggleStatus'])->name('onboarding-checklists.toggle-status');
+Route::delete('/onboarding-checklists/{onboardingChecklist}', [OnboardingChecklistTemplateController::class, 'destroy'])->name('onboarding-checklists.destroy');
+
+// department heads (independent of checklist templates — resolves any item
+// approver's department to its head)
+Route::get('/department-heads', [DepartmentHeadController::class, 'index'])->name('department-heads.index');
+Route::post('/department-heads', [DepartmentHeadController::class, 'store'])->name('department-heads.store');
+Route::put('/department-heads/{departmentHead}', [DepartmentHeadController::class, 'update'])->name('department-heads.update');
+Route::delete('/department-heads/{departmentHead}', [DepartmentHeadController::class, 'destroy'])->name('department-heads.destroy');
 
 // offboardees
 Route::get('/offboardees', [OffboardeeController::class, 'index'])->name('offboardees.index');

@@ -19,6 +19,7 @@
             $statusLabelsForFilter = [
                 'pending' => 'Pending',
                 'in_progress' => 'In Progress',
+                'overdue' => 'Overdue',
                 'completed' => 'Completed',
                 'cancelled' => 'Cancelled',
             ];
@@ -162,12 +163,14 @@
                         $statusStyles = [
                             'pending' => 'bg-yellow-50 text-yellow-700 dark:bg-yellow-500/15 dark:text-yellow-400',
                             'in_progress' => 'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400',
+                            'overdue' => 'bg-orange-50 text-orange-700 dark:bg-orange-500/15 dark:text-orange-400',
                             'completed' => 'bg-success-50 text-success-700 dark:bg-success-500/15 dark:text-success-400',
                             'cancelled' => 'bg-error-50 text-error-700 dark:bg-error-500/15 dark:text-error-400',
                         ];
                         $statusLabels = [
                             'pending' => 'Pending',
                             'in_progress' => 'In Progress',
+                            'overdue' => 'Overdue',
                             'completed' => 'Completed',
                             'cancelled' => 'Cancelled',
                         ];

@@ -62,6 +62,17 @@ class Employee extends Model
     }
 
     /**
+     * The registered head of this employee's own department (per the
+     * standalone `department_heads` registry, independent of any specific
+     * checklist template) — or null if that department has no registered
+     * head yet.
+     */
+    public function departmentHead(): ?Employee
+    {
+        return DepartmentHead::headFor($this->department);
+    }
+
+    /**
      * The login account for this employee, matched by the convention that
      * `username` equals this employee's `employee_code`.
      */

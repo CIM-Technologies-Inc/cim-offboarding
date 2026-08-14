@@ -81,16 +81,36 @@ class OffboardingRequest extends Model
     }
 
     /**
+     * True while the request is still active (pending/in_progress) and at
+     * least one of its approvers is past its computed due date without
+     * having been resolved. Requires `approvers` to be loaded/loadable.
+     */
+    public function isOverdue(): bool
+    {
+        return in_array($this->status, ['pending', 'in_progress'], true)
+            && $this->approvers->contains(fn (OffboardingRequestApprover $a) => $a->isOverdue());
+    }
+
+    /**
      * The status to actually show the user: identical to the real `status`
-     * column except a still-"pending" request that already has approver
-     * activity displays as "in_progress". This is display-only — the real
-     * `status` column must stay untouched, since other approvers' own
-     * visibility into the request (`scopeVisibleTo`, the Approvals page
-     * query) depends on it staying "pending" until every regular checklist
-     * is actually approved.
+     * column except a still-"pending"/"in_progress" request displays as
+     * "overdue" once any approver has missed its due date, or "in_progress"
+     * once a still-"pending" request already has approver activity. This is
+     * display-only — the real `status` column must stay untouched, since
+     * other approvers' own visibility into the request (`scopeVisibleTo`,
+     * the Approvals page query) depends on it staying "pending" until every
+     * regular checklist is actually approved.
      */
     public function displayStatus(): string
     {
+        if (! in_array($this->status, ['pending', 'in_progress'], true)) {
+            return $this->status;
+        }
+
+        if ($this->isOverdue()) {
+            return 'overdue';
+        }
+
         if ($this->status !== 'pending') {
             return $this->status;
         }
@@ -106,7 +126,8 @@ class OffboardingRequest extends Model
     public function scopeDisplayPending(Builder $query): Builder
     {
         return $query->where('status', 'pending')
-            ->whereDoesntHave('approvers', fn (Builder $q) => static::approverActivityConstraint($q));
+            ->whereDoesntHave('approvers', fn (Builder $q) => static::approverActivityConstraint($q))
+            ->whereDoesntHave('approvers', fn (Builder $q) => static::overdueConstraint($q));
     }
 
     /**
@@ -120,12 +141,28 @@ class OffboardingRequest extends Model
                     $q2->where('status', 'pending')
                         ->whereHas('approvers', fn (Builder $q3) => static::approverActivityConstraint($q3));
                 });
-        });
+        })->whereDoesntHave('approvers', fn (Builder $q) => static::overdueConstraint($q));
+    }
+
+    /**
+     * Query-level equivalent of `displayStatus() === 'overdue'`.
+     */
+    public function scopeDisplayOverdue(Builder $query): Builder
+    {
+        return $query->whereIn('status', ['pending', 'in_progress'])
+            ->whereHas('approvers', fn (Builder $q) => static::overdueConstraint($q));
     }
 
     private static function approverActivityConstraint(Builder $query): void
     {
         $query->where('status', '!=', 'pending')->orWhereNotNull('delegation_status');
+    }
+
+    private static function overdueConstraint(Builder $query): void
+    {
+        $query->whereNotIn('status', ['approved', 'declined'])
+            ->whereNotNull('due_at')
+            ->where('due_at', '<', now());
     }
 
     /**
@@ -251,7 +288,7 @@ class OffboardingRequest extends Model
     {
         $remindersByAssignment = $this->activities->where('action', 'reminder_sent')->groupBy('offboarding_request_approver_id');
         $delegationEventsByAssignment = $this->activities
-            ->whereIn('action', ['checklist_assigned', 'checklist_delegate_completed'])
+            ->whereIn('action', ['checklist_assigned', 'checklist_delegate_completed', 'checklist_item_cleared_by_other', 'checklist_item_held', 'checklist_ready_for_approval'])
             ->groupBy('offboarding_request_approver_id');
 
         $buildRichStep = function (OffboardingRequestApprover $assignment) use ($remindersByAssignment, $delegationEventsByAssignment): array {
@@ -274,6 +311,9 @@ class OffboardingRequest extends Model
                 'delegatedToCode' => $assignment->delegatedEmployee?->employee_code,
                 'delegationStatus' => $assignment->delegation_status,
                 'delegateCompletedAt' => $assignment->delegate_completed_at?->format('M d, Y g:i A'),
+                'dueAt' => $assignment->due_at?->format('M d, Y g:i A'),
+                'isOverdue' => $assignment->isOverdue(),
+                'usesPerItemApprovers' => $assignment->usesPerItemApprovers(),
             ]];
 
             foreach ($remindersByAssignment->get($assignment->id, collect()) as $reminder) {

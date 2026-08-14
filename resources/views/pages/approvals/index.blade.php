@@ -22,6 +22,8 @@
                 'done' => ['label' => 'Done', 'class' => 'bg-teal-50 text-teal-700 dark:bg-teal-500/15 dark:text-teal-400'],
                 'approved' => ['label' => 'Approved', 'class' => 'bg-success-50 text-success-700 dark:bg-success-500/15 dark:text-success-400'],
                 'declined' => ['label' => 'Declined', 'class' => 'bg-error-50 text-error-700 dark:bg-error-500/15 dark:text-error-400'],
+                'overdue' => ['label' => 'Overdue', 'class' => 'bg-orange-50 text-orange-700 dark:bg-orange-500/15 dark:text-orange-400'],
+                'ready_for_approval' => ['label' => 'Ready for Approval', 'class' => 'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]'],
             ];
         @endphp
 
@@ -52,10 +54,15 @@
                             {{ $approval['name'] }}
                         </h4>
                         <p class="text-sm text-gray-500 dark:text-gray-400">{{ $approval['designation'] }}</p>
+                        @if (!empty($approval['checklistTemplates']))
+                            <p class="mt-2 text-sm font-medium text-[#145a3a] dark:text-[#3aa876]">
+                                {{ implode(', ', $approval['checklistTemplates']) }}
+                            </p>
+                        @endif
 
                         @unless ($approval['isPrimaryApprover'])
                             <p class="mt-1 text-xs text-gray-400">
-                                Assigned by: {{ $approval['assignedByCode'] }}
+                                Assigned by: {{ $approval['assignedByName'] }}
                             </p>
                         @endunless
 
@@ -80,6 +87,12 @@
                                 <span class="text-gray-400">Approval Mode</span>
                                 <span class="font-medium text-gray-700 dark:text-gray-300">{{ $approval['approvalMode'] }}</span>
                             </div>
+                            @if ($approval['dueAt'])
+                                <div class="flex items-center justify-between text-xs">
+                                    <span class="text-gray-400">Checklist Due</span>
+                                    <span class="font-medium {{ $approval['isOverdue'] ? 'text-error-600 dark:text-error-400' : 'text-gray-700 dark:text-gray-300' }}">{{ $approval['dueAt'] }}</span>
+                                </div>
+                            @endif
                             @if ($approval['delegation'])
                                 <div class="flex items-center justify-between text-xs">
                                     <span class="text-gray-400">Assigned To</span>
@@ -117,7 +130,10 @@
         <!-- Approval Checklist Modal -->
         <x-approvals.checklist-modal />
 
-        <!-- Assign To Modal -->
+        <!-- Assign To Modal (whole checklist delegation) -->
         <x-approvals.assign-modal :employees="$employees" />
+
+        <!-- Assign Checklist Item Modal (Department Head reassigns a single item) -->
+        <x-approvals.assign-item-modal :employees="$employees" />
     </div>
 @endsection

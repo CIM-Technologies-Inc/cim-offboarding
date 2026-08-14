@@ -41,14 +41,9 @@
             box-shadow: 0 0 16px rgba(0, 0, 0, 0.15);
         }
 
-        .header-table { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
-        .header-table td { vertical-align: middle; padding: 0 10px; font-size: 10px; line-height: 1.4; }
-        .logo-cell { width: 24%; }
-        .logo-text { font-size: 22px; font-weight: bold; color: #145a3a; }
-        .logo-sub { font-size: 12px; font-weight: normal; color: #333; }
-        .logo-tagline { font-size: 8px; color: #666; margin-top: 2px; }
-        .office-cell-makati { width: 44%; text-align: center; border-right: 1px solid #000; }
-        .office-cell-cebu { width: 32%; text-align: right; }
+        .banner-image { width: 100%; display: block; }
+        .header-image { margin-bottom: 8px; }
+        .footer-image { margin-top: 30px; }
 
         .doc-title { text-align: center; font-size: 24px; font-weight: bold; margin: 16px 0 20px; letter-spacing: 1px; }
 
@@ -61,7 +56,7 @@
 
         .clearance-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
         .clearance-table th {
-            background: #145a3a; color: #fff; text-transform: uppercase;
+            background: #196B24; color: #fff; text-transform: uppercase;
             font-size: 12px; padding: 7px 10px; border: 1px solid #000; text-align: left;
         }
         .clearance-table td { border: 1px solid #000; padding: 8px 10px; font-size: 13px; height: 30px; }

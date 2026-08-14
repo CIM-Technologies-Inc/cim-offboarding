@@ -2,45 +2,50 @@
 
 <div x-data="{ selected: @js($initial), csrfToken: document.querySelector('meta[name=csrf-token]').content }" @open-offboardee-modal.window="selected = $event.detail">
     <x-ui.modal x-data="{ open: false }" @open-offboardee-modal.window="open = true" :isOpen="$initial !== null" class="max-w-[600px]">
-        <div class="no-scrollbar relative w-full max-w-[600px] overflow-y-auto rounded-3xl bg-white p-6 dark:bg-gray-900 lg:p-8" x-show="selected" x-cloak>
+        <div class="relative flex max-h-[85vh] w-full max-w-[600px] flex-col rounded-3xl bg-white dark:bg-gray-900" x-show="selected" x-cloak>
             <template x-if="selected">
-                <div>
-                    <div class="flex items-start justify-between pr-8">
-                        <div>
-                            <h4 class="text-xl font-semibold text-gray-800 dark:text-white/90" x-text="selected.name"></h4>
-                            <p class="text-sm text-gray-500 dark:text-gray-400">
-                                <span x-text="selected.designation"></span> &middot; <span x-text="selected.department"></span>
-                            </p>
-                        </div>
-                    </div>
-
-                    <div class="mt-4 flex items-center gap-4 rounded-xl bg-gray-50 px-4 py-3 text-sm dark:bg-white/[0.03]">
-                        <div>
-                            <p class="text-xs text-gray-400">Employee Code</p>
-                            <p class="font-medium text-gray-700 dark:text-gray-300" x-text="selected.employeeCode"></p>
-                        </div>
-                        <div class="h-8 w-px bg-gray-200 dark:bg-gray-700"></div>
-                        <div>
-                            <p class="text-xs text-gray-400">Last Working Day</p>
-                            <p class="font-medium text-gray-700 dark:text-gray-300" x-text="selected.lastWorkingDay || '—'"></p>
-                        </div>
-                    </div>
-
-                    <template x-if="selected.checklistTemplates && selected.checklistTemplates.length">
-                        <div class="mt-4">
-                            <p class="mb-1.5 text-xs font-medium text-gray-400">Clearance Checklist(s)</p>
-                            <div class="flex flex-wrap gap-2">
-                                <template x-for="checklistName in selected.checklistTemplates" :key="checklistName">
-                                    <span class="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-700 dark:bg-gray-800 dark:text-gray-300" x-text="checklistName"></span>
-                                </template>
+                <div class="flex min-h-0 flex-1 flex-col">
+                    <!-- Pinned header: stays visible while the timeline below scrolls -->
+                    <div class="shrink-0 p-6 pb-0 lg:p-8 lg:pb-0">
+                        <div class="flex items-start justify-between pr-8">
+                            <div>
+                                <h4 class="text-xl font-semibold text-gray-800 dark:text-white/90" x-text="selected.name"></h4>
+                                <p class="text-sm text-gray-500 dark:text-gray-400">
+                                    <span x-text="selected.designation"></span> &middot; <span x-text="selected.department"></span>
+                                </p>
                             </div>
                         </div>
-                    </template>
 
-                    <h5 class="mb-4 mt-7 text-sm font-semibold text-gray-800 dark:text-white/90">
-                        Offboarding Timeline
-                    </h5>
+                        <div class="mt-4 flex items-center gap-4 rounded-xl bg-gray-50 px-4 py-3 text-sm dark:bg-white/[0.03]">
+                            <div>
+                                <p class="text-xs text-gray-400">Employee Code</p>
+                                <p class="font-medium text-gray-700 dark:text-gray-300" x-text="selected.employeeCode"></p>
+                            </div>
+                            <div class="h-8 w-px bg-gray-200 dark:bg-gray-700"></div>
+                            <div>
+                                <p class="text-xs text-gray-400">Last Working Day</p>
+                                <p class="font-medium text-gray-700 dark:text-gray-300" x-text="selected.lastWorkingDay || '—'"></p>
+                            </div>
+                        </div>
 
+                        <template x-if="selected.checklistTemplates && selected.checklistTemplates.length">
+                            <div class="mt-4">
+                                <p class="mb-1.5 text-xs font-medium text-gray-400">Clearance Checklist(s)</p>
+                                <div class="flex flex-wrap gap-2">
+                                    <template x-for="checklistName in selected.checklistTemplates" :key="checklistName">
+                                        <span class="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-700 dark:bg-gray-800 dark:text-gray-300" x-text="checklistName"></span>
+                                    </template>
+                                </div>
+                            </div>
+                        </template>
+
+                        <h5 class="mb-4 mt-7 text-sm font-semibold text-gray-800 dark:text-white/90">
+                            Offboarding Timeline
+                        </h5>
+                    </div>
+
+                    <!-- Scrollable timeline: the only region that scrolls, from the earliest to the latest event -->
+                    <div class="custom-scrollbar min-h-0 flex-1 overflow-y-auto px-6 pb-6 lg:px-8 lg:pb-8">
                     <div class="relative">
                         <template x-for="(step, index) in selected.timeline" :key="index">
                             <div class="relative flex gap-4 pb-7 last:pb-0">
@@ -83,14 +88,20 @@
                                                     'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]': step.status === 'approved',
                                                     'bg-error-50 text-error-700 dark:bg-error-500/15 dark:text-error-400': step.status === 'declined'
                                                 }"
-                                                x-text="step.status.charAt(0).toUpperCase() + step.status.slice(1)"></span>
+                                                x-text="step.status === 'approved' ? 'Cleared' : (step.status.charAt(0).toUpperCase() + step.status.slice(1))"></span>
                                         </div>
 
                                         <div class="mt-2 space-y-1 text-xs text-gray-500 dark:text-gray-400">
                                             <p>Assigned: <span x-text="step.assignedAt || '—'"></span></p>
+                                            <template x-if="step.dueAt">
+                                                <p :class="step.isOverdue ? 'font-medium text-error-600 dark:text-error-400' : ''">
+                                                    Due: <span x-text="step.dueAt"></span>
+                                                    <span x-show="step.isOverdue"> — Overdue</span>
+                                                </p>
+                                            </template>
                                             <p>First Viewed: <span x-text="step.firstViewedAt || 'Not viewed yet'"></span></p>
                                             <template x-if="step.status === 'approved'">
-                                                <p>Approved: <span x-text="step.approvedAt"></span></p>
+                                                <p>Cleared: <span x-text="step.approvedAt"></span></p>
                                             </template>
                                             <template x-if="step.status === 'declined'">
                                                 <p>Declined: <span x-text="step.declinedAt"></span></p>
@@ -153,8 +164,11 @@
                             </div>
                         </template>
                     </div>
+                    </div>
 
-                    <div class="mt-6 flex flex-wrap items-center justify-end gap-3">
+                    <!-- Pinned footer: Generate/Print/Close stay visible regardless of scroll position -->
+                    <div class="shrink-0 border-t border-gray-100 p-6 dark:border-gray-800 lg:px-8 lg:py-6">
+                    <div class="flex flex-wrap items-center justify-end gap-3">
                         <template x-if="selected.status === 'completed' && selected.clearanceFormUrl">
                             <a :href="selected.clearanceFormUrl" target="_blank" rel="noopener"
                                 class="flex items-center justify-center gap-1.5 rounded-lg border border-gray-300 px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
@@ -177,6 +191,7 @@
                             class="flex justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03]">
                             Close
                         </button>
+                    </div>
                     </div>
                 </div>
             </template>

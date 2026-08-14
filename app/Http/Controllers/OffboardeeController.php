@@ -8,7 +8,7 @@ use Illuminate\View\View;
 
 class OffboardeeController extends Controller
 {
-    private const STATUSES = ['pending', 'in_progress', 'completed', 'cancelled'];
+    private const STATUSES = ['pending', 'in_progress', 'overdue', 'completed', 'cancelled'];
 
     public function index(Request $request): View
     {

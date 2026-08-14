@@ -11,6 +11,7 @@
         :total-employees="$totalEmployees"
         :pending-count="$pendingCount"
         :in-progress-count="$inProgressCount"
+        :overdue-count="$overdueCount"
         :completed-count="$completedCount"
       />
       <x-offboarding.monthly-trend :month-labels="$monthLabels" :initiated-series="$initiatedSeries" />

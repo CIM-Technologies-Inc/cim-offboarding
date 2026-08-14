@@ -62,7 +62,7 @@ class OffboardingRequestController extends Controller
     {
         $templates = ChecklistTemplate::where('is_active', true)
             ->where('is_final_pay_checklist', false)
-            ->with('departmentHead')
+            ->with(['departmentHead', 'items.signatory'])
             ->get();
 
         $emailTemplate = EmailTemplate::activeDefaultAnnouncement();

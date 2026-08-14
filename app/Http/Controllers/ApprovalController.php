@@ -4,17 +4,15 @@ namespace App\Http\Controllers;
 
 use App\Mail\ChecklistSignatoryAnnouncementMail;
 use App\Models\ChecklistItemProgress;
-use App\Models\ChecklistTemplate;
 use App\Models\EmailTemplate;
 use App\Models\Employee;
 use App\Models\OffboardingRequest;
 use App\Models\OffboardingRequestApprover;
 use App\Models\User;
 use App\Notifications\OffboardingApprovalUpdated;
-use App\Services\ChecklistApprovalNotifier;
+use App\Services\ChecklistCompletionService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Notification;
@@ -26,12 +24,6 @@ class ApprovalController extends Controller
      * Email template used for the "Notify Approver" reminder.
      */
     private const REMINDER_TEMPLATE = 'Offboarding Reminder';
-
-    /**
-     * Email template used to notify Final Pay Checklist approvers once every
-     * regular checklist has been approved.
-     */
-    private const FINAL_PAY_APPROVAL_TEMPLATE = 'Final Pay Checklist Approval';
 
     public function index(): View
     {
@@ -52,10 +44,12 @@ class ApprovalController extends Controller
             ->when(! $user->isAdmin(), function ($query) use ($employee) {
                 $employee
                     ? $query->where(fn ($q) => $q->where('employee_id', $employee->id)
-                        ->orWhere('delegated_employee_id', $employee->id))
+                        ->orWhere('delegated_employee_id', $employee->id)
+                        ->orWhereHas('checklistTemplate.items', fn ($qi) => $qi->where('signatory_id', $employee->id))
+                        ->orWhereHas('itemAssignments', fn ($qi) => $qi->where('assigned_employee_id', $employee->id)->where('status', 'active')))
                     : $query->whereRaw('1 = 0');
             })
-            ->with(['offboardingRequest.employee', 'checklistTemplate.items', 'employee', 'delegatedEmployee', 'itemProgress'])
+            ->with(['offboardingRequest.employee', 'checklistTemplate.items.signatory', 'employee', 'delegatedEmployee', 'itemProgress.checkedBy.employee', 'itemProgress.heldBy.employee', 'itemAssignments.assignedEmployee'])
             ->get()
             ->filter(fn (OffboardingRequestApprover $assignment) => $assignment->offboardingRequest?->employee);
 
@@ -75,13 +69,31 @@ class ApprovalController extends Controller
                 $request = $assignment->offboardingRequest;
                 $template = $assignment->checklistTemplate;
 
-                $isPrimaryApprover = $user->isAdmin() || ($employee && $assignment->employee_id === $employee->id);
+                $isDepartmentHead = $employee && $assignment->employee_id === $employee->id;
+                $isPrimaryApprover = $user->isAdmin() || $isDepartmentHead;
+                $isDelegate = $employee && $assignment->delegated_employee_id === $employee->id;
 
                 $progressByItemId = $assignment->itemProgress->keyBy('checklist_item_id');
 
-                $displayStatus = in_array($assignment->status, ['approved', 'declined'], true)
-                    ? $assignment->status
-                    : ($assignment->delegation_status ?? 'pending');
+                // Genuinely tasked with this checklist — the real Department
+                // Head, the delegate, or the signatory of at least one item —
+                // as distinct from `isPrimaryApprover`, which is also true for
+                // ANY admin merely browsing/monitoring. Drives whether action
+                // buttons like Save Progress show up for someone who isn't
+                // actually a participant in this specific checklist.
+                $isAssignedApprover = $isDepartmentHead
+                    || $isDelegate
+                    || ($employee && $template?->items->contains(fn ($item) => $assignment->effectiveSignatoryFor($item)?->id === $employee->id));
+
+                $isReadyForApproval = $assignment->usesPerItemApprovers()
+                    && $assignment->allItemsCompleted()
+                    && in_array($assignment->status, ['pending', 'viewed'], true);
+
+                $displayStatus = $assignment->isOverdue()
+                    ? 'overdue'
+                    : (in_array($assignment->status, ['approved', 'declined'], true)
+                        ? $assignment->status
+                        : ($isReadyForApproval ? 'ready_for_approval' : ($assignment->delegation_status ?? 'pending')));
 
                 return [
                     'id' => $assignment->id,
@@ -99,15 +111,74 @@ class ApprovalController extends Controller
                     'approvalMode' => $request->approval_mode === 'sync' ? 'Sync' : 'Async',
                     'checklistTemplates' => $template ? [$template->title] : [],
                     'checklistItems' => $template
-                        ? $template->items->map(fn ($item) => [
-                            'id' => $item->id,
-                            'title' => $item->title,
-                            'templateTitle' => $template->title,
-                            'checked' => (bool) ($progressByItemId->get($item->id)?->is_checked ?? false),
-                            'remark' => $progressByItemId->get($item->id)?->remark,
-                        ])->values()->all()
+                        ? $template->items->map(function ($item) use ($assignment, $template, $progressByItemId, $isPrimaryApprover, $isDelegate, $employee) {
+                            $progress = $progressByItemId->get($item->id);
+                            $isChecked = (bool) ($progress?->is_checked ?? false);
+                            $onHold = $progress?->status === 'hold' && ! $isChecked;
+                            // The Department Head's live reassignment, if any,
+                            // takes precedence over the template's own static
+                            // signatory — items with neither fall back to the
+                            // primary approver, same as before per-item
+                            // approvers existed.
+                            $effectiveSignatory = $assignment->effectiveSignatoryFor($item);
+                            $isReassigned = $effectiveSignatory?->id !== $item->signatory_id;
+                            $isOwnItem = $employee && $effectiveSignatory && $effectiveSignatory->id === $employee->id;
+                            $editable = $isPrimaryApprover || $isDelegate || $isOwnItem;
+                            $checkedByEmployee = $progress?->checkedBy?->employee;
+                            $heldByEmployee = $progress?->heldBy?->employee;
+
+                            return [
+                                'id' => $item->id,
+                                'title' => $item->title,
+                                'templateTitle' => $template->title,
+                                'checked' => $isChecked,
+                                'remark' => $progress?->remark,
+                                'approverName' => $effectiveSignatory?->name,
+                                'approverCode' => $effectiveSignatory?->employee_code,
+                                // Set only when this item has actually been
+                                // reassigned away from the template's own
+                                // signatory — lets the UI show "was assigned
+                                // to X" alongside the current assignee.
+                                'originalApproverName' => $isReassigned ? $item->signatory?->name : null,
+                                'originalApproverCode' => $isReassigned ? $item->signatory?->employee_code : null,
+                                'isReassigned' => $isReassigned,
+                                'editable' => $editable,
+                                // True when the current viewer is literally the
+                                // effective signatory for this item (regardless
+                                // of whether they're also the primary approver)
+                                // — drives the "Done" per-item UI, as distinct
+                                // from `editable`, which is also true for the
+                                // primary approver/delegate correcting someone
+                                // else's item.
+                                'isOwnItem' => $isOwnItem,
+                                // A peer item-approver (already granted visibility
+                                // into this card) may voluntarily take over any
+                                // OTHER not-yet-checked item — "Check This List" —
+                                // but never one that's on Hold: that's a deliberate
+                                // pause only the item's own approver can resolve.
+                                'canTakeOver' => ! $editable && ! $isChecked && ! $onHold,
+                                'clearedByName' => $isChecked ? $progress?->checkedBy?->name : null,
+                                'clearedByCode' => $isChecked ? $checkedByEmployee?->employee_code : null,
+                                'clearedAt' => $isChecked ? $progress?->checked_at?->format('M d, Y g:i A') : null,
+                                'onHold' => $onHold,
+                                'heldByName' => $onHold ? $progress?->heldBy?->name : null,
+                                'heldByCode' => $onHold ? $heldByEmployee?->employee_code : null,
+                                'heldAt' => $onHold ? $progress?->held_at?->format('M d, Y g:i A') : null,
+                                'holdUrl' => route('approvals.items.hold', [$assignment->id, $item->id]),
+                                // The button itself is only rendered for the
+                                // Department Head client-side; the route is
+                                // authorized server-side regardless.
+                                'assignItemUrl' => route('approvals.items.assign', [$assignment->id, $item->id]),
+                            ];
+                        })->values()->all()
                         : [],
                     'isPrimaryApprover' => $isPrimaryApprover,
+                    'isAssignedApprover' => $isAssignedApprover,
+                    'isDelegate' => $isDelegate,
+                    'usesPerItemApprovers' => $assignment->usesPerItemApprovers(),
+                    'allItemsCompleted' => $assignment->allItemsCompleted(),
+                    'dueAt' => $assignment->due_at?->format('M d, Y'),
+                    'isOverdue' => $assignment->isOverdue(),
                     'assignedByName' => $assignment->employee?->name,
                     'assignedByCode' => $assignment->employee?->employee_code,
                     'delegation' => $assignment->isDelegated() ? [
@@ -149,11 +220,17 @@ class ApprovalController extends Controller
             'items.*.remark' => ['nullable', 'string'],
         ]);
 
-        // The primary approver may check items/add remarks themselves (most
-        // relevant when there's no delegate) — Submit saves that state and
-        // approves in the same action, since they have no separate "Save
-        // Progress" step.
+        // The Department Head may check items themselves right up to the
+        // moment of Submit — including items originally assigned to a
+        // different signatory, since they can take over any item directly.
+        // Persist that state BEFORE checking completeness below, since a
+        // per-item-approver checklist may be finished off by the Department
+        // Head's own checkbox in this very action.
         ChecklistItemProgress::syncForAssignment($offboardingRequestApprover, $validated['items'] ?? [], auth()->id());
+
+        if ($offboardingRequestApprover->usesPerItemApprovers() && ! $offboardingRequestApprover->allItemsCompleted()) {
+            abort(422, 'All checklist items must be checked before this checklist can be approved.');
+        }
 
         $offboardingRequestApprover->update(['status' => 'approved', 'approved_at' => now()]);
 
@@ -161,124 +238,15 @@ class ApprovalController extends Controller
 
         $this->recordActivityAndNotify($offboardingRequest, 'approved', null);
 
+        $completionService = app(ChecklistCompletionService::class);
+
         if ($offboardingRequestApprover->checklistTemplate->is_final_pay_checklist) {
-            $this->checkFinalPayCompletion($offboardingRequest);
+            $completionService->checkFinalPayCompletion($offboardingRequest);
         } else {
-            $this->checkRegularChecklistsCompletion($offboardingRequest);
+            $completionService->checkRegularChecklistsCompletion($offboardingRequest);
         }
 
         return back()->with('success', $offboardingRequest->employee->name . '\'s offboarding request was approved.');
-    }
-
-    /**
-     * Once every regular (non-final-pay) checklist assignment on this
-     * request is approved, either finish up as before (if no Final Pay
-     * Checklist is configured) or attach + notify the Final Pay Checklist
-     * approver(s). Guarded by `final_pay_notified_at` under a row lock so
-     * two near-simultaneous approvals can never trigger this twice.
-     */
-    private function checkRegularChecklistsCompletion(OffboardingRequest $offboardingRequest): void
-    {
-        $allRegularApproved = $offboardingRequest->approvers()
-            ->whereHas('checklistTemplate', fn ($q) => $q->where('is_final_pay_checklist', false))
-            ->where('status', '!=', 'approved')
-            ->doesntExist();
-
-        if (! $allRegularApproved) {
-            return;
-        }
-
-        DB::transaction(function () use ($offboardingRequest) {
-            $locked = OffboardingRequest::whereKey($offboardingRequest->id)
-                ->whereNull('final_pay_notified_at')
-                ->lockForUpdate()
-                ->first();
-
-            if (! $locked) {
-                // Already claimed by a concurrent approval — nothing more to do here.
-                return;
-            }
-
-            $locked->activities()->create([
-                'action' => 'all_checklists_approved',
-                'status' => $locked->status,
-            ]);
-
-            $finalPayTemplates = ChecklistTemplate::where('is_active', true)
-                ->where('is_final_pay_checklist', true)
-                ->with('departmentHead')
-                ->get();
-
-            $locked->update(['final_pay_notified_at' => now()]);
-
-            if ($finalPayTemplates->isEmpty()) {
-                $locked->update(['status' => 'in_progress']);
-
-                return;
-            }
-
-            $emailTemplate = EmailTemplate::where('is_active', true)
-                ->where('template_name', self::FINAL_PAY_APPROVAL_TEMPLATE)
-                ->latest('updated_at')
-                ->first();
-
-            if (! $emailTemplate) {
-                Log::warning('No "' . self::FINAL_PAY_APPROVAL_TEMPLATE . '" email template found — final pay approvers were not emailed.', [
-                    'offboarding_request_id' => $locked->id,
-                ]);
-            }
-
-            $notified = app(ChecklistApprovalNotifier::class)->attachAndNotify(
-                $locked,
-                $finalPayTemplates,
-                $emailTemplate
-            );
-
-            $locked->activities()->create([
-                'action' => 'final_pay_notified',
-                'status' => $locked->status,
-                'comment' => 'Sent to: ' . (count($notified) ? implode(', ', $notified) : 'no one — check the department heads\' emails'),
-            ]);
-        });
-    }
-
-    /**
-     * Once every Final Pay Checklist assignment is approved, the whole
-     * offboarding process is complete. Guarded the same way as the regular
-     * -> final-pay trigger: locked inside a transaction so two final-pay
-     * approvers finishing at nearly the same moment can never both mark the
-     * request completed / create duplicate completion records.
-     */
-    private function checkFinalPayCompletion(OffboardingRequest $offboardingRequest): void
-    {
-        $allFinalPayApproved = $offboardingRequest->approvers()
-            ->whereHas('checklistTemplate', fn ($q) => $q->where('is_final_pay_checklist', true))
-            ->where('status', '!=', 'approved')
-            ->doesntExist();
-
-        if (! $allFinalPayApproved) {
-            return;
-        }
-
-        DB::transaction(function () use ($offboardingRequest) {
-            $locked = OffboardingRequest::whereKey($offboardingRequest->id)
-                ->where('status', '!=', 'completed')
-                ->lockForUpdate()
-                ->first();
-
-            if (! $locked) {
-                // Already completed by a concurrent approval.
-                return;
-            }
-
-            $locked->update(['status' => 'completed', 'completed_at' => now()]);
-
-            $locked->activities()->create([
-                'action' => 'completed',
-                'status' => 'completed',
-                'comment' => 'All required Final Pay Checklist approvals have been completed.',
-            ]);
-        });
     }
 
     public function decline(Request $request, OffboardingRequestApprover $offboardingRequestApprover): RedirectResponse
