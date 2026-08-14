@@ -418,15 +418,19 @@ class ChecklistDelegationController extends Controller
     }
 
     /**
-     * Records an audit-trail activity whenever a checklist item transitions
-     * from unchecked to checked by someone other than that item's own
-     * assigned signatory — a peer item-approver "taking over" an item that
-     * isn't theirs. Only fires on the genuine false->true transition (never
-     * re-fires on a later remark edit or resave of an already-completed
-     * item), and never fires when the rightful signatory checks their own
-     * item. Must run BEFORE `ChecklistItemProgress::syncForAssignment()`
-     * persists the new state, since it needs the PREVIOUS checked state to
-     * detect the transition.
+     * Records an audit-trail activity whenever a checklist item that has an
+     * effective signatory (its own assigned/reassigned approver — see
+     * `effectiveSignatoryFor()`) transitions from unchecked to checked —
+     * whether that's the rightful signatory completing their own item via
+     * Done, or a peer item-approver/Department Head "taking over" an item
+     * that isn't theirs. Only fires on the genuine false->true transition
+     * (never re-fires on a later remark edit or resave of an already-
+     * completed item). Items with no effective signatory at all (a plain
+     * legacy checklist item the Department Head checks directly) are left
+     * alone, as before — that's covered by the whole-checklist Approve/
+     * Decline activity instead, not per item. Must run BEFORE
+     * `ChecklistItemProgress::syncForAssignment()` persists the new state,
+     * since it needs the PREVIOUS checked state to detect the transition.
      *
      * @param  array<int, array{checklist_item_id: int, is_checked?: bool, remark?: ?string}>  $items
      */
@@ -456,18 +460,21 @@ class ChecklistDelegationController extends Controller
 
             $item = $itemsById->get($row['checklist_item_id']);
             $effectiveSignatory = $item ? $offboardingRequestApprover->effectiveSignatoryFor($item) : null;
-            $signatoryUserId = $effectiveSignatory?->user?->id;
 
-            if (! $signatoryUserId || $signatoryUserId === $actingUserId) {
+            if (! $effectiveSignatory) {
                 continue;
             }
+
+            $wasClearedByOwnSignatory = $effectiveSignatory->user?->id === $actingUserId;
 
             $offboardingRequestApprover->offboardingRequest->activities()->create([
                 'user_id' => $actingUserId,
                 'offboarding_request_approver_id' => $offboardingRequestApprover->id,
                 'action' => 'checklist_item_cleared_by_other',
                 'status' => $offboardingRequestApprover->offboardingRequest->status,
-                'comment' => "\"{$item->title}\" — originally assigned to {$effectiveSignatory->name}.",
+                'comment' => $wasClearedByOwnSignatory
+                    ? "\"{$item->title}\" completed by its assigned approver."
+                    : "\"{$item->title}\" — originally assigned to {$effectiveSignatory->name}.",
             ]);
         }
     }

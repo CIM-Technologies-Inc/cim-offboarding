@@ -25,6 +25,7 @@ class OffboardingRequestApprover extends Model
         'delegate_completed_at',
         'due_at',
         'ready_for_approval_notified_at',
+        'overdue_notified_at',
     ];
 
     protected function casts(): array
@@ -39,6 +40,7 @@ class OffboardingRequestApprover extends Model
             'delegate_completed_at' => 'datetime',
             'due_at' => 'datetime',
             'ready_for_approval_notified_at' => 'datetime',
+            'overdue_notified_at' => 'datetime',
         ];
     }
 
@@ -97,19 +99,32 @@ class OffboardingRequestApprover extends Model
     }
 
     /**
-     * True when this assignment genuinely uses per-item approvers — i.e.
-     * at least one checklist item's signatory differs from the primary
-     * approver (department head) on this row. Templates where every item
-     * either has no signatory or shares the same signatory as employee_id
-     * keep today's single-approver behavior (manual Approve/Submit).
+     * True when this assignment genuinely uses per-item approvers — i.e. at
+     * least one checklist item's EFFECTIVE signatory (the Department Head's
+     * live "Assign To" reassignment if one is active, otherwise the
+     * template's own configured signatory — see `effectiveSignatoryFor()`)
+     * differs from the primary approver (department head) on this row.
+     * Templates where every item either has no signatory or shares the same
+     * signatory as employee_id keep today's single-approver behavior
+     * (manual Approve/Submit) — UNLESS the Department Head has reassigned
+     * an item on this specific request, which must flip this on even when
+     * the shared template itself was never configured with distinct
+     * per-item signatories. Checking `signatory_id` alone here (the
+     * template's static column) would silently ignore any such
+     * reassignment, leaving the newly assigned approver with an enabled
+     * checkbox but no way to actually submit it — no Save Progress button
+     * (primary-approver/delegate only), no Done button (gated on this very
+     * flag), and no "Check This List" either (already `editable`).
      */
     public function usesPerItemApprovers(): bool
     {
-        $this->loadMissing('checklistTemplate.items');
+        $this->loadMissing('checklistTemplate.items', 'itemAssignments.assignedEmployee');
 
-        return $this->checklistTemplate->items->contains(
-            fn (ChecklistItem $item) => $item->signatory_id !== null && $item->signatory_id !== $this->employee_id
-        );
+        return $this->checklistTemplate->items->contains(function (ChecklistItem $item) {
+            $effectiveSignatory = $this->effectiveSignatoryFor($item);
+
+            return $effectiveSignatory !== null && $effectiveSignatory->id !== $this->employee_id;
+        });
     }
 
     /**

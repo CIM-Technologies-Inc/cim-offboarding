@@ -28,21 +28,9 @@ class MenuHelper
                 'roles' => ['admin'],
             ],
             [
-                'icon' => 'forms',
-                'name' => 'Onboarding Checklist',
-                'path' => '/onboarding-checklists',
-                'roles' => ['admin'],
-            ],
-            [
                 'icon' => 'offboardee',
                 'name' => 'Offboardee',
                 'path' => '/offboardees',
-                'roles' => ['admin'],
-            ],
-            [
-                'icon' => 'user-profile',
-                'name' => 'Department Heads',
-                'path' => '/department-heads',
                 'roles' => ['admin'],
             ],
             [

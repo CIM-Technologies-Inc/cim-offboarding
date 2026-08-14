@@ -13,6 +13,7 @@ use App\Notifications\OffboardingApprovalUpdated;
 use App\Services\ChecklistCompletionService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Notifications\DatabaseNotification;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Notification;
@@ -191,7 +192,15 @@ class ApprovalController extends Controller
                     'approveUrl' => route('approvals.approve', $assignment->id),
                     'assignUrl' => route('approvals.assign', $assignment->id),
                     'saveProgressUrl' => route('approvals.save-progress', $assignment->id),
-                    'timeline' => $request->timeline(),
+                    // The "Offboarding In Progress" step is omitted here —
+                    // this page is scoped to checklist approval activity, and
+                    // that step is redundant alongside the approve/decline
+                    // steps already shown. Left untouched in `timeline()`
+                    // itself since the Calendar page's timeline still uses it.
+                    'timeline' => collect($request->timeline())
+                        ->reject(fn ($step) => $step['label'] === 'Offboarding In Progress')
+                        ->values()
+                        ->all(),
                 ];
             })
             ->values();
@@ -234,6 +243,8 @@ class ApprovalController extends Controller
 
         $offboardingRequestApprover->update(['status' => 'approved', 'approved_at' => now()]);
 
+        $this->resolveOverdueNotifications($offboardingRequestApprover);
+
         $offboardingRequest = $offboardingRequestApprover->offboardingRequest;
 
         $this->recordActivityAndNotify($offboardingRequest, 'approved', null);
@@ -272,6 +283,11 @@ class ApprovalController extends Controller
         // A decline from any single department is a hard stop for the whole request.
         $offboardingRequest->update(['status' => 'cancelled']);
         $offboardingRequest->employee()->update(['status' => 'active']);
+
+        // Every other still-outstanding assignment on this request (if any)
+        // is now moot too, so any overdue notices tied to them no longer
+        // apply — not just the one that was just declined.
+        $this->resolveOverdueNotificationsForRequest($offboardingRequest);
 
         $this->recordActivityAndNotify($offboardingRequest, 'declined', $comment);
 
@@ -314,7 +330,14 @@ class ApprovalController extends Controller
             return back()->with('error', 'This approver has no valid email address on file.');
         }
 
-        [$subject, $body] = $emailTemplate->render($approverEmployee->name, $offboardee->name, auth()->user()->name);
+        [$subject, $body] = $emailTemplate->render(
+            $approverEmployee->name,
+            $offboardee->name,
+            auth()->user()->name,
+            $offboardee->employee_code,
+            $offboardingRequestApprover->checklistTemplate?->title,
+            $offboardingRequestApprover->due_at?->format('M d, Y'),
+        );
 
         try {
             Mail::to($approverEmployee->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
@@ -340,6 +363,42 @@ class ApprovalController extends Controller
 
             return back()->with('error', 'Failed to send the reminder email.');
         }
+    }
+
+    /**
+     * Marks any still-unread "checklist overdue" notifications tied to this
+     * assignment as read, now that it's been submitted/approved — they stop
+     * counting toward the bell's unread badge and stop showing as active.
+     * A no-op when the assignment was never actually overdue (or the
+     * notifications were already read), so this is always safe to call
+     * unconditionally from `approve()`.
+     */
+    private function resolveOverdueNotifications(OffboardingRequestApprover $offboardingRequestApprover): void
+    {
+        DatabaseNotification::where('type', 'checklist_overdue')
+            ->where('data->offboarding_request_approver_id', $offboardingRequestApprover->id)
+            ->whereNull('read_at')
+            ->update(['read_at' => now()]);
+    }
+
+    /**
+     * Same as `resolveOverdueNotifications()`, but for every assignment on
+     * the given request — used on decline, since cancelling the whole
+     * request makes every other still-outstanding assignment's overdue
+     * notice moot too, not just the one that was declined.
+     */
+    private function resolveOverdueNotificationsForRequest(OffboardingRequest $offboardingRequest): void
+    {
+        $assignmentIds = $offboardingRequest->approvers()->pluck('id');
+
+        if ($assignmentIds->isEmpty()) {
+            return;
+        }
+
+        DatabaseNotification::where('type', 'checklist_overdue')
+            ->whereIn('data->offboarding_request_approver_id', $assignmentIds)
+            ->whereNull('read_at')
+            ->update(['read_at' => now()]);
     }
 
     /**

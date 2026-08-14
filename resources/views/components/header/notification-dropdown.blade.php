@@ -92,6 +92,7 @@
             @forelse ($notifications as $notification)
                 @php
                     $isApproved = $notification->type === 'offboarding_approved';
+                    $isOverdue = $notification->type === 'checklist_overdue';
                     $isUnread = $notification->read_at === null;
                 @endphp
                 <li>
@@ -99,10 +100,16 @@
                         @csrf
                         <button type="submit"
                             class="flex w-full gap-3 rounded-lg border-b border-gray-100 p-3 px-4.5 py-3 text-left hover:bg-gray-100 dark:border-gray-800 dark:hover:bg-white/5">
-                            <span class="relative mt-1 block h-2.5 w-2.5 shrink-0 rounded-full {{ $isUnread ? ($isApproved ? 'bg-[#145a3a]' : 'bg-error-500') : 'bg-gray-300 dark:bg-gray-700' }}">
+                            <span class="relative mt-1 block h-2.5 w-2.5 shrink-0 rounded-full {{ $isUnread ? ($isApproved ? 'bg-[#145a3a]' : ($isOverdue ? 'bg-orange-500' : 'bg-error-500')) : 'bg-gray-300 dark:bg-gray-700' }}">
                             </span>
 
                             <span class="block min-w-0">
+                                @if ($isOverdue)
+                                    <span class="mb-1 block text-theme-sm font-medium text-orange-600 dark:text-orange-400">
+                                        Checklist Overdue
+                                    </span>
+                                @endif
+
                                 <span class="mb-1 block text-theme-sm text-gray-700 dark:text-gray-300">
                                     {{ $notification->data['message'] ?? 'Notification' }}
                                 </span>
@@ -110,6 +117,14 @@
                                 @if (! empty($notification->data['comment']))
                                     <span class="mb-1 block text-xs text-gray-500 dark:text-gray-400">
                                         Reason: {{ $notification->data['comment'] }}
+                                    </span>
+                                @endif
+
+                                @if ($isOverdue)
+                                    <span class="mb-1 block text-xs text-gray-500 dark:text-gray-400">
+                                        Employee No.: {{ $notification->data['offboardee_employee_code'] ?? '—' }}
+                                        &middot; Due: {{ $notification->data['due_at'] ?? '—' }}
+                                        &middot; Status: {{ $notification->data['status'] ?? 'Overdue' }}
                                     </span>
                                 @endif
 

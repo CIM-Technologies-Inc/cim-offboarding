@@ -47,12 +47,19 @@ class ChecklistApprovalNotifier
 
         $offboardingRequest->checklistTemplates()->syncWithoutDetaching($templates->pluck('id'));
 
+        // Keyed by department_head_id so the announcement email below can
+        // fill "{{checklist_name}}"/"{{due_date}}" for that specific head's
+        // template without a second query — a department head who's the
+        // head of several templates in this same batch gets whichever one
+        // was attached first.
+        $assignmentByDepartmentHead = [];
+
         foreach ($templates as $template) {
             if (! $template->department_head_id) {
                 continue;
             }
 
-            $offboardingRequest->approvers()->firstOrCreate(
+            $assignment = $offboardingRequest->approvers()->firstOrCreate(
                 ['checklist_template_id' => $template->id],
                 [
                     'employee_id' => $template->department_head_id,
@@ -61,6 +68,11 @@ class ChecklistApprovalNotifier
                     'due_at' => $template->due_in_days ? now()->addDays($template->due_in_days) : null,
                 ]
             );
+
+            $assignmentByDepartmentHead[$template->department_head_id] ??= [
+                'template' => $template,
+                'assignment' => $assignment,
+            ];
         }
 
         $this->notifyItemApprovers($offboardingRequest, $templates);
@@ -78,7 +90,16 @@ class ChecklistApprovalNotifier
                 continue;
             }
 
-            [$subject, $body] = $emailTemplate->render($approver->name, $offboardee->name, $creatorName);
+            $context = $assignmentByDepartmentHead[$approver->id] ?? null;
+
+            [$subject, $body] = $emailTemplate->render(
+                $approver->name,
+                $offboardee->name,
+                $creatorName,
+                $offboardee->employee_code,
+                $context['template']?->title,
+                $context['assignment']?->due_at?->format('M d, Y'),
+            );
 
             try {
                 Mail::to($approver->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));

@@ -141,11 +141,17 @@
                                         . '<p>HR</p>';
                                     }
                             @endphp
-                            <!-- <textarea name="html_content" id="templateBody" class="summernote" data-height="420">{{ $defaultBody }}</textarea> -->
-                            <textarea name="html_content" id="templateBody" class="w-full h-40"
-                                @dragover.prevent
-                                @drop.prevent="handleEmployeeDrop($event)">{{ $defaultBody }}</textarea>
-                            <p class="mt-1.5 text-xs text-gray-400">Tip: drag an employee's name from the list on the right and drop it onto "approver", "offboardee", or "employee" to replace it. Click Undo to remove all dragged names and restore the placeholders. You can also type <code>@{{offboarding_link}}</code> to insert a dynamic sign-in link.</p>
+                            <!-- Wrapper (not the textarea itself) carries the drop handler: Summernote
+                                 hides the raw textarea and injects its own editable area next to it, so a
+                                 handler bound to the textarea would never see the drop. -->
+                            <div @dragover.prevent @drop.prevent="handleEmployeeDrop($event)">
+                                <textarea name="html_content" id="templateBody" class="summernote" data-height="350">{{ $defaultBody }}</textarea>
+                            </div>
+                            <p class="mt-1.5 text-xs text-gray-400">
+                                Tip: drag an employee's name from the list on the right (or click Insert) to replace the nearest "approver", "offboardee", or "employee" placeholder. Click Undo to remove all dragged names and restore the placeholders.
+                                Available variables:
+                                <code>@{{approver_name}}</code>, <code>@{{employee_name}}</code>, <code>@{{employee_number}}</code>, <code>@{{checklist_name}}</code>, <code>@{{due_date}}</code>, <code>@{{offboarding_link}}</code>.
+                            </p>
                         </div>
                     </div>
 

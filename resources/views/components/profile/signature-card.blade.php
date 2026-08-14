@@ -26,7 +26,7 @@
                     <svg class="fill-current" width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
                         <path d="M9 3.75V14.25M3.75 9H14.25" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
                     </svg>
-                    {{ $user->signature_path ? 'Replace Signature' : 'Upload E-Signature' }}
+                    {{ $user->signature_path ? 'Update Signature' : 'Upload E-Signature' }}
                 </button>
 
                 @if ($user->signature_path)
@@ -66,7 +66,7 @@
         <div class="no-scrollbar relative w-full max-w-[560px] overflow-y-auto rounded-3xl bg-white p-4 dark:bg-gray-900 lg:p-11">
             <div class="px-2 pr-14">
                 <h4 class="mb-2 text-2xl font-semibold text-gray-800 dark:text-white/90">
-                    {{ $user->signature_path ? 'Replace Signature' : 'Upload E-Signature' }}
+                    {{ $user->signature_path ? 'Update Signature' : 'Upload E-Signature' }}
                 </h4>
                 <p class="mb-6 text-sm text-gray-500 dark:text-gray-400 lg:mb-7">
                     Upload a PNG or JPG image of your signature (max 2MB).

@@ -92,7 +92,7 @@
                                         </div>
 
                                         <div class="mt-2 space-y-1 text-xs text-gray-500 dark:text-gray-400">
-                                            <p>Assigned: <span x-text="step.assignedAt || '—'"></span></p>
+                                            <p>Date Assigned: <span x-text="step.assignedAt || '—'"></span></p>
                                             <template x-if="step.dueAt">
                                                 <p :class="step.isOverdue ? 'font-medium text-error-600 dark:text-error-400' : ''">
                                                     Due: <span x-text="step.dueAt"></span>

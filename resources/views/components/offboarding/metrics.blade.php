@@ -15,7 +15,7 @@
             'image' => '/images/user/total.png',
         ],
         [
-            'label' => 'Pending Offboa...',
+            'label' => 'Pending',
             'value' => $pendingCount,
             'icon' => '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/>',
             'image' => '/images/user/pending.png',
