@@ -17,8 +17,8 @@
 
 <x-ui.modal x-data="{ open: false }" @open-offboarding-request-modal.window="open = true"
     :isOpen="$offboardingRequestHasErrors"
-    class="max-w-[700px]">
-    <div class="no-scrollbar relative w-full max-w-[700px] overflow-y-auto rounded-3xl bg-white p-4 dark:bg-gray-900 lg:p-11">
+    class="max-w-[830px]">
+    <div class="no-scrollbar relative w-full max-w-[830px] overflow-y-auto rounded-3xl bg-white p-4 dark:bg-gray-900 lg:p-11">
         <div class="px-2 pr-14">
             <h4 class="mb-2 text-2xl font-semibold text-gray-800 dark:text-white/90">
                 New Offboarding Request

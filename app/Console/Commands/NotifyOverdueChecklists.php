@@ -2,10 +2,14 @@
 
 namespace App\Console\Commands;
 
+use App\Mail\ChecklistSignatoryAnnouncementMail;
+use App\Models\EmailTemplate;
 use App\Models\OffboardingRequestApprover;
 use App\Models\User;
 use App\Notifications\ChecklistOverdueNotification;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Notification;
 
 class NotifyOverdueChecklists extends Command
@@ -25,6 +29,15 @@ class NotifyOverdueChecklists extends Command
     protected $description = 'Notify admins and the responsible approvers when a checklist assignment passes its due date without being submitted/approved.';
 
     /**
+     * Email template used to email the Department Head when a checklist
+     * first goes overdue — same fixed-name lookup convention as
+     * `ApprovalController::OVERDUE_TEMPLATE` (kept as a separate constant
+     * here rather than shared, since a Command and a Controller have no
+     * natural common base to hold it).
+     */
+    private const OVERDUE_TEMPLATE = 'Offboarding Overdue Notice';
+
+    /**
      * Finds every still-outstanding checklist assignment whose due date has
      * passed and that hasn't been flagged overdue yet, and notifies:
      *   - every admin
@@ -39,6 +52,15 @@ class NotifyOverdueChecklists extends Command
      */
     public function handle(): int
     {
+        $emailTemplate = EmailTemplate::where('is_active', true)
+            ->where('template_name', self::OVERDUE_TEMPLATE)
+            ->latest('updated_at')
+            ->first();
+
+        if (! $emailTemplate) {
+            $this->warn('No "' . self::OVERDUE_TEMPLATE . '" email template found — Department Heads will only get the in-app notification, not an email.');
+        }
+
         $overdue = OffboardingRequestApprover::query()
             ->whereNotIn('status', ['approved', 'declined'])
             ->whereNotNull('due_at')
@@ -55,7 +77,7 @@ class NotifyOverdueChecklists extends Command
             ->get();
 
         foreach ($overdue as $assignment) {
-            $this->notifyForAssignment($assignment);
+            $this->notifyForAssignment($assignment, $emailTemplate);
         }
 
         $this->info("Notified {$overdue->count()} overdue checklist assignment(s).");
@@ -63,7 +85,7 @@ class NotifyOverdueChecklists extends Command
         return self::SUCCESS;
     }
 
-    private function notifyForAssignment(OffboardingRequestApprover $assignment): void
+    private function notifyForAssignment(OffboardingRequestApprover $assignment, ?EmailTemplate $emailTemplate): void
     {
         $recipients = collect();
 
@@ -100,6 +122,55 @@ class NotifyOverdueChecklists extends Command
 
         Notification::send($recipients, new ChecklistOverdueNotification($assignment));
 
+        $this->emailDepartmentHead($assignment, $emailTemplate);
+
         $assignment->update(['overdue_notified_at' => now()]);
+    }
+
+    /**
+     * Emails the Department Head (the assignment's primary approver) using
+     * the overdue-specific template — separate from the in-app
+     * `ChecklistOverdueNotification` above, which every recipient still
+     * gets regardless of whether this email succeeds/exists. Silently
+     * no-ops when no template is configured or the Department Head has no
+     * valid email, same tolerant pattern as the rest of this command (a
+     * missing email address never blocks the in-app notification).
+     */
+    private function emailDepartmentHead(OffboardingRequestApprover $assignment, ?EmailTemplate $emailTemplate): void
+    {
+        if (! $emailTemplate) {
+            return;
+        }
+
+        $departmentHead = $assignment->employee;
+
+        if (! $departmentHead || ! $departmentHead->email || ! filter_var($departmentHead->email, FILTER_VALIDATE_EMAIL)) {
+            return;
+        }
+
+        $offboardee = $assignment->offboardingRequest->employee;
+
+        [$subject, $body] = $emailTemplate->render(
+            approverName: $departmentHead->name,
+            offboardeeName: $offboardee->name,
+            employeeNumber: $offboardee->employee_code,
+            checklistName: $assignment->checklistTemplate?->title,
+            dueDate: $assignment->due_at?->format('M d, Y'),
+            department: $offboardee->department,
+            position: $offboardee->designation,
+            daysOverdue: (string) $assignment->daysOverdue(),
+            pendingItems: $assignment->itemsStatusTableHtml(),
+            checklistStatus: $assignment->clearanceStatusLabel(),
+        );
+
+        try {
+            Mail::to($departmentHead->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+        } catch (\Throwable $e) {
+            Log::error('Failed to send overdue checklist email.', [
+                'offboarding_request_approver_id' => $assignment->id,
+                'recipient' => $departmentHead->email,
+                'exception' => $e->getMessage(),
+            ]);
+        }
     }
 }

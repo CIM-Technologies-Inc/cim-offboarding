@@ -50,6 +50,7 @@ class OffboardingActivity extends Model
             'reminder_sent' => "Reminder Sent by {$actor}",
             'checklist_assigned' => "Checklist Assigned by {$actor}{$suffix}",
             'checklist_item_reassigned' => "Checklist Item Reassigned by {$actor}{$suffix}",
+            'checklist_item_auto_assigned' => 'Checklist Items Auto-Assigned to Group Members',
             'checklist_delegate_completed' => "Checklist Completed by {$actor}{$suffix} (Delegated Approver)",
             'checklist_item_cleared_by_other' => "Checklist Item Cleared by {$actor}{$suffix}",
             'checklist_item_held' => "Checklist Item Held by {$actor}{$suffix}",

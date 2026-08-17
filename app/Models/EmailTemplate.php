@@ -48,12 +48,14 @@ class EmailTemplate extends Model
      * available. Supports the recommended "{{approver_name}}" /
      * "{{employee_name}}" (alias of "{{offboardee_name}}") /
      * "{{employee_number}}" / "{{checklist_name}}" / "{{due_date}}" /
-     * "{{offboarding_link}}" tokens, plus the legacy bare-word / single-brace
-     * "approver" / "offboardee" / "employee" placeholders still used by the
-     * drag-and-drop email template editor. A placeholder with no value
-     * available at this call site (e.g. "{{due_date}}" when the caller has
-     * no specific assignment in scope) is simply replaced with an empty
-     * string, never left as a raw, unresolved token in the sent email.
+     * "{{offboarding_link}}" tokens, plus "{{department}}" / "{{position}}"
+     * / "{{days_overdue}}" / "{{pending_items}}" / "{{checklist_status}}"
+     * for the overdue-checklist notification, plus the legacy bare-word /
+     * single-brace "approver" / "offboardee" / "employee" placeholders still
+     * used by the drag-and-drop email template editor. A placeholder with no
+     * value available at this call site (e.g. "{{due_date}}" when the
+     * caller has no specific assignment in scope) is simply replaced with an
+     * empty string, never left as a raw, unresolved token in the sent email.
      *
      * @return array{0: string, 1: string} [subject, body]
      */
@@ -64,36 +66,65 @@ class EmailTemplate extends Model
         ?string $employeeNumber = null,
         ?string $checklistName = null,
         ?string $dueDate = null,
+        ?string $department = null,
+        ?string $position = null,
+        ?string $daysOverdue = null,
+        ?string $pendingItems = null,
+        ?string $checklistStatus = null,
     ): array {
+        $values = $this->placeholderValues(
+            $approverName, $offboardeeName, $creatorName, $employeeNumber, $checklistName,
+            $dueDate, $department, $position, $daysOverdue, $pendingItems, $checklistStatus,
+        );
+
         return [
-            $this->fillPlaceholders($this->subject, $approverName, $offboardeeName, $creatorName, $employeeNumber, $checklistName, $dueDate),
-            $this->fillPlaceholders($this->html_content ?? '', $approverName, $offboardeeName, $creatorName, $employeeNumber, $checklistName, $dueDate),
+            $this->fillPlaceholders($this->subject, $values),
+            $this->fillPlaceholders($this->html_content ?? '', $values),
         ];
     }
 
-    private function fillPlaceholders(
-        string $text,
+    /**
+     * @return array<string, string>
+     */
+    private function placeholderValues(
         string $approverName,
         string $offboardeeName,
         string $creatorName,
         ?string $employeeNumber,
         ?string $checklistName,
         ?string $dueDate,
-    ): string {
-        $values = [
+        ?string $department,
+        ?string $position,
+        ?string $daysOverdue,
+        ?string $pendingItems,
+        ?string $checklistStatus,
+    ): array {
+        return [
             'approver_name' => $approverName,
             'offboardee_name' => $offboardeeName,
             'employee_name' => $offboardeeName,
             'employee_number' => $employeeNumber ?? '',
             'checklist_name' => $checklistName ?? '',
             'due_date' => $dueDate ?? '',
+            'department' => $department ?? '',
+            'position' => $position ?? '',
+            'days_overdue' => $daysOverdue ?? '',
+            'pending_items' => $pendingItems ?? '',
+            'checklist_status' => $checklistStatus ?? '',
             'offboarding_link' => '<a href="' . route('login') . '">CIM Offboarding</a>',
             'approver' => $approverName,
             'offboardee' => $offboardeeName,
             'employee' => $creatorName,
         ];
+    }
 
-        $pattern = '/\{\{\s*(approver_name|offboardee_name|employee_name|employee_number|checklist_name|due_date|offboarding_link)\s*\}\}'
+    /**
+     * @param  array<string, string>  $values
+     */
+    private function fillPlaceholders(string $text, array $values): string
+    {
+        $pattern = '/\{\{\s*(approver_name|offboardee_name|employee_name|employee_number|checklist_name|due_date'
+            . '|department|position|days_overdue|pending_items|checklist_status|offboarding_link)\s*\}\}'
             . '|\{\s*(approver|offboardee|employee)\s*\}'
             . '|\b(approver|offboardee|employee)\b/i';
 

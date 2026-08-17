@@ -15,6 +15,7 @@ use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\ClearanceFormController;
 use App\Http\Controllers\DepartmentHeadController;
 use App\Http\Controllers\OnboardingChecklistTemplateController;
+use App\Http\Controllers\EmployeeGroupController;
 
 // authentication pages
 Route::get('/signin', [AuthController::class, 'create'])->name('login');
@@ -85,6 +86,14 @@ Route::get('/department-heads', [DepartmentHeadController::class, 'index'])->nam
 Route::post('/department-heads', [DepartmentHeadController::class, 'store'])->name('department-heads.store');
 Route::put('/department-heads/{departmentHead}', [DepartmentHeadController::class, 'update'])->name('department-heads.update');
 Route::delete('/department-heads/{departmentHead}', [DepartmentHeadController::class, 'destroy'])->name('department-heads.destroy');
+
+// employee master (groups + group heads + employee membership)
+Route::get('/employee-groups', [EmployeeGroupController::class, 'index'])->name('employee-groups.index');
+Route::post('/employee-groups', [EmployeeGroupController::class, 'store'])->name('employee-groups.store');
+Route::put('/employee-groups/{employeeGroup}', [EmployeeGroupController::class, 'update'])->name('employee-groups.update');
+Route::delete('/employee-groups/{employeeGroup}', [EmployeeGroupController::class, 'destroy'])->name('employee-groups.destroy');
+Route::post('/employee-groups/{employeeGroup}/employees', [EmployeeGroupController::class, 'addEmployee'])->name('employee-groups.employees.add');
+Route::delete('/employee-groups/{employeeGroup}/employees/{employee}', [EmployeeGroupController::class, 'removeEmployee'])->name('employee-groups.employees.remove');
 
 // offboardees
 Route::get('/offboardees', [OffboardeeController::class, 'index'])->name('offboardees.index');

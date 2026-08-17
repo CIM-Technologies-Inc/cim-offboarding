@@ -22,9 +22,16 @@ use Illuminate\View\View;
 class ApprovalController extends Controller
 {
     /**
-     * Email template used for the "Notify Approver" reminder.
+     * Email template used for the "Notify Approver" reminder while the
+     * checklist is still within its due date (or has no due date at all).
      */
     private const REMINDER_TEMPLATE = 'Offboarding Reminder';
+
+    /**
+     * Email template used instead, once the checklist has reached or passed
+     * its due date — see `remind()`.
+     */
+    private const OVERDUE_TEMPLATE = 'Offboarding Overdue Notice';
 
     public function index(): View
     {
@@ -298,8 +305,12 @@ class ApprovalController extends Controller
      * HR/Admin-only reminder for an approver who hasn't approved/declined
      * yet. Uses the existing email template mechanism (fixed-name lookup,
      * same convention as the initial announcement) rather than hard-coding
-     * the message. Authorized here explicitly (not just via route
-     * middleware), and every reminder is logged as its own timeline
+     * the message. Once the checklist has reached or passed its due date,
+     * `OVERDUE_TEMPLATE` is used instead of `REMINDER_TEMPLATE`, with the
+     * extra overdue-specific placeholders filled in — see
+     * `OffboardingRequestApprover::daysOverdue()`/`itemsStatusTableHtml()`/
+     * `clearanceStatusLabel()`. Authorized here explicitly (not just via
+     * route middleware), and every reminder is logged as its own timeline
      * activity — who sent it and who it went to — not just the inline
      * `reminder_sent_at` timestamp on the assignment.
      */
@@ -316,14 +327,16 @@ class ApprovalController extends Controller
         $offboardingRequest = $offboardingRequestApprover->offboardingRequest;
         $offboardee = $offboardingRequest->employee;
         $approverEmployee = $offboardingRequestApprover->employee;
+        $isOverdue = $offboardingRequestApprover->isOverdue();
+        $templateName = $isOverdue ? self::OVERDUE_TEMPLATE : self::REMINDER_TEMPLATE;
 
         $emailTemplate = EmailTemplate::where('is_active', true)
-            ->where('template_name', self::REMINDER_TEMPLATE)
+            ->where('template_name', $templateName)
             ->latest('updated_at')
             ->first();
 
         if (! $emailTemplate) {
-            return back()->with('error', 'No "' . self::REMINDER_TEMPLATE . '" email template found. Please create one first.');
+            return back()->with('error', 'No "' . $templateName . '" email template found. Please create one first.');
         }
 
         if (! $approverEmployee->email || ! filter_var($approverEmployee->email, FILTER_VALIDATE_EMAIL)) {
@@ -331,12 +344,17 @@ class ApprovalController extends Controller
         }
 
         [$subject, $body] = $emailTemplate->render(
-            $approverEmployee->name,
-            $offboardee->name,
-            auth()->user()->name,
-            $offboardee->employee_code,
-            $offboardingRequestApprover->checklistTemplate?->title,
-            $offboardingRequestApprover->due_at?->format('M d, Y'),
+            approverName: $approverEmployee->name,
+            offboardeeName: $offboardee->name,
+            creatorName: auth()->user()->name,
+            employeeNumber: $offboardee->employee_code,
+            checklistName: $offboardingRequestApprover->checklistTemplate?->title,
+            dueDate: $offboardingRequestApprover->due_at?->format('M d, Y'),
+            department: $offboardee->department,
+            position: $offboardee->designation,
+            daysOverdue: $isOverdue ? (string) $offboardingRequestApprover->daysOverdue() : null,
+            pendingItems: $isOverdue ? $offboardingRequestApprover->itemsStatusTableHtml() : null,
+            checklistStatus: $isOverdue ? $offboardingRequestApprover->clearanceStatusLabel() : null,
         );
 
         try {

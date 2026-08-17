@@ -178,4 +178,90 @@ class OffboardingRequestApprover extends Model
             && ! in_array($this->status, ['approved', 'declined'], true)
             && now()->greaterThan($this->due_at);
     }
+
+    /**
+     * This one checklist's current-state label for the Clearance Form's
+     * Remarks column — the per-checklist equivalent of
+     * `OffboardingRequest::displayStatus()`, since the form must show each
+     * department's real current standing even while the request overall is
+     * still pending/in progress, not just once everything is done.
+     */
+    public function clearanceStatusLabel(): string
+    {
+        if ($this->status === 'approved') {
+            return 'Cleared';
+        }
+
+        if ($this->status === 'declined') {
+            return 'Declined';
+        }
+
+        $this->loadMissing('itemProgress');
+
+        if ($this->itemProgress->contains(fn (ChecklistItemProgress $progress) => $progress->status === 'hold')) {
+            return 'Hold';
+        }
+
+        if ($this->isOverdue()) {
+            return 'Overdue';
+        }
+
+        if ($this->status !== 'pending' || $this->itemProgress->isNotEmpty()) {
+            return 'In Progress';
+        }
+
+        return 'Pending';
+    }
+
+    /**
+     * Whole days past this assignment's due date — 0 when not overdue (or
+     * no due date set). Feeds the overdue-checklist email's
+     * "{{days_overdue}}" placeholder.
+     */
+    public function daysOverdue(): int
+    {
+        return $this->isOverdue() ? (int) now()->diffInDays($this->due_at) : 0;
+    }
+
+    /**
+     * An HTML table of every checklist item with its current status (Done /
+     * Hold / Pending) and due date — feeds the overdue-checklist email's
+     * "{{pending_items}}" placeholder. Every item currently shares this
+     * assignment's single `due_at`, since per-item due dates don't exist in
+     * this schema (`checklist_items` has no due-date column of its own), so
+     * that shared value is shown as each row's "due date".
+     */
+    public function itemsStatusTableHtml(): string
+    {
+        $this->loadMissing('checklistTemplate.items', 'itemProgress');
+
+        if ($this->checklistTemplate->items->isEmpty()) {
+            return '<p>No individual checklist items.</p>';
+        }
+
+        $progress = $this->itemProgress->keyBy('checklist_item_id');
+        $dueDateLabel = $this->due_at?->format('M d, Y') ?? '—';
+
+        $rows = $this->checklistTemplate->items->map(function (ChecklistItem $item) use ($progress, $dueDateLabel) {
+            $itemProgress = $progress->get($item->id);
+            $status = $itemProgress?->status === 'hold'
+                ? 'Hold'
+                : ((bool) ($itemProgress?->is_checked ?? false) ? 'Done' : 'Pending');
+
+            return '<tr>'
+                .'<td style="padding:6px 10px;border:1px solid #e5e7eb;">'.e($item->title).'</td>'
+                .'<td style="padding:6px 10px;border:1px solid #e5e7eb;">'.e($dueDateLabel).'</td>'
+                .'<td style="padding:6px 10px;border:1px solid #e5e7eb;">'.e($status).'</td>'
+                .'</tr>';
+        })->implode('');
+
+        return '<table style="width:100%;border-collapse:collapse;font-size:13px;">'
+            .'<tr>'
+            .'<th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:left;background:#f3f4f6;">Checklist Item</th>'
+            .'<th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:left;background:#f3f4f6;">Due Date</th>'
+            .'<th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:left;background:#f3f4f6;">Status</th>'
+            .'</tr>'
+            .$rows
+            .'</table>';
+    }
 }

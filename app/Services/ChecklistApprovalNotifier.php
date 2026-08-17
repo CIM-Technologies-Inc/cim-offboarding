@@ -9,6 +9,7 @@ use App\Models\ChecklistItem;
 use App\Models\ChecklistTemplate;
 use App\Models\EmailTemplate;
 use App\Models\Employee;
+use App\Models\EmployeeGroup;
 use App\Models\OffboardingRequest;
 use App\Models\OffboardingRequestApprover;
 use App\Models\User;
@@ -53,6 +54,15 @@ class ChecklistApprovalNotifier
         // head of several templates in this same batch gets whichever one
         // was attached first.
         $assignmentByDepartmentHead = [];
+        $assignmentByTemplateId = [];
+
+        // Employee ids for whom `autoAssignGroupSignatories()` just created
+        // a brand-new login account below. By the time `notifyItemApprovers()`
+        // runs right after this loop, that account already exists — so its
+        // own "does this approver already have an account" check would
+        // otherwise wrongly treat it as pre-existing and never surface the
+        // new credentials. This set is how it's told the truth.
+        $newlyCreatedAccountEmployeeIds = [];
 
         foreach ($templates as $template) {
             if (! $template->department_head_id) {
@@ -73,9 +83,12 @@ class ChecklistApprovalNotifier
                 'template' => $template,
                 'assignment' => $assignment,
             ];
+            $assignmentByTemplateId[$template->id] = $assignment;
+
+            array_push($newlyCreatedAccountEmployeeIds, ...$this->autoAssignGroupSignatories($assignment, $template));
         }
 
-        $this->notifyItemApprovers($offboardingRequest, $templates);
+        $this->notifyItemApprovers($offboardingRequest, $templates, $assignmentByTemplateId, $newlyCreatedAccountEmployeeIds);
 
         if (! $emailTemplate) {
             return [];
@@ -131,8 +144,21 @@ class ChecklistApprovalNotifier
      * credentials, per spec.
      *
      * @param  Collection<int, ChecklistTemplate>  $templates
+     * @param  array<int, OffboardingRequestApprover>  $assignmentByTemplateId  This request's own assignment row for
+     *      each template, keyed by template id — consulted so a signatory
+     *      auto-assigned by `autoAssignGroupSignatories()` (a per-request
+     *      `ChecklistItemAssignment` override, not a change to the shared
+     *      template) is notified too, via the same `effectiveSignatoryFor()`
+     *      resolution the rest of the app already uses for this.
+     * @param  array<int, int>  $newlyCreatedAccountEmployeeIds  Employee ids whose login account was
+     *      just created moments ago by `autoAssignGroupSignatories()` — by
+     *      the time this method's own `User::firstWhere()` check runs,
+     *      that account already exists, so without this list a genuinely
+     *      brand-new account would be indistinguishable from one that
+     *      already existed before this whole attach operation began, and
+     *      its credentials would never make it into the email.
      */
-    private function notifyItemApprovers(OffboardingRequest $offboardingRequest, Collection $templates): void
+    private function notifyItemApprovers(OffboardingRequest $offboardingRequest, Collection $templates, array $assignmentByTemplateId = [], array $newlyCreatedAccountEmployeeIds = []): void
     {
         $offboardee = $offboardingRequest->employee;
 
@@ -141,15 +167,18 @@ class ChecklistApprovalNotifier
 
         foreach ($templates as $template) {
             $dueAt = $template->due_in_days ? now()->addDays($template->due_in_days)->format('M d, Y') : null;
+            $assignment = $assignmentByTemplateId[$template->id] ?? null;
 
             foreach ($template->items as $item) {
                 /** @var ChecklistItem $item */
-                if (! $item->signatory_id || $item->signatory_id === $template->department_head_id) {
+                $signatory = $assignment ? $assignment->effectiveSignatoryFor($item) : $item->signatory;
+
+                if (! $signatory || $signatory->id === $template->department_head_id) {
                     continue;
                 }
 
-                $byApprover[$item->signatory_id]['employee'] ??= $item->signatory;
-                $byApprover[$item->signatory_id]['items'][] = [
+                $byApprover[$signatory->id]['employee'] ??= $signatory;
+                $byApprover[$signatory->id]['items'][] = [
                     'checklistTitle' => $template->title,
                     'itemTitle' => $item->title,
                     'dueAt' => $dueAt,
@@ -166,11 +195,12 @@ class ChecklistApprovalNotifier
 
             $existingUser = User::firstWhere('username', $employee->employee_code);
             $user = $existingUser ?? User::findOrCreateApprover($employee);
+            $isNewAccount = $existingUser === null || in_array($employee->id, $newlyCreatedAccountEmployeeIds, true);
 
-            $credentials = $existingUser ? null : [
+            $credentials = $isNewAccount ? [
                 'username' => $employee->employee_code,
                 'password' => $employee->employee_code,
-            ];
+            ] : null;
 
             if (! $employee->email || ! filter_var($employee->email, FILTER_VALIDATE_EMAIL)) {
                 continue;
@@ -246,5 +276,106 @@ class ChecklistApprovalNotifier
                 'exception' => $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * Auto-populates this request's per-item signatories from the
+     * Department Head's own Employee Master group (Group Head -> Group
+     * Members) — the same `ChecklistItemAssignment` override mechanism the
+     * Department Head's manual "Assign To" reassignment already uses (see
+     * `ChecklistDelegationController::assignItem()`), just applied
+     * automatically at attach time instead of by hand. Never touches an
+     * item that already has an explicit signatory: either the template's
+     * own configured `signatory_id`, or an existing active per-request
+     * override (relevant if this template is re-attached, e.g. the Final
+     * Pay checklist path reusing `attachAndNotify()`), so it can never
+     * clobber a deliberate choice made at any layer. Distributes the
+     * remaining unassigned items round-robin across the group's *active*
+     * members, in stable employee-code order, so every member ends up
+     * responsible for a share of the items rather than all of them landing
+     * on one person. Does nothing (leaving the Department Head as the
+     * item's de-facto signatory, same as today) when the Department Head
+     * isn't registered as any group's Group Head, or that group currently
+     * has no active members — the required fallback.
+     *
+     * @return array<int, int> employee ids for whom a brand-new login account was just created
+     */
+    private function autoAssignGroupSignatories(OffboardingRequestApprover $assignment, ChecklistTemplate $template): array
+    {
+        if (! $template->department_head_id) {
+            return [];
+        }
+
+        $group = EmployeeGroup::where('group_head_employee_id', $template->department_head_id)->first();
+
+        if (! $group) {
+            return [];
+        }
+
+        $members = $group->employees()->where('status', 'active')->orderBy('employee_code')->get();
+
+        if ($members->isEmpty()) {
+            return [];
+        }
+
+        $assignment->loadMissing('itemAssignments');
+        $alreadyOverriddenItemIds = $assignment->itemAssignments->where('status', 'active')->pluck('checklist_item_id');
+
+        $template->loadMissing('items');
+        $unassignedItems = $template->items->reject(
+            fn (ChecklistItem $item) => $item->signatory_id || $alreadyOverriddenItemIds->contains($item->id)
+        )->values();
+
+        if ($unassignedItems->isEmpty()) {
+            return [];
+        }
+
+        $assignedTo = [];
+        $newlyCreatedAccountEmployeeIds = [];
+
+        foreach ($unassignedItems as $index => $item) {
+            $member = $members[$index % $members->count()];
+
+            if (! isset($assignedTo[$member->id])) {
+                $existingUser = User::firstWhere('username', $member->employee_code);
+
+                if (! $existingUser) {
+                    $newlyCreatedAccountEmployeeIds[] = $member->id;
+                }
+            }
+
+            $assignment->itemAssignments()->create([
+                'checklist_item_id' => $item->id,
+                'assigned_by_user_id' => null,
+                'assigned_employee_id' => $member->id,
+                'assigned_user_id' => User::findOrCreateApprover($member)->id,
+                'status' => 'active',
+                'assigned_at' => now(),
+            ]);
+
+            $assignedTo[$member->id] ??= $member;
+        }
+
+        // Bust the `itemAssignments` relation cache populated by the
+        // `loadMissing()` above — it was cached empty before these rows
+        // existed, and `effectiveSignatoryFor()` (called right after this,
+        // by `notifyItemApprovers()`) uses `loadMissing()` too, so without
+        // this refresh it would silently keep seeing the stale, pre-create
+        // snapshot and never notify anyone.
+        $assignment->load('itemAssignments.assignedEmployee');
+
+        $assignment->offboardingRequest->activities()->create([
+            'offboarding_request_approver_id' => $assignment->id,
+            'action' => 'checklist_item_auto_assigned',
+            'status' => $assignment->offboardingRequest->status,
+            'comment' => sprintf(
+                '"%s" items automatically assigned to %s\'s group members: %s.',
+                $template->title,
+                $template->departmentHead?->name ?? 'the Department Head',
+                collect($assignedTo)->map(fn (Employee $e) => "{$e->employee_code} - {$e->name}")->implode(', ')
+            ),
+        ]);
+
+        return $newlyCreatedAccountEmployeeIds;
     }
 }

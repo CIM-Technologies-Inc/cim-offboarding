@@ -52,10 +52,17 @@ class OffboardeeController extends Controller
             'lastWorkingDay' => $employee->latestOffboardingRequest?->last_working_day?->format('M d, Y'),
             'checklistTemplates' => $employee->latestOffboardingRequest?->checklistTemplates->pluck('title')->all() ?? [],
             'timeline' => $employee->latestOffboardingRequest?->approverActivityTimeline() ?? [],
-            'clearanceFormUrl' => $employee->latestOffboardingRequest && $employee->latestOffboardingRequest->status === 'completed'
+            // URLs are generated whenever a request exists, regardless of its
+            // status — admins see the Clearance buttons unconditionally (see
+            // the status-timeline-modal component), while everyone else stays
+            // gated to a completed request by that same component's
+            // `x-if`. `ClearanceFormController` still independently enforces
+            // "completed only" server-side, so a non-admin can never actually
+            // generate the document early even if this URL were exposed to them.
+            'clearanceFormUrl' => $employee->latestOffboardingRequest
                 ? route('clearance-form.pdf', $employee->latestOffboardingRequest)
                 : null,
-            'printClearanceFormUrl' => $employee->latestOffboardingRequest && $employee->latestOffboardingRequest->status === 'completed'
+            'printClearanceFormUrl' => $employee->latestOffboardingRequest
                 ? route('clearance-form.print', $employee->latestOffboardingRequest)
                 : null,
         ];

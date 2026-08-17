@@ -44,23 +44,18 @@ class ClearanceFormController extends Controller
     }
 
     /**
-     * Gathers everything the clearance form template needs. Only reachable
-     * once the offboarding process is genuinely, fully completed — which
-     * already guarantees every checklist template attached to this request
-     * has been approved by its assigned department head (see
-     * `ApprovalController::checkRegularChecklistsCompletion()` /
-     * `checkFinalPayCompletion()`), so every row below reflects a real
-     * approval, never a fabricated one.
+     * Gathers everything the clearance form template needs. Available at
+     * any point in the offboarding process — pending, in progress, on hold,
+     * overdue, or completed — since the form exists precisely so Admin/HR
+     * can track live progress, not only inspect a finished result. Each
+     * row's signature/date/remarks reflect that checklist's own real,
+     * current state (`OffboardingRequestApprover::clearanceStatusLabel()`),
+     * never a fabricated "cleared" — a signature only ever appears once
+     * that department head has genuinely approved.
      */
     private function buildData(OffboardingRequest $offboardingRequest): array
     {
-        abort_unless(
-            $offboardingRequest->status === 'completed',
-            403,
-            'The clearance form is only available once the offboarding process is fully completed.'
-        );
-
-        $offboardingRequest->loadMissing(['employee', 'checklistTemplates', 'approvers.employee.user']);
+        $offboardingRequest->loadMissing(['employee', 'checklistTemplates', 'approvers.employee.user', 'approvers.itemProgress']);
 
         $employee = $offboardingRequest->employee;
 
@@ -70,13 +65,14 @@ class ClearanceFormController extends Controller
                 $approver = $offboardingRequest->approvers->firstWhere('checklist_template_id', $template->id);
                 $signatoryEmployee = $approver?->employee;
                 $signatureUser = $signatoryEmployee?->user;
+                $isApproved = $approver?->status === 'approved';
 
                 return [
                     'department' => $signatoryEmployee?->department ?? $template->department ?? '—',
                     'signatory' => $signatoryEmployee?->name ?? '—',
-                    'signatureDataUri' => $this->signatureDataUri($signatureUser?->signature_path),
-                    'date' => $approver?->approved_at?->format('M d, Y'),
-                    'remarks' => $approver?->status === 'approved' ? 'Cleared' : '',
+                    'signatureDataUri' => $isApproved ? $this->signatureDataUri($signatureUser?->signature_path) : null,
+                    'date' => $isApproved ? $approver?->approved_at?->format('M d, Y') : null,
+                    'remarks' => $approver?->clearanceStatusLabel() ?? 'Not Assigned',
                 ];
             })
             ->values();

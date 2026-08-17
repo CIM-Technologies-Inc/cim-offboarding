@@ -151,6 +151,8 @@
                                 Tip: drag an employee's name from the list on the right (or click Insert) to replace the nearest "approver", "offboardee", or "employee" placeholder. Click Undo to remove all dragged names and restore the placeholders.
                                 Available variables:
                                 <code>@{{approver_name}}</code>, <code>@{{employee_name}}</code>, <code>@{{employee_number}}</code>, <code>@{{checklist_name}}</code>, <code>@{{due_date}}</code>, <code>@{{offboarding_link}}</code>.
+                                For an overdue-checklist template, also available:
+                                <code>@{{department}}</code>, <code>@{{position}}</code>, <code>@{{days_overdue}}</code>, <code>@{{checklist_status}}</code>, <code>@{{pending_items}}</code> (a table of each checklist item's status and due date).
                             </p>
                         </div>
                     </div>

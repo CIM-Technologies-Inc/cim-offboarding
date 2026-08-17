@@ -34,6 +34,12 @@ class MenuHelper
                 'roles' => ['admin'],
             ],
             [
+                'icon' => 'tables',
+                'name' => 'Employee Master',
+                'path' => '/employee-groups',
+                'roles' => ['admin'],
+            ],
+            [
                 'icon' => 'approval',
                 'name' => 'Approval',
                 'path' => '/approvals',

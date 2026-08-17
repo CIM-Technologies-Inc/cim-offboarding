@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 
@@ -34,6 +35,7 @@ class Employee extends Model
         'name',
         'email',
         'department',
+        'employee_group_id',
         'designation',
         'date_of_joining',
         'status',
@@ -62,14 +64,26 @@ class Employee extends Model
     }
 
     /**
-     * The registered head of this employee's own department (per the
-     * standalone `department_heads` registry, independent of any specific
-     * checklist template) — or null if that department has no registered
-     * head yet.
+     * The Employee Master group this employee has been explicitly assigned
+     * to, if any — a separate, admin-curated membership list independent of
+     * the free-text `department` column (see `EmployeeGroup`).
+     */
+    public function employeeGroup(): BelongsTo
+    {
+        return $this->belongsTo(EmployeeGroup::class);
+    }
+
+    /**
+     * The department head/group head actually responsible for this
+     * employee. Prefers the Employee Master group's own Group Head, since
+     * that's an explicit, admin-curated assignment; falls back to the
+     * older standalone `department_heads` registry (keyed by the raw
+     * `department` string) for any employee not yet placed in a group —
+     * or null if neither has anything registered yet.
      */
     public function departmentHead(): ?Employee
     {
-        return DepartmentHead::headFor($this->department);
+        return $this->employeeGroup?->groupHead ?? DepartmentHead::headFor($this->department);
     }
 
     /**

@@ -1,6 +1,6 @@
 @props(['initial' => null])
 
-<div x-data="{ selected: @js($initial), csrfToken: document.querySelector('meta[name=csrf-token]').content }" @open-offboardee-modal.window="selected = $event.detail">
+<div x-data="{ selected: @js($initial), csrfToken: document.querySelector('meta[name=csrf-token]').content, isAdmin: @js(auth()->user()?->isAdmin() ?? false) }" @open-offboardee-modal.window="selected = $event.detail">
     <x-ui.modal x-data="{ open: false }" @open-offboardee-modal.window="open = true" :isOpen="$initial !== null" class="max-w-[600px]">
         <div class="relative flex max-h-[85vh] w-full max-w-[600px] flex-col rounded-3xl bg-white dark:bg-gray-900" x-show="selected" x-cloak>
             <template x-if="selected">
@@ -169,7 +169,7 @@
                     <!-- Pinned footer: Generate/Print/Close stay visible regardless of scroll position -->
                     <div class="shrink-0 border-t border-gray-100 p-6 dark:border-gray-800 lg:px-8 lg:py-6">
                     <div class="flex flex-wrap items-center justify-end gap-3">
-                        <template x-if="selected.status === 'completed' && selected.clearanceFormUrl">
+                        <template x-if="(isAdmin || selected.status === 'completed') && selected.clearanceFormUrl">
                             <a :href="selected.clearanceFormUrl" target="_blank" rel="noopener"
                                 class="flex items-center justify-center gap-1.5 rounded-lg border border-gray-300 px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
                                 <svg width="16" height="16" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -178,7 +178,7 @@
                                 Generate Clearance Form
                             </a>
                         </template>
-                        <template x-if="selected.status === 'completed' && selected.printClearanceFormUrl">
+                        <template x-if="(isAdmin || selected.status === 'completed') && selected.printClearanceFormUrl">
                             <a :href="selected.printClearanceFormUrl" target="_blank" rel="noopener"
                                 class="flex items-center justify-center gap-1.5 rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white hover:bg-[#0f4630]">
                                 <svg width="16" height="16" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">

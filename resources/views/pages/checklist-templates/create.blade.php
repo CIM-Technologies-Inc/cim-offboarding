@@ -3,7 +3,7 @@
 @section('content')
     <x-common.page-breadcrumb pageTitle="New Checklist Template" />
 
-    <div x-data="checklistBuilder(@js(old('title', '')), @js(old('department_head_id', '')), @js(old('department', '')), @js(old('due_in_days', '')), @js(old('items', [['title' => '', 'signatory_id' => '']])), @js($employees->map(fn ($employee) => ['id' => (string) $employee->id, 'name' => $employee->name, 'department' => $employee->department])), @js($errors->any() ? $errors->first() : null))"
+    <div x-data="checklistBuilder(@js(old('title', '')), @js(old('department_head_id', '')), @js(old('department', '')), @js(old('due_in_days', '')), @js(old('items', [['title' => '', 'signatory_id' => '']])), @js($employees->map(fn ($employee) => ['id' => (string) $employee->id, 'name' => $employee->name, 'department' => $employee->department])), @js($employeeGroups), @js($errors->any() ? $errors->first() : null))"
         class="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-white/[0.03] lg:p-6">
         <form method="POST" action="{{ route('checklist-templates.store') }}" class="flex flex-col">
             @csrf
@@ -28,8 +28,13 @@
                     @endforeach
                 </select>
                 <p class="mt-1.5 text-xs text-gray-400">
-                    This department head has decline authority over the whole checklist. Each item below can have its own independent approver — if any item's approver differs from the department head, the checklist auto-approves once every item is checked, with no manual approval step.
+                    This department head has decline authority over the whole checklist and is always the final approver. Each item below can have its own independent approver — if any item's approver differs from the department head, the checklist auto-approves once every item is checked, with no manual approval step.
                 </p>
+                <template x-if="currentGroupName()">
+                    <p class="mt-1.5 text-xs font-medium text-[#145a3a] dark:text-[#3aa876]">
+                        Signatories below are automatically restricted to <span x-text="currentGroupName()"></span>'s group members (Employee Master).
+                    </p>
+                </template>
             </div>
 
             <div class="mt-5">
@@ -151,13 +156,14 @@
     </div>
 
     <script>
-        function checklistBuilder(initialTitle, initialDepartmentHeadId, initialDepartment, initialDueInDays, initialItems, employees, flashError = null) {
+        function checklistBuilder(initialTitle, initialDepartmentHeadId, initialDepartment, initialDueInDays, initialItems, employees, employeeGroups, flashError = null) {
             return {
                 title: initialTitle,
                 departmentHeadId: initialDepartmentHeadId,
                 department: initialDepartment,
                 dueInDays: initialDueInDays,
                 employees: employees,
+                employeeGroups: employeeGroups,
                 items: [],
                 init() {
                     const source = initialItems.length ? initialItems : [{ title: '', signatory_id: '' }];
@@ -184,12 +190,31 @@
                     const employee = this.employees.find((e) => e.id === String(id));
                     return employee ? employee.name : '';
                 },
-                filteredEmployees(query) {
-                    if (!query) {
+                currentGroup() {
+                    if (!this.departmentHeadId) {
+                        return null;
+                    }
+                    return this.employeeGroups.find((g) => String(g.headId) === String(this.departmentHeadId)) || null;
+                },
+                currentGroupName() {
+                    return this.currentGroup()?.name || '';
+                },
+                eligibleEmployees() {
+                    const group = this.currentGroup();
+                    if (!group) {
                         return this.employees;
                     }
+                    const memberIds = group.employeeIds.map((id) => String(id));
+                    memberIds.push(String(this.departmentHeadId));
+                    return this.employees.filter((e) => memberIds.includes(e.id));
+                },
+                filteredEmployees(query) {
+                    const pool = this.eligibleEmployees();
+                    if (!query) {
+                        return pool;
+                    }
                     const needle = query.toLowerCase();
-                    return this.employees.filter((e) =>
+                    return pool.filter((e) =>
                         e.name.toLowerCase().includes(needle) || e.department.toLowerCase().includes(needle)
                     );
                 },
