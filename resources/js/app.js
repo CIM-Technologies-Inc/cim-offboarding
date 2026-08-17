@@ -16,6 +16,8 @@ import { emailWorkspace } from './components/email-workspace';
 import { offboardingRequestForm } from './components/offboarding-request';
 // Generic flash-message toast (session success / validation error) shared across pages
 import { flashToast } from './components/flash-toast';
+// 10-minute inactivity auto-logout, active on every authenticated page
+import { initInactivityMonitor } from './components/inactivity-monitor';
 
 
 
@@ -29,6 +31,12 @@ window.offboardingRequestForm = offboardingRequestForm;
 window.flashToast = flashToast;
 
 Alpine.start();
+
+// Initialized once for the whole browser tab's lifetime — NOT inside the
+// turbo:load handler below, since Turbo Drive keeps this JS realm alive
+// across navigations and re-running it per page would stack up duplicate
+// listeners/intervals. See inactivity-monitor.js for the full design.
+initInactivityMonitor();
 
 // Initialize page-specific components. Runs on the very first page load
 // and again after every Turbo-driven navigation (Turbo swaps the <body>

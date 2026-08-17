@@ -95,6 +95,8 @@
 </head>
 
 <body
+    data-inactivity-monitor="1"
+    data-session-marker="{{ session()->getId() }}"
     x-data="{}"
     x-init="$store.sidebar.isExpanded = window.innerWidth >= 1280;
     const checkMobile = () => {

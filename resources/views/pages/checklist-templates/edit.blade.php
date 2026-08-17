@@ -29,7 +29,7 @@
                     @endforeach
                 </select>
                 <p class="mt-1.5 text-xs text-gray-400">
-                    This department head has decline authority over the whole checklist and is always the final approver. Each item below can have its own independent approver — if any item's approver differs from the department head, the checklist auto-approves once every item is checked, with no manual approval step.
+                    This department head has the authority over the whole checklist and is always the final approver. Each item below can have its own independent approver — if any item's approver differs from the department head, the checklist auto-approves once every item is checked, with no manual approval step.
                 </p>
                 <template x-if="currentGroupName()">
                     <p class="mt-1.5 text-xs font-medium text-[#145a3a] dark:text-[#3aa876]">
