@@ -1,7 +1,7 @@
 @extends('layouts.app')
 
 @section('content')
-  <div class="mb-4 flex items-center justify-end md:mb-6">
+  <div x-data="flashToast(@js(session('success')))" class="mb-4 flex items-center justify-end md:mb-6">
     <x-offboarding.new-request-modal :employees="$employeesNotOffboarded" />
   </div>
 

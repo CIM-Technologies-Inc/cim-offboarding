@@ -29,6 +29,7 @@ class User extends Authenticatable
         'department',
         'address',
         'signature_path',
+        'must_change_password',
     ];
 
     public const ROLE_ADMIN = 'admin';
@@ -67,7 +68,10 @@ class User extends Authenticatable
     /**
      * Finds the existing approver account for this employee, or creates one
      * using the established convention: username = password = employee_code.
-     * Never promotes/downgrades an existing account's role.
+     * Never promotes/downgrades an existing account's role. A freshly
+     * created account is flagged `must_change_password` immediately (not
+     * left to be detected only on their first login) since password ===
+     * username is true by construction here.
      */
     public static function findOrCreateApprover(Employee $employee): self
     {
@@ -77,6 +81,7 @@ class User extends Authenticatable
             'password' => $employee->employee_code,
             'role' => self::ROLE_APPROVER,
             'email' => $employee->email,
+            'must_change_password' => true,
         ]);
     }
 
@@ -100,6 +105,7 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
+            'must_change_password' => 'boolean',
         ];
     }
 

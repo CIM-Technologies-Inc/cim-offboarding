@@ -10,6 +10,7 @@ use App\Models\Employee;
 use App\Models\OffboardingRequestApprover;
 use App\Models\User;
 use App\Services\ChecklistCompletionService;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -158,6 +159,120 @@ class ChecklistDelegationController extends Controller
         $this->notifyReassignedApprover($offboardingRequestApprover, $checklistItem, $newEmployee, $existingUser === null);
 
         return back()->with('success', "\"{$checklistItem->title}\" reassigned to {$newEmployee->name}.");
+    }
+
+    /**
+     * A peer item-approver voluntarily accepts responsibility for a
+     * different, not-yet-checked item on the same assignment — "Check This
+     * List" on the Approvals page. Unlike `assignItem()` (Department
+     * Head/admin reassigning someone ELSE), the acting user here claims the
+     * item for THEMSELVES, so this only records a real
+     * `ChecklistItemAssignment` override (exactly like `assignItem()`'s
+     * effect, just self-targeted) — it deliberately never touches
+     * `ChecklistItemProgress`/`is_checked`. Accepting the item must only
+     * make it editable for its new signatory (checkbox/remark/Hold/Done all
+     * unlock via `effectiveSignatoryFor()` once this row exists); the item
+     * stays unchecked until the approver explicitly checks it and clicks
+     * Done, or places it on Hold, themselves.
+     */
+    public function takeOverItem(Request $request, OffboardingRequestApprover $offboardingRequestApprover, ChecklistItem $checklistItem): JsonResponse
+    {
+        abort_unless($checklistItem->checklist_template_id === $offboardingRequestApprover->checklist_template_id, 404);
+
+        abort_unless(
+            in_array($offboardingRequestApprover->status, ['pending', 'viewed'], true),
+            422,
+            'This checklist has already been actioned.'
+        );
+
+        $itemScope = $this->authorizeItemAction($offboardingRequestApprover);
+
+        // A bare item-approver's scope is their own item(s) plus every OTHER
+        // not-yet-checked/held item on this assignment (see
+        // `authorizeItemAction()`) — exactly the "Check This List" pool.
+        // `null` (admin/primary approver/delegate) already has unrestricted
+        // access to every item directly, so this endpoint is a no-op
+        // authorization-wise for them.
+        abort_if($itemScope !== null && ! in_array($checklistItem->id, $itemScope, true), 403);
+
+        $existingProgress = $offboardingRequestApprover->itemProgress()
+            ->where('checklist_item_id', $checklistItem->id)
+            ->first();
+
+        abort_if((bool) $existingProgress?->is_checked, 422, 'This checklist item has already been completed.');
+        abort_if($existingProgress?->status === 'hold', 422, 'This checklist item is on Hold and can only be resolved by its assigned approver.');
+
+        $employee = auth()->user()->employee;
+
+        abort_if($employee === null, 403);
+
+        $previousEmployee = $offboardingRequestApprover->effectiveSignatoryFor($checklistItem);
+
+        if ($previousEmployee?->id === $employee->id) {
+            // Already the effective signatory (e.g. a repeat click) — nothing to do,
+            // but still return the current state so the UI can settle correctly.
+            return $this->takeOverItemResponse($offboardingRequestApprover, $checklistItem, $employee);
+        }
+
+        DB::transaction(function () use ($offboardingRequestApprover, $checklistItem, $employee, $previousEmployee) {
+            $offboardingRequestApprover->itemAssignments()
+                ->where('checklist_item_id', $checklistItem->id)
+                ->where('status', 'active')
+                ->update(['status' => 'superseded', 'superseded_at' => now()]);
+
+            $offboardingRequestApprover->itemAssignments()->create([
+                'checklist_item_id' => $checklistItem->id,
+                'assigned_by_user_id' => auth()->id(),
+                'assigned_employee_id' => $employee->id,
+                'assigned_user_id' => auth()->id(),
+                'status' => 'active',
+                'assigned_at' => now(),
+            ]);
+
+            $offboardingRequestApprover->offboardingRequest->activities()->create([
+                'user_id' => auth()->id(),
+                'offboarding_request_approver_id' => $offboardingRequestApprover->id,
+                'action' => 'checklist_item_reassigned',
+                'status' => $offboardingRequestApprover->offboardingRequest->status,
+                'comment' => "\"{$checklistItem->title}\" accepted by {$employee->employee_code} - {$employee->name}"
+                    . ($previousEmployee ? " (previously {$previousEmployee->employee_code} - {$previousEmployee->name})." : ' (previously unassigned).'),
+            ]);
+        });
+
+        return $this->takeOverItemResponse($offboardingRequestApprover, $checklistItem, $employee);
+    }
+
+    /**
+     * The JSON payload `takeOverItem()` returns on success — everything the
+     * Approvals page's checklist modal needs to patch this one item (and the
+     * whole assignment's per-item-approver/completion flags) into its live
+     * Alpine state in place, so "Check This List" can unlock Hold/Done
+     * immediately without a page reload. Mirrors exactly the same field
+     * shape/derivation `ApprovalController::index()` uses when building the
+     * initial `checklistItems` array, so the reactive item stays consistent
+     * with what a fresh page load would have shown.
+     */
+    private function takeOverItemResponse(OffboardingRequestApprover $offboardingRequestApprover, ChecklistItem $checklistItem, Employee $employee): JsonResponse
+    {
+        $offboardingRequestApprover->load(['checklistTemplate.items', 'itemAssignments.assignedEmployee', 'itemProgress']);
+
+        $isReassigned = $employee->id !== $checklistItem->signatory_id;
+
+        return response()->json([
+            'item' => [
+                'id' => $checklistItem->id,
+                'approverName' => $employee->name,
+                'approverCode' => $employee->employee_code,
+                'originalApproverName' => $isReassigned ? $checklistItem->signatory?->name : null,
+                'originalApproverCode' => $isReassigned ? $checklistItem->signatory?->employee_code : null,
+                'isReassigned' => $isReassigned,
+                'editable' => true,
+                'isOwnItem' => true,
+                'canTakeOver' => false,
+            ],
+            'usesPerItemApprovers' => $offboardingRequestApprover->usesPerItemApprovers(),
+            'allItemsCompleted' => $offboardingRequestApprover->allItemsCompleted(),
+        ]);
     }
 
     /**

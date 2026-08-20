@@ -1,7 +1,12 @@
 @extends('layouts.fullscreen-layout')
 
+@php
+    $forgotPasswordHasErrors = $errors->has('email');
+@endphp
+
 @section('content')
-    <div class="relative z-1 bg-white p-6 sm:p-0 dark:bg-gray-900">
+    <div class="relative z-1 bg-white p-6 sm:p-0 dark:bg-gray-900"
+        x-data="Object.assign(flashToast(@js(session('success')), @js($forgotPasswordHasErrors ? $errors->first('email') : null)), { signingIn: false })">
         <div class="relative flex h-screen w-full flex-col justify-center sm:p-0 lg:flex-row dark:bg-gray-900">
             <!-- Form -->
             <div class="flex w-full flex-1 flex-col lg:w-1/2">
@@ -30,7 +35,7 @@
                                     {{ $errors->first() }}
                                 </div>
                             @endif
-                            <form method="POST" action="{{ route('login.store') }}">
+                            <form method="POST" action="{{ route('login.store') }}" @submit="signingIn = true">
                                 @csrf
                                 <div class="space-y-5">
                                     <!-- Username -->
@@ -84,15 +89,17 @@
                                                 Keep me logged in
                                             </label>
                                         </div>
-                                        <a href="/reset-password" class="text-brand-500 hover:text-brand-600 dark:text-brand-400 text-sm">
+                                        <button type="button" @click="$dispatch('open-forgot-password-modal')"
+                                            class="text-brand-500 hover:text-brand-600 dark:text-brand-400 text-sm">
                                             Forgot password?
-                                        </a>
+                                        </button>
                                     </div>
                                     <!-- Button -->
                                     <div>
-                                        <button type="submit"
-                                            class="bg-[#145a3a] shadow-theme-xs hover:bg-[#0f4630] flex w-full items-center justify-center rounded-lg px-4 py-3 text-sm font-medium text-white transition">
-                                            Sign In
+                                        <button type="submit" :disabled="signingIn"
+                                            class="bg-[#145a3a] shadow-theme-xs hover:bg-[#0f4630] flex w-full items-center justify-center gap-2 rounded-lg px-4 py-3 text-sm font-medium text-white transition disabled:cursor-not-allowed disabled:opacity-70">
+                                            <span x-show="signingIn" class="h-4 w-4 animate-spin rounded-full border-2 border-solid border-white border-t-transparent"></span>
+                                            <span x-text="signingIn ? 'Signing In...' : 'Sign In'"></span>
                                         </button>
                                     </div>
                                 </div>
@@ -129,5 +136,43 @@
                 </button>
             </div>
         </div>
+
+        <!-- FORGOT PASSWORD MODAL -->
+        <x-ui.modal x-data="{ open: false }" @open-forgot-password-modal.window="open = true" :isOpen="$forgotPasswordHasErrors" class="max-w-[40vw]">
+            <div class="no-scrollbar relative w-full max-w-[40vw] overflow-y-auto rounded-3xl bg-white p-6 dark:bg-gray-900 lg:p-8" x-cloak>
+                <h4 class="mb-1 text-xl font-semibold text-gray-800 dark:text-white/90">
+                    Forgot Password
+                </h4>
+                <p class="mb-5 text-sm text-gray-500 dark:text-gray-400">
+                    Enter the email address on your account and we'll send you a link to reset your password.
+                </p>
+
+                @if ($forgotPasswordHasErrors)
+                    <div class="mb-5 rounded-lg border border-error-500 bg-error-50 px-4 py-3 text-sm text-error-600 dark:border-error-500/30 dark:bg-error-500/10 dark:text-error-400">
+                        {{ $errors->first('email') }}
+                    </div>
+                @endif
+
+                <form method="POST" action="{{ route('password.email') }}">
+                    @csrf
+                    <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                        Email Address<span class="text-error-500">*</span>
+                    </label>
+                    <input type="email" name="email" value="{{ old('email') }}" required autofocus placeholder="Enter your email address"
+                        class="dark:bg-dark-900 shadow-theme-xs focus:border-brand-300 focus:ring-brand-500/10 dark:focus:border-brand-800 h-11 w-full rounded-lg border border-gray-300 bg-transparent px-4 py-2.5 text-sm text-gray-800 placeholder:text-gray-400 focus:ring-3 focus:outline-hidden dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30" />
+
+                    <div class="mt-7 flex items-center gap-3 lg:justify-end">
+                        <button @click="open = false" type="button"
+                            class="flex w-full justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03] sm:w-auto">
+                            Cancel
+                        </button>
+                        <button type="submit"
+                            class="bg-[#145a3a] shadow-theme-xs hover:bg-[#0f4630] flex w-full justify-center rounded-lg px-4 py-2.5 text-sm font-medium text-white sm:w-auto">
+                            Send Reset Link
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </x-ui.modal>
     </div>
 @endsection

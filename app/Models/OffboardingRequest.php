@@ -17,11 +17,11 @@ class OffboardingRequest extends Model
 
     protected $fillable = [
         'employee_id',
+        'immediate_head_id',
         'reason',
         'resignation_type',
         'notice_date',
         'last_working_day',
-        'notice_period',
         'approval_mode',
         'email_template_id',
         'status',
@@ -43,6 +43,16 @@ class OffboardingRequest extends Model
     public function employee(): BelongsTo
     {
         return $this->belongsTo(Employee::class);
+    }
+
+    /**
+     * The offboardee's immediate head, selected on the New Offboarding
+     * Request form — treated as an additional authorized signatory on the
+     * Clearance Form, independent of the checklist approval workflow.
+     */
+    public function immediateHead(): BelongsTo
+    {
+        return $this->belongsTo(Employee::class, 'immediate_head_id');
     }
 
     public function emailTemplate(): BelongsTo
@@ -292,6 +302,26 @@ class OffboardingRequest extends Model
             ->groupBy('offboarding_request_approver_id');
 
         $buildRichStep = function (OffboardingRequestApprover $assignment) use ($remindersByAssignment, $delegationEventsByAssignment): array {
+            $assignment->loadMissing('checklistTemplate.items', 'itemProgress');
+            $progressByItem = $assignment->itemProgress->keyBy('checklist_item_id');
+
+            $checklistItems = $assignment->checklistTemplate?->items
+                ->map(function (ChecklistItem $item) use ($progressByItem, $assignment) {
+                    $progress = $progressByItem->get($item->id);
+
+                    $status = match (true) {
+                        (bool) ($progress?->is_checked) => 'completed',
+                        $progress?->status === 'hold' => 'on_hold',
+                        $assignment->status === 'declined' => 'declined',
+                        filled($progress?->remark) => 'in_progress',
+                        default => 'pending',
+                    };
+
+                    return ['title' => $item->title, 'status' => $status];
+                })
+                ->values()
+                ->all() ?? [];
+
             $steps = [[
                 'rich' => true,
                 'department' => $assignment->checklistTemplate?->title ?? $assignment->department(),
@@ -314,6 +344,7 @@ class OffboardingRequest extends Model
                 'dueAt' => $assignment->due_at?->format('M d, Y g:i A'),
                 'isOverdue' => $assignment->isOverdue(),
                 'usesPerItemApprovers' => $assignment->usesPerItemApprovers(),
+                'checklistItems' => $checklistItems,
             ]];
 
             foreach ($remindersByAssignment->get($assignment->id, collect()) as $reminder) {
@@ -329,7 +360,8 @@ class OffboardingRequest extends Model
                 $steps[] = [
                     'label' => $event->label(),
                     'date' => $event->created_at->format('M d, Y g:i A'),
-                    'done' => true,
+                    'done' => $event->action !== 'checklist_item_held',
+                    'hold' => $event->action === 'checklist_item_held',
                     'comment' => $event->comment,
                 ];
             }

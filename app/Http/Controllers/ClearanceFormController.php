@@ -55,9 +55,22 @@ class ClearanceFormController extends Controller
      */
     private function buildData(OffboardingRequest $offboardingRequest): array
     {
-        $offboardingRequest->loadMissing(['employee', 'checklistTemplates', 'approvers.employee.user', 'approvers.itemProgress']);
+        $offboardingRequest->loadMissing(['employee', 'immediateHead.user', 'checklistTemplates', 'approvers.employee.user', 'approvers.itemProgress']);
 
         $employee = $offboardingRequest->employee;
+        $immediateHead = $offboardingRequest->immediateHead;
+
+        // Not tied to the checklist approval workflow — the Immediate Head has
+        // no "approved" state to gate on, so their signature (if they've
+        // uploaded one to their account) shows unconditionally, unlike the
+        // checklist rows below.
+        $immediateHeadRow = $immediateHead ? [
+            'designation' => 'Immediate Head',
+            'signatory' => $immediateHead->name,
+            'signatureDataUri' => $this->signatureDataUri($immediateHead->user?->signature_path),
+            'date' => null,
+            'remarks' => '',
+        ] : null;
 
         $rows = $offboardingRequest->checklistTemplates
             ->where('is_active', true)
@@ -85,6 +98,7 @@ class ClearanceFormController extends Controller
             'department' => $employee->department,
             'dateHired' => $employee->date_of_joining?->format('M d, Y') ?? '—',
             'separationDate' => $offboardingRequest->last_working_day->format('M d, Y'),
+            'immediateHeadRow' => $immediateHeadRow,
             'rows' => $rows,
         ];
     }

@@ -148,12 +148,37 @@ class OffboardingRequestApprover extends Model
     }
 
     /**
+     * True when the Submit button must stay disabled — and an approve()
+     * request must be rejected — until every checklist item is checked,
+     * even though a single approver with no distinct item-level signatories
+     * would otherwise be free to submit at any time (today's default,
+     * unchanged behavior). Two independent triggers: genuine per-item
+     * approvers (`usesPerItemApprovers()`), and an Immediate Head checklist,
+     * which always requires full completion before submission regardless of
+     * whether it happens to use per-item signatories — the Immediate Head
+     * is a single approver here, just like a Department Head, but must
+     * still check off every item before they're allowed to submit.
+     */
+    public function requiresAllItemsCompletedBeforeApproval(): bool
+    {
+        return $this->usesPerItemApprovers() || (bool) $this->checklistTemplate?->is_immediate_head_checklist;
+    }
+
+    /**
      * The employee actually responsible for checking this item on THIS
-     * assignment — the Department Head's live reassignment if one is
-     * active, otherwise the checklist template's own configured signatory.
-     * Never mutates the shared template, so other offboarding requests
-     * reusing the same template are completely unaffected by a
-     * reassignment made here.
+     * assignment. Every item gets an active `ChecklistItemAssignment`
+     * snapshot row at request-attach time (see
+     * `ChecklistApprovalNotifier::snapshotItemSignatories()`) — including
+     * an explicit "no signatory" row (`assigned_employee_id` null) for an
+     * item that had neither its own configured signatory nor an applicable
+     * group at that moment. That snapshot is authoritative once it exists:
+     * `null` there means "definitely no signatory for this request," NOT
+     * "go check the template" — the whole point is that a template edited
+     * afterwards (signatory added/changed/removed, Department Head
+     * reassigned) never leaks into a request that was already created.
+     * Falling back to the template's own live `$item->signatory` only
+     * happens when no snapshot row exists at all, which is only possible
+     * for a request created before this snapshotting existed.
      */
     public function effectiveSignatoryFor(ChecklistItem $item): ?Employee
     {
@@ -164,7 +189,11 @@ class OffboardingRequestApprover extends Model
             ->where('status', 'active')
             ->first();
 
-        return $override?->assignedEmployee ?? $item->signatory;
+        if ($override) {
+            return $override->assignedEmployee;
+        }
+
+        return $item->signatory;
     }
 
     /**

@@ -3,7 +3,7 @@
 @section('content')
     <x-common.page-breadcrumb pageTitle="Edit Checklist Template" />
 
-    <div x-data="checklistBuilder(@js(old('title', $template->title)), @js(old('department_head_id', (string) ($template->department_head_id ?? ''))), @js(old('department', $template->department ?? '')), @js(old('due_in_days', (string) ($template->due_in_days ?? ''))), @js(old('items', $template->items->map(fn ($item) => ['title' => $item->title, 'signatory_id' => (string) $item->signatory_id])->values())), @js($employees->map(fn ($employee) => ['id' => (string) $employee->id, 'name' => $employee->name, 'department' => $employee->department])), @js($employeeGroups), @js($errors->any() ? $errors->first() : null))"
+    <div x-data="checklistBuilder(@js(old('title', $template->title)), @js(old('department_head_id', (string) ($template->department_head_id ?? ''))), @js((bool) old('is_immediate_head_checklist', $template->is_immediate_head_checklist)), @js(old('department', $template->department ?? '')), @js(old('due_in_days', (string) ($template->due_in_days ?? ''))), @js((bool) old('is_general_signatory', $template->is_general_signatory)), @js(old('items', $template->items->map(fn ($item) => ['id' => $item->id, 'title' => $item->title, 'signatory_id' => (string) $item->signatory_id])->values())), @js($employees->map(fn ($employee) => ['id' => (string) $employee->id, 'name' => $employee->name, 'department' => $employee->department])), @js($employeeGroups), @js($errors->any() ? $errors->first() : null))"
         class="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-white/[0.03] lg:p-6">
         <form method="POST" action="{{ route('checklist-templates.update', $template) }}" class="flex flex-col">
             @csrf
@@ -18,17 +18,30 @@
             </div>
 
             <div class="mt-5">
+                <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
+                    <input type="checkbox" name="is_immediate_head_checklist" value="1" x-model="isImmediateHead"
+                        @change="if (isImmediateHead) departmentHeadId = ''"
+                        class="h-4 w-4 accent-brand-500" />
+                    Immediate Head
+                </label>
+                <p class="mt-1.5 text-xs text-gray-400">
+                    Assigns this checklist exclusively to the Immediate Head selected on each individual offboarding request, instead of the Department Head below.
+                </p>
+            </div>
+
+            <div class="mt-5">
                 <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
                     Department Head
                 </label>
-                <select name="department_head_id" x-model="departmentHeadId"
-                    class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:focus:border-brand-800">
+                <select name="department_head_id" x-model="departmentHeadId" :disabled="isImmediateHead"
+                    :class="isImmediateHead ? 'cursor-not-allowed bg-gray-100 text-gray-400 dark:bg-gray-800 dark:text-gray-500' : 'bg-transparent text-gray-800 dark:text-white/90'"
+                    class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-none px-4 py-2.5 text-sm shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:focus:border-brand-800">
                     <option value="">None</option>
                     @foreach ($departmentHeads as $head)
                         <option value="{{ $head->id }}">{{ $head->name }} ({{ $head->designation }}, {{ $head->department }})</option>
                     @endforeach
                 </select>
-                <p class="mt-1.5 text-xs text-gray-400">
+                <p class="mt-1.5 text-xs text-gray-400" x-show="!isImmediateHead">
                     This department head has the authority over the whole checklist and is always the final approver. Each item below can have its own independent approver — if any item's approver differs from the department head, the checklist auto-approves once every item is checked, with no manual approval step.
                 </p>
                 <template x-if="currentGroupName()">
@@ -39,17 +52,30 @@
             </div>
 
             <div class="mt-5">
+                <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
+                    <input type="checkbox" name="is_general_signatory" value="1" x-model="isGeneralSignatory"
+                        class="h-4 w-4 accent-brand-500" />
+                    General Signatory
+                </label>
+                <!-- <p class="mt-1.5 text-xs text-gray-400">
+                    Adds this checklist as an additional signatory on the Clearance Form and removes the requirement to add any checklist items below — you can still add items now or later if this checklist should also use regular item approval. The Department Head above must still be selected for this signatory to appear on the Approval page.
+                </p> -->
+            </div>
+
+            <div class="mt-5">
                 <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
                     Per Department
                 </label>
                 <select name="department" x-model="department"
                     class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:focus:border-brand-800">
-                    <option value="" disabled>Select department</option>
-                    <option value="HR">HR</option>
-                    <option value="IT">IT</option>
-                    <option value="Accounting">Accounting</option>
-                    <option value="Sales">Sales</option>
+                    <option value="">None (applies to every department)</option>
+                    @foreach ($departments as $dept)
+                        <option value="{{ $dept }}">{{ $dept }}</option>
+                    @endforeach
                 </select>
+                <p class="mt-1.5 text-xs text-gray-400">
+                    When set, this checklist is only attached to offboarding requests for employees whose own Department exactly matches this value.
+                </p>
             </div>
 
             <div class="mt-5">
@@ -75,7 +101,7 @@
             <div class="mt-7">
                 <div class="mb-4 flex items-center justify-between">
                     <h5 class="text-lg font-medium text-gray-800 dark:text-white/90">
-                        Clearance Items
+                        Tasks Item
                     </h5>
                     <button type="button" @click="addItem()"
                         class="shadow-theme-xs flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03]">
@@ -89,6 +115,7 @@
                 <div class="space-y-4">
                     <template x-for="(item, index) in items" :key="index">
                         <div class="flex flex-col gap-3 rounded-xl border border-gray-200 p-4 dark:border-gray-800 sm:flex-row sm:items-start">
+                            <input type="hidden" :name="`items[${index}][id]`" :value="item.id" />
                             <div class="flex-1">
                                 <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
                                     Items for turn over
@@ -131,7 +158,7 @@
                                 </div>
                             </div>
                             <div class="flex sm:pt-8">
-                                <button type="button" @click="removeItem(index)" x-show="items.length > 1"
+                                <button type="button" @click="removeItem(index)" x-show="items.length > 0"
                                     class="flex h-11 w-11 items-center justify-center rounded-lg border border-gray-300 text-error-500 hover:bg-error-50 dark:border-gray-700 dark:hover:bg-error-500/10">
                                     <svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
                                         <path d="M13.5 4.5L4.5 13.5M4.5 4.5L13.5 13.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
@@ -157,18 +184,21 @@
     </div>
 
     <script>
-        function checklistBuilder(initialTitle, initialDepartmentHeadId, initialDepartment, initialDueInDays, initialItems, employees, employeeGroups, flashError = null) {
+        function checklistBuilder(initialTitle, initialDepartmentHeadId, initialIsImmediateHead, initialDepartment, initialDueInDays, initialIsGeneralSignatory, initialItems, employees, employeeGroups, flashError = null) {
             return {
                 title: initialTitle,
                 departmentHeadId: initialDepartmentHeadId,
+                isImmediateHead: initialIsImmediateHead,
                 department: initialDepartment,
                 dueInDays: initialDueInDays,
+                isGeneralSignatory: initialIsGeneralSignatory,
                 employees: employees,
                 employeeGroups: employeeGroups,
                 items: [],
                 init() {
                     const source = initialItems.length ? initialItems : [{ title: '', signatory_id: '' }];
                     this.items = source.map((item) => ({
+                        id: item.id || null,
                         title: item.title || '',
                         signatory_id: item.signatory_id || '',
                         signatory_query: this.labelFor(item.signatory_id),
@@ -230,7 +260,7 @@
                     item.signatory_open = false;
                 },
                 addItem() {
-                    this.items.push({ title: '', signatory_id: '', signatory_query: '', signatory_open: false });
+                    this.items.push({ id: null, title: '', signatory_id: '', signatory_query: '', signatory_open: false });
                 },
                 removeItem(index) {
                     this.items.splice(index, 1);

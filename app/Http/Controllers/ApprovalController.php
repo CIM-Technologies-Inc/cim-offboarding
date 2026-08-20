@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Mail\ChecklistSignatoryAnnouncementMail;
+use App\Models\ChecklistApprovalToken;
 use App\Models\ChecklistItemProgress;
 use App\Models\EmailTemplate;
 use App\Models\Employee;
@@ -11,9 +12,12 @@ use App\Models\OffboardingRequestApprover;
 use App\Models\User;
 use App\Notifications\OffboardingApprovalUpdated;
 use App\Services\ChecklistCompletionService;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Notifications\DatabaseNotification;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Notification;
@@ -115,9 +119,9 @@ class ApprovalController extends Controller
                     'resignationType' => $request->resignation_type,
                     'noticeDate' => $request->notice_date?->format('M d, Y'),
                     'lastWorkingDay' => $request->last_working_day->format('M d, Y'),
-                    'noticePeriod' => $request->notice_period,
                     'approvalMode' => $request->approval_mode === 'sync' ? 'Sync' : 'Async',
                     'checklistTemplates' => $template ? [$template->title] : [],
+                    'isGeneralSignatory' => (bool) $template?->is_general_signatory,
                     'checklistItems' => $template
                         ? $template->items->map(function ($item) use ($assignment, $template, $progressByItemId, $isPrimaryApprover, $isDelegate, $employee) {
                             $progress = $progressByItemId->get($item->id);
@@ -177,6 +181,10 @@ class ApprovalController extends Controller
                                 // Department Head client-side; the route is
                                 // authorized server-side regardless.
                                 'assignItemUrl' => route('approvals.items.assign', [$assignment->id, $item->id]),
+                                // "Check This List": a peer item-approver
+                                // voluntarily accepts this item as their own,
+                                // without checking/completing it.
+                                'takeOverUrl' => route('approvals.items.take-over', [$assignment->id, $item->id]),
                             ];
                         })->values()->all()
                         : [],
@@ -184,6 +192,7 @@ class ApprovalController extends Controller
                     'isAssignedApprover' => $isAssignedApprover,
                     'isDelegate' => $isDelegate,
                     'usesPerItemApprovers' => $assignment->usesPerItemApprovers(),
+                    'isImmediateHeadChecklist' => (bool) $template?->is_immediate_head_checklist,
                     'allItemsCompleted' => $assignment->allItemsCompleted(),
                     'dueAt' => $assignment->due_at?->format('M d, Y'),
                     'isOverdue' => $assignment->isOverdue(),
@@ -244,17 +253,183 @@ class ApprovalController extends Controller
         // Head's own checkbox in this very action.
         ChecklistItemProgress::syncForAssignment($offboardingRequestApprover, $validated['items'] ?? [], auth()->id());
 
-        if ($offboardingRequestApprover->usesPerItemApprovers() && ! $offboardingRequestApprover->allItemsCompleted()) {
+        if ($offboardingRequestApprover->requiresAllItemsCompletedBeforeApproval() && ! $offboardingRequestApprover->allItemsCompleted()) {
             abort(422, 'All checklist items must be checked before this checklist can be approved.');
         }
 
+        $this->finalizeApproval($offboardingRequestApprover, auth()->user());
+
+        return back()->with('success', $offboardingRequestApprover->offboardingRequest->employee->name . '\'s offboarding request was approved.');
+    }
+
+    /**
+     * The message shown for each possible state of an emailed approval
+     * link — shared verbatim between the confirmation page (`showEmailApproval()`)
+     * and the JSON the actual approval endpoint returns
+     * (`confirmEmailApproval()`), so both always agree on the wording.
+     */
+    private const EMAIL_APPROVAL_MESSAGES = [
+        'invalid' => 'This approval link is invalid or has expired.',
+        'already_approved' => 'This checklist has already been approved.',
+        'not_actionable' => 'This checklist can no longer be approved from this link.',
+        'not_ready' => 'This checklist is not yet ready for approval — not all items have been completed.',
+        'confirm' => 'Please confirm to approve this checklist.',
+        'approved' => 'The checklist was successfully approved.',
+    ];
+
+    /**
+     * Public confirmation page for the "Approve" link embedded in the
+     * Checklist Ready for Department Head Approval email — reachable while
+     * logged out (no `auth` middleware, no redirect to `/signin`). Only
+     * VALIDATES and DISPLAYS the checklist's current state here; nothing is
+     * approved yet — the page itself asks the Department Head to confirm
+     * (via a SweetAlert dialog showing the checklist details), and only
+     * that explicit confirmation triggers `confirmEmailApproval()` below.
+     */
+    public function showEmailApproval(int $id, string $token): View
+    {
+        [$state, $assignment] = $this->resolveEmailApprovalState($id, $token);
+
+        return view('pages.approvals.email-confirm', [
+            'title' => 'Checklist Approval',
+            'state' => $state,
+            'message' => self::EMAIL_APPROVAL_MESSAGES[$state],
+            'confirmUrl' => route('approval.confirm', ['id' => $id, 'token' => $token]),
+            'offboardeeName' => $assignment?->offboardingRequest->employee->name,
+            'offboardeeEmployeeCode' => $assignment?->offboardingRequest->employee->employee_code,
+            'checklistTitle' => $assignment?->checklistTemplate->title,
+            'departmentHeadName' => $assignment?->employee?->name,
+        ]);
+    }
+
+    /**
+     * The actual approval, triggered only once the Department Head confirms
+     * on the page above — never on the bare GET link itself, so simply
+     * clicking (or an email client prefetching) the link can never approve
+     * anything by accident.
+     *
+     * Re-validates the link and re-derives the assignment's state from
+     * scratch (never trusting whatever `showEmailApproval()` rendered
+     * moments earlier — state can change in between), then re-checks it
+     * AGAIN inside a row-locked transaction immediately before approving,
+     * so two near-simultaneous confirmations (a genuine double-click, or
+     * two browser tabs on the same link) can never both pass the "still
+     * pending" check — the second always lands on `already_approved`
+     * instead of re-running the approval. Every branch — invalid link,
+     * already approved, no longer actionable, not ready, or a fresh
+     * approval — returns the exact same JSON shape the confirmation page
+     * already knows how to render as a SweetAlert.
+     */
+    public function confirmEmailApproval(int $id, string $token): JsonResponse
+    {
+        [$state, $assignment] = $this->resolveEmailApprovalState($id, $token);
+
+        if ($state === 'confirm' && $assignment) {
+            $departmentHead = $assignment->employee;
+
+            // The Department Head might never have logged into the app
+            // before — they only need an email address to have received
+            // this link, not an account — so their account is guaranteed
+            // to exist here (same convention used everywhere else an
+            // approver's identity needs to be attributed), rather than
+            // silently attributing the approval to no one.
+            $actor = $departmentHead ? User::findOrCreateApprover($departmentHead) : null;
+
+            $state = DB::transaction(function () use ($assignment, $actor) {
+                $locked = OffboardingRequestApprover::whereKey($assignment->id)->lockForUpdate()->first();
+
+                if (! $locked) {
+                    return 'invalid';
+                }
+
+                if ($locked->status === 'approved') {
+                    return 'already_approved';
+                }
+
+                if (! in_array($locked->status, ['pending', 'viewed'], true)) {
+                    return 'not_actionable';
+                }
+
+                if (! $locked->usesPerItemApprovers() || ! $locked->allItemsCompleted()) {
+                    return 'not_ready';
+                }
+
+                $this->finalizeApproval($locked, $actor);
+
+                return 'approved';
+            });
+        }
+
+        return response()->json([
+            'state' => $state,
+            'message' => self::EMAIL_APPROVAL_MESSAGES[$state],
+        ]);
+    }
+
+    /**
+     * Validates the emailed link itself (hash-verified against `$token`,
+     * not expired — exactly `ForgotPasswordController`'s established
+     * convention for an emailed, unauthenticated action link) and, if
+     * valid, the assignment's current state. The token's own
+     * `offboarding_request_approver_id` is the ONLY source of which
+     * assignment this resolves to — never a value the caller could supply
+     * separately — so a valid link can only ever affect the exact checklist
+     * it was generated for. Shared by both the GET confirmation page and
+     * the POST that actually approves, so they always agree on the current
+     * state.
+     *
+     * @return array{0: string, 1: ?OffboardingRequestApprover}
+     */
+    private function resolveEmailApprovalState(int $id, string $token): array
+    {
+        $approvalToken = ChecklistApprovalToken::find($id);
+
+        if (! $approvalToken || ! $approvalToken->isValid() || ! Hash::check($token, $approvalToken->token)) {
+            return ['invalid', null];
+        }
+
+        $assignment = $approvalToken->assignment;
+
+        if (! $assignment) {
+            return ['invalid', null];
+        }
+
+        if ($assignment->status === 'approved') {
+            return ['already_approved', $assignment];
+        }
+
+        if (! in_array($assignment->status, ['pending', 'viewed'], true)) {
+            return ['not_actionable', $assignment];
+        }
+
+        if (! $assignment->usesPerItemApprovers() || ! $assignment->allItemsCompleted()) {
+            return ['not_ready', $assignment];
+        }
+
+        return ['confirm', $assignment];
+    }
+
+    /**
+     * The actual state change behind approving a checklist — status,
+     * timestamp, overdue-notification cleanup, activity log, and the
+     * regular/final-pay completion cascade. Shared by the authenticated
+     * `approve()` action and the emailed `approveViaEmail()` link so both
+     * produce the exact same result; the only difference between them is
+     * how each establishes WHO is approving (`auth()->user()` vs. the
+     * emailed link's own identified Department Head) — that's resolved by
+     * the caller and passed in here as `$actor`, never read from `auth()`
+     * directly, so this method behaves identically regardless of whether
+     * there's an active session at all.
+     */
+    private function finalizeApproval(OffboardingRequestApprover $offboardingRequestApprover, ?User $actor): void
+    {
         $offboardingRequestApprover->update(['status' => 'approved', 'approved_at' => now()]);
 
         $this->resolveOverdueNotifications($offboardingRequestApprover);
 
         $offboardingRequest = $offboardingRequestApprover->offboardingRequest;
 
-        $this->recordActivityAndNotify($offboardingRequest, 'approved', null);
+        $this->recordActivityAndNotify($offboardingRequest, 'approved', null, $actor);
 
         $completionService = app(ChecklistCompletionService::class);
 
@@ -263,8 +438,6 @@ class ApprovalController extends Controller
         } else {
             $completionService->checkRegularChecklistsCompletion($offboardingRequest);
         }
-
-        return back()->with('success', $offboardingRequest->employee->name . '\'s offboarding request was approved.');
     }
 
     public function decline(Request $request, OffboardingRequestApprover $offboardingRequestApprover): RedirectResponse
@@ -441,21 +614,32 @@ class ApprovalController extends Controller
      * Records who approved/declined the request (and why, for declines) and
      * notifies every admin. Never allowed to affect the already-saved
      * approve/decline outcome if something here fails.
+     *
+     * `$actor` defaults to the current session's user — `approve()` and
+     * `decline()` both run under an authenticated session, so they never
+     * need to pass it explicitly. `approveViaEmail()` is the one caller
+     * with no session at all; it resolves and passes the Department Head's
+     * own account explicitly instead, so the activity log/notification
+     * still correctly attribute to a real person rather than "Unknown".
      */
-    private function recordActivityAndNotify(OffboardingRequest $offboardingRequest, string $action, ?string $comment): void
+    private function recordActivityAndNotify(OffboardingRequest $offboardingRequest, string $action, ?string $comment, ?User $actor = null): void
     {
+        $actor ??= auth()->user();
+
         try {
             $offboardingRequest->activities()->create([
-                'user_id' => auth()->id(),
+                'user_id' => $actor?->id,
                 'action' => $action,
                 'status' => $offboardingRequest->status,
                 'comment' => $comment,
             ]);
 
-            Notification::send(
-                User::where('role', User::ROLE_ADMIN)->get(),
-                new OffboardingApprovalUpdated($offboardingRequest, auth()->user(), $action, $comment)
-            );
+            if ($actor) {
+                Notification::send(
+                    User::where('role', User::ROLE_ADMIN)->get(),
+                    new OffboardingApprovalUpdated($offboardingRequest, $actor, $action, $comment)
+                );
+            }
         } catch (\Throwable $e) {
             Log::error('Failed to record offboarding activity/notification.', [
                 'offboarding_request_id' => $offboardingRequest->id,

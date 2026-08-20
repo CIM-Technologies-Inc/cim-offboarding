@@ -61,12 +61,15 @@
                             <p style="margin:0 0 24px;">All checklist items have been checked.</p>
 
                             <p style="margin:0 0 24px;">
-                                Please log in to the system to review and submit/approve the checklist.
+                                Review the checklist in the system, or approve it directly from this email.
                             </p>
 
                             <p style="margin:0;">
-                                <a href="{{ $approvalUrl }}" style="display:inline-block; background-color:#145a3a; color:#ffffff; text-decoration:none; padding:12px 24px; border-radius:8px; font-weight:bold;">
+                                <a href="{{ $approvalUrl }}" style="display:inline-block; background-color:#ffffff; color:#145a3a; text-decoration:none; padding:12px 24px; border-radius:8px; font-weight:bold; border:2px solid #145a3a; margin-right:12px;">
                                     Review Checklist
+                                </a>
+                                <a href="{{ $approveUrl }}" style="display:inline-block; background-color:#145a3a; color:#ffffff; text-decoration:none; padding:12px 24px; border-radius:8px; font-weight:bold;">
+                                    Approve
                                 </a>
                             </p>
                         </td>

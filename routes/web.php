@@ -16,13 +16,38 @@ use App\Http\Controllers\ClearanceFormController;
 use App\Http\Controllers\DepartmentHeadController;
 use App\Http\Controllers\OnboardingChecklistTemplateController;
 use App\Http\Controllers\EmployeeGroupController;
+use App\Http\Controllers\ChangePasswordController;
+use App\Http\Controllers\ForgotPasswordController;
 
 // authentication pages
 Route::get('/signin', [AuthController::class, 'create'])->name('login');
 Route::post('/login', [AuthController::class, 'store'])->name('login.store');
 Route::post('/logout', [AuthController::class, 'destroy'])->name('logout');
 
-Route::middleware('auth')->group(function () {
+// forgot / reset password — public, unauthenticated. Throttled since this
+// endpoint sends real email on every submission.
+Route::post('/forgot-password', [ForgotPasswordController::class, 'sendResetLink'])
+    ->middleware('throttle:5,1')
+    ->name('password.email');
+Route::get('/reset-password/{id}/{token}', [ForgotPasswordController::class, 'showResetForm'])->name('password.reset');
+Route::post('/reset-password/{id}/{token}', [ForgotPasswordController::class, 'reset'])->name('password.update');
+
+// "Approve" link embedded in the Checklist Ready for Department Head
+// Approval email — public/unauthenticated, same as the reset-password links
+// above, so the Department Head never has to log in first just to click it.
+// GET shows a confirmation page (validating the link/checklist state without
+// approving anything yet); POST — triggered only by confirming on that page
+// — performs the actual approval.
+Route::get('/approval/{id}/{token}', [ApprovalController::class, 'showEmailApproval'])->name('approval.show');
+Route::post('/approval/{id}/{token}', [ApprovalController::class, 'confirmEmailApproval'])->name('approval.confirm');
+
+Route::middleware(['auth', 'password.changed'])->group(function () {
+
+// forced first-time password change — reachable even while
+// `must_change_password` is true (EnsurePasswordChanged exempts these two
+// route names specifically), unlike everything else in this group.
+Route::get('/password/change', [ChangePasswordController::class, 'edit'])->name('password.change');
+Route::put('/password/change', [ChangePasswordController::class, 'update'])->name('password.change.update');
 
 // pages shared by both admin and approver roles
 Route::get('/calendar', [CalendarController::class, 'index'])->name('calendar');
@@ -50,6 +75,7 @@ Route::post('/approvals/{offboardingRequestApprover}/assign', [ChecklistDelegati
 Route::post('/approvals/{offboardingRequestApprover}/save-progress', [ChecklistDelegationController::class, 'saveProgress'])->name('approvals.save-progress');
 Route::post('/approvals/{offboardingRequestApprover}/items/{checklistItem}/hold', [ChecklistDelegationController::class, 'holdItem'])->name('approvals.items.hold');
 Route::post('/approvals/{offboardingRequestApprover}/items/{checklistItem}/assign', [ChecklistDelegationController::class, 'assignItem'])->name('approvals.items.assign');
+Route::post('/approvals/{offboardingRequestApprover}/items/{checklistItem}/take-over', [ChecklistDelegationController::class, 'takeOverItem'])->name('approvals.items.take-over');
 
 // pages restricted to the admin role
 Route::middleware('role:admin')->group(function () {

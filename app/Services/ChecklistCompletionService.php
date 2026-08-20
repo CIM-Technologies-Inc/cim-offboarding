@@ -53,6 +53,7 @@ class ChecklistCompletionService
 
             $finalPayTemplates = ChecklistTemplate::where('is_active', true)
                 ->where('is_final_pay_checklist', true)
+                ->applicableToDepartment($locked->employee->department)
                 ->with(['departmentHead', 'items.signatory'])
                 ->get();
 

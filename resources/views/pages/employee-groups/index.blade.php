@@ -320,7 +320,7 @@
             <div class="no-scrollbar relative max-h-[85vh] w-full max-w-[75vw] overflow-y-auto rounded-3xl bg-white p-6 dark:bg-gray-900 lg:p-8" x-show="viewingGroup" x-cloak>
                 <template x-if="viewingGroup">
                     <div>
-                        <div class="flex items-start justify-between gap-2">
+                        <div class="flex items-start justify-between gap-2 pr-12 sm:pr-16">
                             <div>
                                 <h4 class="text-xl font-semibold text-gray-800 dark:text-white/90" x-text="viewingGroup.name"></h4>
                                 <p class="mt-1 text-sm text-[#145a3a] dark:text-[#3aa876]">

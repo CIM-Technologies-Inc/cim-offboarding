@@ -49,13 +49,27 @@
             </tr>
         </thead>
         <tbody>
-            <tr>
-                <td>&nbsp;</td>
-                <td>&nbsp;</td>
-                <td>&nbsp;</td>
-                <td>&nbsp;</td>
-                <td>&nbsp;</td>
-            </tr>
+            @if ($immediateHeadRow)
+                <tr>
+                    <td>{{ $immediateHeadRow['designation'] }}</td>
+                    <td>{{ $immediateHeadRow['signatory'] }}</td>
+                    <td class="signature-cell">
+                        @if ($immediateHeadRow['signatureDataUri'])
+                            <img src="{{ $immediateHeadRow['signatureDataUri'] }}" alt="Signature" class="signature-img" />
+                        @endif
+                    </td>
+                    <td>{{ $immediateHeadRow['date'] ?? '' }}</td>
+                    <td>{{ $immediateHeadRow['remarks'] }}</td>
+                </tr>
+            @else
+                <tr>
+                    <td>&nbsp;</td>
+                    <td>&nbsp;</td>
+                    <td>&nbsp;</td>
+                    <td>&nbsp;</td>
+                    <td>&nbsp;</td>
+                </tr>
+            @endif
         </tbody>
     </table>
 

@@ -3,21 +3,26 @@
         checked: {},
         remarks: {},
         holdProcessing: {},
+        takeOverProcessing: {},
         setSelected(detail) {
             const checked = {};
             const remarks = {};
+            const takeOverProcessing = {};
             (detail.checklistItems || []).forEach((item) => {
                 checked[item.id] = !!item.checked;
                 remarks[item.id] = item.remark || '';
+                takeOverProcessing[item.id] = false;
             });
             // Populate reactive state BEFORE assigning `selected` — that
             // assignment is what triggers the x-if/x-for to render, so
-            // every item's `checked`/`remarks` entry must already exist by
-            // then for bindings (like the Hold button's :disabled) that key
-            // off them to track correctly from their very first evaluation.
+            // every item's `checked`/`remarks`/`takeOverProcessing` entry
+            // must already exist by then for bindings (like the Hold and
+            // Check This List buttons' :disabled) that key off them to
+            // track correctly from their very first evaluation.
             this.checked = checked;
             this.remarks = remarks;
             this.holdProcessing = {};
+            this.takeOverProcessing = takeOverProcessing;
             this.selected = detail;
         },
         // True when the current viewer is literally the named signatory for
@@ -71,6 +76,41 @@
                 });
             });
         },
+        // 'Check This List': only accepts/assigns this item to the current
+        // approver — it must never check/complete it or submit the form, and
+        // it must never reload the page (that would close this very modal).
+        // The server responds with the item's new editable/canTakeOver state
+        // plus the assignment's usesPerItemApprovers/allItemsCompleted flags;
+        // patching those into `selected` in place is what makes Hold/Done
+        // unlock immediately — Alpine's reactivity re-renders every binding
+        // that reads them without any navigation at all. The item itself
+        // stays unchecked; only Hold/Done (clicked separately, afterward)
+        // ever changes that.
+        takeOverItem(item) {
+            if (this.takeOverProcessing[item.id]) {
+                return;
+            }
+            this.takeOverProcessing[item.id] = true;
+            fetch(item.takeOverUrl, {
+                method: 'POST',
+                headers: {
+                    'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                    'Accept': 'application/json',
+                },
+            }).then(async (res) => {
+                if (!res.ok) {
+                    throw new Error('request failed');
+                }
+                const data = await res.json();
+                Object.assign(item, data.item);
+                this.selected.usesPerItemApprovers = data.usesPerItemApprovers;
+                this.selected.allItemsCompleted = data.allItemsCompleted;
+                this.takeOverProcessing[item.id] = false;
+            }).catch(() => {
+                this.takeOverProcessing[item.id] = false;
+                Swal.fire({ icon: 'error', title: 'Failed to accept this checklist item', confirmButtonColor: '#145a3a' });
+            });
+        },
         allChecked() {
             if (!this.selected || !this.selected.checklistItems || this.selected.checklistItems.length === 0) {
                 return true;
@@ -92,22 +132,34 @@
             // confirmation that clearance is complete, same as always.
             // Per-item-approver checklists: only once every item is checked
             // — by its own signatory, or by the Department Head directly
-            // taking over someone else's item. Computed from the live
-            // `checked` state (not a stale server flag) so the Submit
-            // button re-enables the instant the Department Head ticks the
-            // very last box themselves, without needing a page reload.
+            // taking over someone else's item. Immediate Head checklists:
+            // same full-completion gate as per-item-approver checklists,
+            // even though the Immediate Head is a single approver with no
+            // distinct item-level signatories — `isImmediateHeadChecklist`
+            // is fixed for the assignment's lifetime (unlike
+            // `usesPerItemApprovers`, which can flip live via 'Check This
+            // List'), so it's safe to read directly off `selected` here.
+            // Computed from the live `checked` state (not a stale server
+            // flag) so the Submit button re-enables the instant the last
+            // box is ticked, without needing a page reload.
             if (!this.selected) return false;
-            if (this.selected.usesPerItemApprovers) {
+            if (this.selected.usesPerItemApprovers || this.selected.isImmediateHeadChecklist) {
                 return (this.selected.checklistItems || []).every((item) => !!this.checked[item.id]);
             }
             return true;
         },
     }" @open-checklist-modal.window="setSelected($event.detail)">
-    <x-ui.modal x-data="{ open: false }" @open-checklist-modal.window="open = true" :isOpen="false" class="max-w-[560px]">
-        <div class="no-scrollbar relative w-full max-w-[560px] overflow-y-auto rounded-3xl bg-white p-6 dark:bg-gray-900 lg:p-8" x-show="selected" x-cloak>
+    <x-ui.modal x-data="{ open: false }" @open-checklist-modal.window="open = true" :isOpen="false" class="w-full sm:max-w-[50vw]">
+        <div class="no-scrollbar relative w-full overflow-y-auto rounded-3xl bg-white p-6 dark:bg-gray-900 lg:p-8" x-show="selected" x-cloak>
             <template x-if="selected">
                 <div>
                     <h4 class="text-xl font-semibold text-gray-800 dark:text-white/90" x-text="selected.name"></h4>
+
+                    <template x-if="selected.isGeneralSignatory">
+                        <span class="mb-2 inline-flex items-center rounded-full bg-[#145a3a]/10 px-2.5 py-1 text-xs font-medium text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]">
+                            General Signatory
+                        </span>
+                    </template>
 
                     <template x-if="!selected.isPrimaryApprover">
                         <p class="mb-1 text-sm text-[#145a3a] dark:text-[#3aa876]">
@@ -172,7 +224,12 @@
                         id="checklistProgressForm" x-data="{ processing: false }" @submit="processing = true">
                         @csrf
                         <div class="max-h-80 space-y-3 overflow-y-auto pr-1">
-                            <template x-if="!selected.checklistItems || selected.checklistItems.length === 0">
+                            <template x-if="selected.isGeneralSignatory && (!selected.checklistItems || selected.checklistItems.length === 0)">
+                                <p class="rounded-lg bg-gray-50 px-4 py-3 text-sm text-gray-500 dark:bg-white/[0.03] dark:text-gray-400">
+                                    This is a General Signatory checklist — no checklist items are required. Click Submit to approve and add this signatory to the Clearance Form.
+                                </p>
+                            </template>
+                            <template x-if="!selected.isGeneralSignatory && (!selected.checklistItems || selected.checklistItems.length === 0)">
                                 <p class="rounded-lg bg-gray-50 px-4 py-3 text-sm text-gray-500 dark:bg-white/[0.03] dark:text-gray-400">
                                     No checklist items are assigned to this request.
                                 </p>
@@ -244,11 +301,10 @@
 
                                     <template x-if="item.canTakeOver">
                                         <div class="mt-2">
-                                            <input type="hidden" :name="`items[${item.id}][is_checked]`" :value="checked[item.id] ? '1' : '0'" />
-                                            <button type="button" :disabled="processing"
+                                            <button type="button" :disabled="takeOverProcessing[item.id]"
                                                 @click="Swal.fire({
                                                     title: 'Confirm Responsibility',
-                                                    html: 'This checklist item is assigned to another approver. By proceeding, you are confirming that you will take responsibility for checking and completing this checklist item.<br><br>Are you sure you want to continue?',
+                                                    html: 'This checklist item is assigned to another approver. By proceeding, you are confirming that you will take responsibility for this checklist item — you can then add remarks, place it on Hold, or check it off yourself.<br><br>Are you sure you want to continue?',
                                                     icon: 'warning',
                                                     showCancelButton: true,
                                                     confirmButtonText: 'Yes, Check This List',
@@ -258,12 +314,10 @@
                                                     reverseButtons: true
                                                 }).then((result) => {
                                                     if (result.isConfirmed) {
-                                                        checked[item.id] = true;
-                                                        processing = true;
-                                                        $nextTick(() => $el.closest('form').requestSubmit());
+                                                        takeOverItem(item);
                                                     }
                                                 })"
-                                                :class="processing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#145a3a]/5 dark:hover:bg-[#3aa876]/10'"
+                                                :class="takeOverProcessing[item.id] ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#145a3a]/5 dark:hover:bg-[#3aa876]/10'"
                                                 class="rounded-lg border border-[#145a3a] px-3 py-1.5 text-xs font-medium text-[#145a3a] dark:border-[#3aa876] dark:text-[#3aa876]">
                                                 Check This List
                                             </button>

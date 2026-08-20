@@ -13,7 +13,9 @@ class AuthController extends Controller
     public function create(): RedirectResponse|\Illuminate\View\View
     {
         if (Auth::check()) {
-            return redirect()->route($this->homeRouteFor(Auth::user()));
+            $user = Auth::user();
+
+            return redirect()->route($user->must_change_password ? 'password.change' : $this->homeRouteFor($user));
         }
 
         return view('pages.auth.signin', ['title' => 'Sign In']);
@@ -36,7 +38,24 @@ class AuthController extends Controller
 
         $request->session()->regenerate();
 
-        return redirect()->intended(route($this->homeRouteFor(Auth::user())));
+        $user = Auth::user();
+
+        // This app's established convention (see User::findOrCreateApprover())
+        // creates accounts with password === username as a temporary
+        // first-login password. Logging in with that still-unchanged
+        // password IS what "first-time login" means here — flagged every
+        // time it's detected (not just once at account creation) so it
+        // also covers an admin manually resetting someone's password back
+        // to their username later.
+        if (! $user->must_change_password && strcasecmp($credentials['password'], $credentials['username']) === 0) {
+            $user->update(['must_change_password' => true]);
+        }
+
+        if ($user->must_change_password) {
+            return redirect()->route('password.change');
+        }
+
+        return redirect()->intended(route($this->homeRouteFor($user)));
     }
 
     /**

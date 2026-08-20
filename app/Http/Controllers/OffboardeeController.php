@@ -24,7 +24,7 @@ class OffboardeeController extends Controller
                 $query->where('status', 'offboarding')
                     ->orWhereHas('latestOffboardingRequest', fn ($q) => $q->where('status', 'cancelled'));
             })
-            ->with(['latestOffboardingRequest.checklistTemplates', 'latestOffboardingRequest.approvers.checklistTemplate', 'latestOffboardingRequest.approvers.employee'])
+            ->with(['latestOffboardingRequest.checklistTemplates', 'latestOffboardingRequest.approvers.checklistTemplate', 'latestOffboardingRequest.approvers.employee', 'latestOffboardingRequest.immediateHead'])
             ->orderBy('name')
             ->get();
 
@@ -50,6 +50,7 @@ class OffboardeeController extends Controller
             'designation' => $employee->designation,
             'status' => $employee->latestOffboardingRequest?->displayStatus() ?? 'pending',
             'lastWorkingDay' => $employee->latestOffboardingRequest?->last_working_day?->format('M d, Y'),
+            'immediateHead' => $employee->latestOffboardingRequest?->immediateHead?->name,
             'checklistTemplates' => $employee->latestOffboardingRequest?->checklistTemplates->pluck('title')->all() ?? [],
             'timeline' => $employee->latestOffboardingRequest?->approverActivityTimeline() ?? [],
             // URLs are generated whenever a request exists, regardless of its
@@ -78,7 +79,7 @@ class OffboardeeController extends Controller
             $deepLinkOffboardee = $offboardees->firstWhere('id', $openOffboardeeId);
 
             if (! $deepLinkOffboardee) {
-                $targetEmployee = Employee::with(['latestOffboardingRequest.checklistTemplates', 'latestOffboardingRequest.approvers.checklistTemplate', 'latestOffboardingRequest.approvers.employee'])->find($openOffboardeeId);
+                $targetEmployee = Employee::with(['latestOffboardingRequest.checklistTemplates', 'latestOffboardingRequest.approvers.checklistTemplate', 'latestOffboardingRequest.approvers.employee', 'latestOffboardingRequest.immediateHead'])->find($openOffboardeeId);
                 $deepLinkOffboardee = $targetEmployee ? $mapEmployee($targetEmployee) : null;
             }
         }

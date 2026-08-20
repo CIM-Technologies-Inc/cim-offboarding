@@ -3,6 +3,10 @@
 @section('content')
     <x-common.page-breadcrumb pageTitle="Your Approval" />
 
+    {{-- Fires the SweetAlert toast for flashed success/status messages — most
+         relevantly, the redirect from the "Approve" email link. --}}
+    <div x-data="flashToast(@js(session('success')), null)"></div>
+
     @if (session('success'))
         <div class="mb-6 rounded-lg border border-success-500 bg-success-50 px-4 py-3 text-sm text-success-600 dark:border-success-500/30 dark:bg-success-500/10 dark:text-success-400">
             {{ session('success') }}
@@ -59,6 +63,11 @@
                                 {{ implode(', ', $approval['checklistTemplates']) }}
                             </p>
                         @endif
+                        @if ($approval['isGeneralSignatory'])
+                            <span class="mt-1.5 inline-flex items-center rounded-full bg-[#145a3a]/10 px-2.5 py-0.5 text-xs font-medium text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]">
+                                General Signatory
+                            </span>
+                        @endif
 
                         @unless ($approval['isPrimaryApprover'])
                             <p class="mt-1 text-xs text-gray-400">
@@ -74,10 +83,6 @@
                             <div class="flex items-center justify-between text-xs">
                                 <span class="text-gray-400">Reason</span>
                                 <span class="font-medium text-gray-700 dark:text-gray-300">{{ $approval['reason'] }}</span>
-                            </div>
-                            <div class="flex items-center justify-between text-xs">
-                                <span class="text-gray-400">Notice Period</span>
-                                <span class="font-medium text-gray-700 dark:text-gray-300">{{ $approval['noticePeriod'] }}</span>
                             </div>
                             <div class="flex items-center justify-between text-xs">
                                 <span class="text-gray-400">Last Working Day</span>
