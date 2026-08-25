@@ -17,6 +17,7 @@ class OffboardingRequest extends Model
 
     protected $fillable = [
         'employee_id',
+        'created_by',
         'immediate_head_id',
         'reason',
         'resignation_type',
@@ -43,6 +44,17 @@ class OffboardingRequest extends Model
     public function employee(): BelongsTo
     {
         return $this->belongsTo(Employee::class);
+    }
+
+    /**
+     * The HR/admin user who submitted this request — who the "Checklist
+     * Approval Confirmed" completion email notifies once an approver
+     * finishes their assigned checklist(s), rather than the approver
+     * themselves. Null for any request created before this column existed.
+     */
+    public function creator(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'created_by');
     }
 
     /**
@@ -73,6 +85,16 @@ class OffboardingRequest extends Model
     public function approvers(): HasMany
     {
         return $this->hasMany(OffboardingRequestApprover::class)->orderBy('assigned_at');
+    }
+
+    public function followUps(): HasMany
+    {
+        return $this->hasMany(ChecklistFollowUp::class);
+    }
+
+    public function scheduledEmailSends(): HasMany
+    {
+        return $this->hasMany(EmailTemplateScheduledSend::class);
     }
 
     /**

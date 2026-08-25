@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class EmailTemplate extends Model
 {
@@ -13,6 +14,9 @@ class EmailTemplate extends Model
         'html_content',
         'is_active',
         'is_default_announcement',
+        'is_scheduled',
+        'schedule_timing',
+        'schedule_days',
         'created_by',
     ];
 
@@ -21,12 +25,36 @@ class EmailTemplate extends Model
         return [
             'is_active' => 'boolean',
             'is_default_announcement' => 'boolean',
+            'is_scheduled' => 'boolean',
+            'schedule_days' => 'integer',
         ];
     }
 
     public function creator(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by');
+    }
+
+    public function scheduledSends(): HasMany
+    {
+        return $this->hasMany(EmailTemplateScheduledSend::class);
+    }
+
+    /**
+     * Human-readable summary of this template's Last-Working-Day schedule
+     * (e.g. "5 days before Last Working Day") for the template list, or null
+     * when scheduling isn't enabled/configured.
+     */
+    public function scheduleLabel(): ?string
+    {
+        if (! $this->is_scheduled || ! $this->schedule_days || ! $this->schedule_timing) {
+            return null;
+        }
+
+        $unit = $this->schedule_days === 1 ? 'day' : 'days';
+        $timing = $this->schedule_timing === 'before' ? 'before' : 'after';
+
+        return "{$this->schedule_days} {$unit} {$timing} Last Working Day";
     }
 
     /**
@@ -50,12 +78,20 @@ class EmailTemplate extends Model
      * "{{employee_number}}" / "{{checklist_name}}" / "{{due_date}}" /
      * "{{offboarding_link}}" tokens, plus "{{department}}" / "{{position}}"
      * / "{{days_overdue}}" / "{{pending_items}}" / "{{checklist_status}}"
-     * for the overdue-checklist notification, plus the legacy bare-word /
-     * single-brace "approver" / "offboardee" / "employee" placeholders still
-     * used by the drag-and-drop email template editor. A placeholder with no
-     * value available at this call site (e.g. "{{due_date}}" when the
-     * caller has no specific assignment in scope) is simply replaced with an
-     * empty string, never left as a raw, unresolved token in the sent email.
+     * for the overdue-checklist notification, "{{date_hired}}" /
+     * "{{separation_date}}" / "{{reason}}" for the offboarding request
+     * notification, "{{request_date}}" / "{{offboarding_status}}" /
+     * "{{username}}" / "{{temporary_password}}" / "{{checklist_summary}}"
+     * for the Offboarding Details Notification sent to the offboardee
+     * themselves, "{{department_head_name}}" / "{{assigned_signatories}}" /
+     * "{{checklist_progress}}" / "{{remaining_items}}" /
+     * "{{follow_up_sent_at}}" for the employee-initiated Follow-Up
+     * notification, plus the legacy bare-word / single-brace "approver" /
+     * "offboardee" / "employee" placeholders still used by the
+     * drag-and-drop email template editor. A placeholder with no value
+     * available at this call site (e.g. "{{due_date}}" when the caller has
+     * no specific assignment in scope) is simply replaced with an empty
+     * string, never left as a raw, unresolved token in the sent email.
      *
      * @return array{0: string, 1: string} [subject, body]
      */
@@ -71,10 +107,26 @@ class EmailTemplate extends Model
         ?string $daysOverdue = null,
         ?string $pendingItems = null,
         ?string $checklistStatus = null,
+        ?string $dateHired = null,
+        ?string $separationDate = null,
+        ?string $reason = null,
+        ?string $requestDate = null,
+        ?string $offboardingStatus = null,
+        ?string $username = null,
+        ?string $temporaryPassword = null,
+        ?string $checklistSummary = null,
+        ?string $departmentHeadName = null,
+        ?string $assignedSignatories = null,
+        ?string $checklistProgress = null,
+        ?string $remainingItems = null,
+        ?string $followUpSentAt = null,
     ): array {
         $values = $this->placeholderValues(
             $approverName, $offboardeeName, $creatorName, $employeeNumber, $checklistName,
             $dueDate, $department, $position, $daysOverdue, $pendingItems, $checklistStatus,
+            $dateHired, $separationDate, $reason, $requestDate, $offboardingStatus,
+            $username, $temporaryPassword, $checklistSummary, $departmentHeadName,
+            $assignedSignatories, $checklistProgress, $remainingItems, $followUpSentAt,
         );
 
         return [
@@ -98,6 +150,19 @@ class EmailTemplate extends Model
         ?string $daysOverdue,
         ?string $pendingItems,
         ?string $checklistStatus,
+        ?string $dateHired,
+        ?string $separationDate,
+        ?string $reason,
+        ?string $requestDate,
+        ?string $offboardingStatus,
+        ?string $username,
+        ?string $temporaryPassword,
+        ?string $checklistSummary,
+        ?string $departmentHeadName,
+        ?string $assignedSignatories,
+        ?string $checklistProgress,
+        ?string $remainingItems,
+        ?string $followUpSentAt,
     ): array {
         return [
             'approver_name' => $approverName,
@@ -111,6 +176,19 @@ class EmailTemplate extends Model
             'days_overdue' => $daysOverdue ?? '',
             'pending_items' => $pendingItems ?? '',
             'checklist_status' => $checklistStatus ?? '',
+            'date_hired' => $dateHired ?? '',
+            'separation_date' => $separationDate ?? '',
+            'reason' => $reason ?? '',
+            'request_date' => $requestDate ?? '',
+            'offboarding_status' => $offboardingStatus ?? '',
+            'username' => $username ?? '',
+            'temporary_password' => $temporaryPassword ?? '',
+            'checklist_summary' => $checklistSummary ?? '',
+            'department_head_name' => $departmentHeadName ?? '',
+            'assigned_signatories' => $assignedSignatories ?? '',
+            'checklist_progress' => $checklistProgress ?? '',
+            'remaining_items' => $remainingItems ?? '',
+            'follow_up_sent_at' => $followUpSentAt ?? '',
             'offboarding_link' => '<a href="' . route('login') . '">CIM Offboarding</a>',
             'approver' => $approverName,
             'offboardee' => $offboardeeName,
@@ -124,7 +202,9 @@ class EmailTemplate extends Model
     private function fillPlaceholders(string $text, array $values): string
     {
         $pattern = '/\{\{\s*(approver_name|offboardee_name|employee_name|employee_number|checklist_name|due_date'
-            . '|department|position|days_overdue|pending_items|checklist_status|offboarding_link)\s*\}\}'
+            . '|department|position|days_overdue|pending_items|checklist_status|date_hired|separation_date|reason|offboarding_link'
+            . '|request_date|offboarding_status|username|temporary_password|checklist_summary'
+            . '|department_head_name|assigned_signatories|checklist_progress|remaining_items|follow_up_sent_at)\s*\}\}'
             . '|\{\s*(approver|offboardee|employee)\s*\}'
             . '|\b(approver|offboardee|employee)\b/i';
 

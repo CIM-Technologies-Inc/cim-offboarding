@@ -2,10 +2,12 @@
 
 namespace App\Services;
 
+use App\Mail\ChecklistGroupApprovedMail;
 use App\Mail\ChecklistItemApproverAssignedMail;
 use App\Mail\ChecklistReadyForApprovalMail;
 use App\Mail\ChecklistSignatoryAnnouncementMail;
 use App\Models\ChecklistApprovalToken;
+use App\Models\ChecklistFollowUp;
 use App\Models\ChecklistItem;
 use App\Models\ChecklistTemplate;
 use App\Models\EmailTemplate;
@@ -22,6 +24,30 @@ use Illuminate\Support\Str;
 
 class ChecklistApprovalNotifier
 {
+    /**
+     * Fixed-name email template for the dedicated "a new offboarding
+     * request needs your attention" notice sent to every Department Head —
+     * independent of whatever template the admin may have flagged as the
+     * default Offboarding Announcement (see `attachAndNotify()`'s own
+     * `$emailTemplate` param), so this specific, structured notice always
+     * goes out regardless of that separate, optional setting.
+     */
+    private const REQUEST_NOTIFICATION_TEMPLATE = 'Offboarding Request Notification';
+
+    /**
+     * Fixed-name email template for the "your offboarding process has
+     * started" notice sent to the offboardee themselves — see
+     * `notifyOffboardee()`.
+     */
+    private const OFFBOARDEE_NOTIFICATION_TEMPLATE = 'Offboarding Details Notification – Employee';
+
+    /**
+     * Fixed-name email template for the employee-initiated "I'm following up
+     * on this pending checklist" notice sent to the offboarding request's
+     * creator — see `notifyFollowUp()`.
+     */
+    private const FOLLOW_UP_TEMPLATE = 'Employee Offboarding Follow-Up Notification';
+
     /**
      * Attaches the given checklist templates to the request, creates one
      * `OffboardingRequestApprover` assignment per template that has a
@@ -151,6 +177,319 @@ class ChecklistApprovalNotifier
     }
 
     /**
+     * Sends the dedicated "Offboarding Request Notification" email to every
+     * approver of an active, non-Final-Pay checklist template applicable to
+     * this request — one email per approver even when they're responsible
+     * for several templates (department-head-led AND/OR the Immediate Head
+     * checklist), listing every checklist they're responsible for
+     * reviewing. Never sent for Final Pay templates (a distinct, later
+     * stage handled by its own "Final Pay Checklist Approval"
+     * notification) — excluded by the `$eligible` filter below.
+     *
+     * Called ONCE, directly by `OffboardingRequestController::notifyDepartmentHeads()`
+     * right after the request is saved, alongside — not from inside —
+     * `attachAndNotify()`. It must stay a separate call: `attachAndNotify()`
+     * is also reused later for the Final Pay stage, and this notification
+     * must never fire there (it's already excluded by the `$eligible`
+     * filter below since Final Pay templates are always
+     * `is_final_pay_checklist = true`, but keeping the call sites separate
+     * means that exclusion isn't the only thing preventing a duplicate).
+     * Every assigned approver is notified and given access to their
+     * checklist(s) at the same moment, immediately on submission — there is
+     * no "wait for the Immediate Head first" sequencing here or anywhere
+     * else in this method; the Immediate Head checklist attaches and
+     * notifies alongside every other template in the very same
+     * `attachAndNotify()` call.
+     */
+    public function notifyDepartmentHeadsOfNewRequest(OffboardingRequest $offboardingRequest, Collection $templates): void
+    {
+        $emailTemplate = EmailTemplate::where('is_active', true)
+            ->where('template_name', self::REQUEST_NOTIFICATION_TEMPLATE)
+            ->latest('updated_at')
+            ->first();
+
+        if (! $emailTemplate) {
+            Log::warning('No "' . self::REQUEST_NOTIFICATION_TEMPLATE . '" email template found — approvers were not sent the offboarding request notification.', [
+                'offboarding_request_id' => $offboardingRequest->id,
+            ]);
+
+            return;
+        }
+
+        // Resolved the same way `attachAndNotify()` resolves each
+        // template's assigned approver — an Immediate Head checklist has no
+        // department head of its own, it's assigned to whichever Immediate
+        // Head was picked on THIS request.
+        $eligible = $templates
+            ->filter(fn (ChecklistTemplate $template) => ! $template->is_final_pay_checklist)
+            ->map(fn (ChecklistTemplate $template) => [
+                'template' => $template,
+                'approverEmployeeId' => $template->is_immediate_head_checklist
+                    ? $offboardingRequest->immediate_head_id
+                    : $template->department_head_id,
+            ])
+            ->filter(fn (array $entry) => $entry['approverEmployeeId']);
+
+        if ($eligible->isEmpty()) {
+            return;
+        }
+
+        $offboardee = $offboardingRequest->employee;
+
+        foreach ($eligible->groupBy('approverEmployeeId') as $approverEmployeeId => $entriesForApprover) {
+            /** @var Collection<int, array{template: ChecklistTemplate, approverEmployeeId: int}> $entriesForApprover */
+            $templatesForApprover = $entriesForApprover->pluck('template');
+            $approver = $templatesForApprover->first()->is_immediate_head_checklist
+                ? $offboardingRequest->immediateHead
+                : $templatesForApprover->first()->departmentHead;
+
+            $approver ??= Employee::find($approverEmployeeId);
+
+            if (! $approver || ! $approver->email || ! filter_var($approver->email, FILTER_VALIDATE_EMAIL)) {
+                continue;
+            }
+
+            [$subject, $body] = $emailTemplate->render(
+                approverName: $approver->name,
+                offboardeeName: $offboardee->name,
+                employeeNumber: $offboardee->employee_code,
+                checklistName: $templatesForApprover->pluck('title')->implode(', '),
+                department: $offboardee->department,
+                position: $offboardee->designation,
+                dateHired: $offboardee->date_of_joining?->format('M d, Y'),
+                separationDate: $offboardingRequest->last_working_day?->format('M d, Y'),
+                reason: ucfirst($offboardingRequest->reason),
+            );
+
+            try {
+                Mail::to($approver->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+            } catch (\Throwable $e) {
+                Log::error('Failed to send offboarding request notification email.', [
+                    'offboarding_request_id' => $offboardingRequest->id,
+                    'recipient' => $approver->email,
+                    'exception' => $e->getMessage(),
+                ]);
+            }
+        }
+    }
+
+    /**
+     * Emails the offboardee themselves that their offboarding process has
+     * started — offboarding/employment details, every checklist currently
+     * attached to their request (department/area, assigned signatory, due
+     * date, current status), and, only when a brand-new Employee-role
+     * account was just created for them, their login username and
+     * temporary password. Called once, directly from
+     * `OffboardingRequestController::notifyDepartmentHeads()`, after
+     * `attachAndNotify()` so the checklist summary reflects the templates
+     * actually attached (with resolved due dates/signatories) rather than
+     * the bare template list. A no-op (logged, not fatal) if the fixed-name
+     * template hasn't been created/activated, same convention as every
+     * other fixed-name notification in this class.
+     */
+    public function notifyOffboardee(OffboardingRequest $offboardingRequest, User $employeeUser, bool $isNewAccount, ?string $temporaryPassword): void
+    {
+        $offboardee = $offboardingRequest->employee;
+
+        if (! $offboardee->email || ! filter_var($offboardee->email, FILTER_VALIDATE_EMAIL)) {
+            return;
+        }
+
+        $emailTemplate = EmailTemplate::where('is_active', true)
+            ->where('template_name', self::OFFBOARDEE_NOTIFICATION_TEMPLATE)
+            ->latest('updated_at')
+            ->first();
+
+        if (! $emailTemplate) {
+            Log::warning('No "' . self::OFFBOARDEE_NOTIFICATION_TEMPLATE . '" email template found — the offboardee was not sent the offboarding details notification.', [
+                'offboarding_request_id' => $offboardingRequest->id,
+            ]);
+
+            return;
+        }
+
+        $offboardingRequest->loadMissing('approvers.checklistTemplate', 'approvers.employee');
+
+        [$subject, $body] = $emailTemplate->render(
+            approverName: $offboardee->name,
+            offboardeeName: $offboardee->name,
+            employeeNumber: $offboardee->employee_code,
+            department: $offboardee->department,
+            position: $offboardee->designation,
+            dateHired: $offboardee->date_of_joining?->format('M d, Y'),
+            separationDate: $offboardingRequest->last_working_day?->format('M d, Y'),
+            requestDate: $offboardingRequest->created_at->format('M d, Y'),
+            offboardingStatus: ucfirst(str_replace('_', ' ', $offboardingRequest->displayStatus())),
+            username: $isNewAccount ? $employeeUser->username : null,
+            temporaryPassword: $isNewAccount ? $temporaryPassword : null,
+            checklistSummary: $this->buildChecklistSummaryHtml($offboardingRequest->approvers),
+        );
+
+        try {
+            Mail::to($offboardee->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+        } catch (\Throwable $e) {
+            Log::error('Failed to send offboarding details notification email.', [
+                'offboarding_request_id' => $offboardingRequest->id,
+                'recipient' => $offboardee->email,
+                'exception' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Pre-renders the "{{checklist_summary}}" placeholder as an HTML table
+     * — one row per currently-attached checklist — the same technique
+     * `OffboardingRequestApprover::itemsStatusTableHtml()` already uses for
+     * the overdue-reminder email's "{{pending_items}}" placeholder, since
+     * `EmailTemplate::render()` only does flat string substitution and has
+     * no loop/array placeholder of its own.
+     *
+     * @param  \Illuminate\Support\Collection<int, OffboardingRequestApprover>  $approvers
+     */
+    private function buildChecklistSummaryHtml($approvers): string
+    {
+        if ($approvers->isEmpty()) {
+            return '<p>No checklists have been assigned yet.</p>';
+        }
+
+        $rows = $approvers->map(function (OffboardingRequestApprover $approver) {
+            return '<tr>'
+                .'<td style="padding:6px 10px;border:1px solid #e5e7eb;">'.e($approver->checklistTemplate?->title ?? '—').'</td>'
+                .'<td style="padding:6px 10px;border:1px solid #e5e7eb;">'.e($approver->department() ?? '—').'</td>'
+                .'<td style="padding:6px 10px;border:1px solid #e5e7eb;">'.e($approver->employee?->name ?? 'Unassigned').'</td>'
+                .'<td style="padding:6px 10px;border:1px solid #e5e7eb;">'.e($approver->due_at?->format('M d, Y') ?? '—').'</td>'
+                .'<td style="padding:6px 10px;border:1px solid #e5e7eb;">'.e($approver->clearanceStatusLabel()).'</td>'
+                .'</tr>';
+        })->implode('');
+
+        return '<table style="width:100%;border-collapse:collapse;font-size:13px;">'
+            .'<tr>'
+            .'<th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:left;background:#f3f4f6;">Checklist</th>'
+            .'<th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:left;background:#f3f4f6;">Department/Area</th>'
+            .'<th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:left;background:#f3f4f6;">Assigned Signatory</th>'
+            .'<th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:left;background:#f3f4f6;">Due Date</th>'
+            .'<th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:left;background:#f3f4f6;">Status</th>'
+            .'</tr>'
+            .$rows
+            .'</table>';
+    }
+
+    /**
+     * Emails the offboarding request's creator that the employee is
+     * following up on one specific, still-outstanding checklist — called
+     * once from `ChecklistFollowUpService::send()`, which has already
+     * validated the daily-per-checklist cooldown and the request's shared
+     * follow-up budget before this ever runs. Returns whether the email was
+     * actually sent, so the caller can mark the tracking row `failed`
+     * instead of `sent` when it wasn't (no template configured, no valid
+     * recipient email, or the send itself threw) — the follow-up attempt
+     * still counts against the employee's budget either way, since the
+     * budget exists to bound how many times THEY can try, not to guarantee
+     * delivery.
+     */
+    public function notifyFollowUp(OffboardingRequestApprover $assignment, ChecklistFollowUp $followUp, User $recipient): bool
+    {
+        if (! $recipient->email || ! filter_var($recipient->email, FILTER_VALIDATE_EMAIL)) {
+            Log::warning('Could not send checklist follow-up email — recipient has no valid email address.', [
+                'checklist_follow_up_id' => $followUp->id,
+            ]);
+
+            return false;
+        }
+
+        $emailTemplate = EmailTemplate::where('is_active', true)
+            ->where('template_name', self::FOLLOW_UP_TEMPLATE)
+            ->latest('updated_at')
+            ->first();
+
+        if (! $emailTemplate) {
+            Log::warning('No "' . self::FOLLOW_UP_TEMPLATE . '" email template found — the follow-up was not emailed.', [
+                'checklist_follow_up_id' => $followUp->id,
+            ]);
+
+            return false;
+        }
+
+        $assignment->loadMissing('checklistTemplate.items', 'itemProgress', 'itemAssignments.assignedEmployee', 'employee');
+        $offboardingRequest = $assignment->offboardingRequest;
+        $offboardee = $offboardingRequest->employee;
+
+        $items = $assignment->checklistTemplate?->items ?? collect();
+        $progressByItemId = $assignment->itemProgress->keyBy('checklist_item_id');
+        $completedCount = $items->filter(fn (ChecklistItem $item) => (bool) ($progressByItemId->get($item->id)?->is_checked ?? false))->count();
+
+        $signatoryNames = $items
+            ->map(fn (ChecklistItem $item) => $assignment->effectiveSignatoryFor($item)?->name)
+            ->filter()
+            ->unique()
+            ->values();
+
+        if ($signatoryNames->isEmpty() && $assignment->employee) {
+            $signatoryNames = collect([$assignment->employee->name]);
+        }
+
+        [$subject, $body] = $emailTemplate->render(
+            approverName: $recipient->name,
+            offboardeeName: $offboardee->name,
+            employeeNumber: $offboardee->employee_code,
+            checklistName: $assignment->checklistTemplate?->title ?? 'Untitled Checklist',
+            dueDate: $assignment->due_at?->format('M d, Y'),
+            department: $assignment->department(),
+            position: $offboardee->designation,
+            checklistStatus: $assignment->clearanceStatusLabel(),
+            dateHired: $offboardee->date_of_joining?->format('M d, Y'),
+            separationDate: $offboardingRequest->last_working_day?->format('M d, Y'),
+            requestDate: $offboardingRequest->created_at->format('M d, Y'),
+            departmentHeadName: $assignment->employee?->name ?? 'Unassigned',
+            assignedSignatories: $signatoryNames->isNotEmpty() ? $signatoryNames->implode(', ') : 'Unassigned',
+            checklistProgress: "{$completedCount} of {$items->count()} items completed",
+            remainingItems: $this->buildRemainingItemsHtml($assignment, $items, $progressByItemId),
+            followUpSentAt: $followUp->sent_at->format('M d, Y g:i A'),
+        );
+
+        try {
+            Mail::to($recipient->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+
+            return true;
+        } catch (\Throwable $e) {
+            Log::error('Failed to send checklist follow-up email.', [
+                'checklist_follow_up_id' => $followUp->id,
+                'recipient' => $recipient->email,
+                'exception' => $e->getMessage(),
+            ]);
+
+            return false;
+        }
+    }
+
+    /**
+     * The "{{remaining_items}}" placeholder — an HTML list of only the
+     * checklist items still unchecked, since the follow-up email's whole
+     * point is telling HR/admin exactly what's still outstanding (as
+     * distinct from `buildChecklistSummaryHtml()`'s per-checklist overview,
+     * which lists every checklist, not every item).
+     *
+     * @param  \Illuminate\Support\Collection<int, ChecklistItem>  $items
+     * @param  \Illuminate\Support\Collection<int, ChecklistItemProgress>  $progressByItemId
+     */
+    private function buildRemainingItemsHtml(OffboardingRequestApprover $assignment, $items, $progressByItemId): string
+    {
+        $remaining = $items->reject(fn (ChecklistItem $item) => (bool) ($progressByItemId->get($item->id)?->is_checked ?? false));
+
+        if ($remaining->isEmpty()) {
+            return '<p>No individual checklist items remain — the checklist is awaiting Department Head approval.</p>';
+        }
+
+        $rows = $remaining->map(function (ChecklistItem $item) use ($assignment) {
+            $signatory = $assignment->effectiveSignatoryFor($item);
+
+            return '<li>' . e($item->title) . ($signatory ? ' — assigned to ' . e($signatory->name) : '') . '</li>';
+        })->implode('');
+
+        return '<ul style="margin:0;padding-left:20px;">' . $rows . '</ul>';
+    }
+
+    /**
      * For every checklist item across the given templates whose signatory
      * is set and differs from that template's own department head, ensures
      * the signatory has a login account (creating one — username = password
@@ -182,8 +521,11 @@ class ChecklistApprovalNotifier
     {
         $offboardee = $offboardingRequest->employee;
 
-        /** @var array<int, array{employee: Employee, items: array<int, array{checklistTitle: string, itemTitle: string, dueAt: ?string}>}> $byApprover */
+        /** @var array<int, array{employee: Employee, items: array<int, array{checklistTitle: string, itemTitle: string, dueAt: ?string}>, hasExplicitAssignment: bool}> $byApprover */
         $byApprover = [];
+
+        /** @var array<int, array{checklistTitle: string, itemTitle: string, dueAt: ?string}> $allActiveItems */
+        $allActiveItems = [];
 
         foreach ($templates as $template) {
             $dueAt = $template->due_in_days ? now()->addDays($template->due_in_days)->format('M d, Y') : null;
@@ -191,6 +533,12 @@ class ChecklistApprovalNotifier
 
             foreach ($template->items as $item) {
                 /** @var ChecklistItem $item */
+                $allActiveItems[] = [
+                    'checklistTitle' => $template->title,
+                    'itemTitle' => $item->title,
+                    'dueAt' => $dueAt,
+                ];
+
                 $signatory = $assignment ? $assignment->effectiveSignatoryFor($item) : $item->signatory;
 
                 if (! $signatory || $signatory->id === $assignment?->employee_id) {
@@ -203,6 +551,13 @@ class ChecklistApprovalNotifier
                     'itemTitle' => $item->title,
                     'dueAt' => $dueAt,
                 ];
+                // An item with no configured `signatory_id` on the template
+                // itself only ever reaches here via `snapshotItemSignatories()`'s
+                // fallback assignment — tracking whether this recipient has
+                // AT LEAST ONE genuinely explicit item (as opposed to being
+                // purely a fallback participant) decides which item list
+                // their email shows, below.
+                $byApprover[$signatory->id]['hasExplicitAssignment'] = ($byApprover[$signatory->id]['hasExplicitAssignment'] ?? false) || $item->signatory_id !== null;
             }
         }
 
@@ -212,6 +567,13 @@ class ChecklistApprovalNotifier
             if (! $employee) {
                 continue;
             }
+
+            // A recipient whose only involvement is via the fallback
+            // mechanism (no item anywhere in this batch was specifically
+            // assigned to them) sees every active checklist item instead of
+            // just their own subset, for situational awareness — replacing
+            // rather than appending, so nothing is ever duplicated.
+            $items = $entry['hasExplicitAssignment'] ? $entry['items'] : $allActiveItems;
 
             $existingUser = User::firstWhere('username', $employee->employee_code);
             $user = $existingUser ?? User::findOrCreateApprover($employee);
@@ -231,7 +593,7 @@ class ChecklistApprovalNotifier
                     approverName: $employee->name,
                     offboardeeName: $offboardee->name,
                     offboardeeEmployeeCode: $offboardee->employee_code,
-                    assignedItems: $entry['items'],
+                    assignedItems: $items,
                     approvalUrl: route('approvals.index'),
                     credentials: $credentials,
                 ));
@@ -255,44 +617,37 @@ class ChecklistApprovalNotifier
     private const APPROVAL_TOKEN_LIFETIME_DAYS = 30;
 
     /**
-     * Emails this assignment's Department Head once every checklist item
-     * has been checked — the "ready for your final review and approval"
-     * notice. Called only from `ChecklistCompletionService::checkReadyForDepartmentHeadApproval()`,
-     * which already guards this to fire exactly once per assignment.
+     * Emails this employee's Department Head once every checklist item
+     * across EVERY checklist they're the assigned approver for on this
+     * request has been checked — one "ready for your final review and
+     * approval" notice covering the whole combined group, instead of one
+     * per checklist. Called only from
+     * `ChecklistCompletionService::checkGroupReadyForApproval()`, which
+     * already guards this to fire exactly once per group. The single
+     * approval token is tied to the group's first member row — clicking
+     * "Approve" re-expands to whatever this employee's current full group
+     * is at click time (see `ApprovalController::resolveEmailApprovalState()`),
+     * not just the members that existed when this email was sent.
+     *
+     * @param  Collection<int, OffboardingRequestApprover>  $members
      */
-    public function notifyDepartmentHeadReady(OffboardingRequestApprover $assignment): void
+    public function notifyDepartmentHeadReady(OffboardingRequest $offboardingRequest, int $employeeId, Collection $members): void
     {
-        $assignment->loadMissing(
-            'employee',
-            'checklistTemplate.items',
-            'itemProgress.checkedBy',
-            'offboardingRequest.employee'
-        );
+        $members->each->loadMissing('checklistTemplate.items', 'itemProgress.checkedBy');
 
-        $departmentHead = $assignment->employee;
+        $departmentHead = $members->first()->employee ?? Employee::find($employeeId);
 
         if (! $departmentHead || ! $departmentHead->email || ! filter_var($departmentHead->email, FILTER_VALIDATE_EMAIL)) {
             return;
         }
 
-        $offboardee = $assignment->offboardingRequest->employee;
-        $progressByItemId = $assignment->itemProgress->keyBy('checklist_item_id');
-
-        $items = $assignment->checklistTemplate->items->map(function (ChecklistItem $item) use ($progressByItemId) {
-            $progress = $progressByItemId->get($item->id);
-
-            return [
-                'title' => $item->title,
-                'checkedByName' => $progress?->checkedBy?->name,
-                'checkedAt' => $progress?->checked_at?->format('M d, Y g:i A'),
-                'remark' => $progress?->remark,
-            ];
-        })->all();
+        $offboardee = $offboardingRequest->employee;
+        $checklists = $this->buildChecklistsPayload($members);
 
         $rawApprovalToken = Str::random(64);
 
         $approvalToken = ChecklistApprovalToken::create([
-            'offboarding_request_approver_id' => $assignment->id,
+            'offboarding_request_approver_id' => $members->first()->id,
             'token' => Hash::make($rawApprovalToken),
             'expires_at' => now()->addDays(self::APPROVAL_TOKEN_LIFETIME_DAYS),
         ]);
@@ -302,18 +657,97 @@ class ChecklistApprovalNotifier
                 departmentHeadName: $departmentHead->name,
                 offboardeeName: $offboardee->name,
                 offboardeeEmployeeCode: $offboardee->employee_code,
-                checklistTitle: $assignment->checklistTemplate->title,
-                items: $items,
+                checklists: $checklists,
                 approvalUrl: route('approvals.index'),
                 approveUrl: route('approval.show', ['id' => $approvalToken->id, 'token' => $rawApprovalToken]),
             ));
         } catch (\Throwable $e) {
             Log::error('Failed to send checklist-ready-for-approval email.', [
-                'offboarding_request_approver_id' => $assignment->id,
+                'offboarding_request_id' => $offboardingRequest->id,
+                'employee_id' => $employeeId,
                 'recipient' => $departmentHead->email,
                 'exception' => $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * Emails the HR/admin user who created this offboarding request once an
+     * approver has submitted approval for their whole combined group (every
+     * checklist they were the assigned approver for on this request) in one
+     * action — the "the assigned approver just completed their checklist(s)"
+     * notice. Called once from `ApprovalController::finalizeGroupApproval()`,
+     * after every member row in the group has already been marked approved.
+     * A no-op (logged, not fatal) for a request with no recorded creator —
+     * expected for any request created before `created_by` existed.
+     *
+     * @param  Collection<int, OffboardingRequestApprover>  $members
+     */
+    public function notifyRequestCreatorOfGroupApproval(OffboardingRequest $offboardingRequest, int $employeeId, Collection $members): void
+    {
+        $creator = $offboardingRequest->creator;
+
+        if (! $creator || ! $creator->email || ! filter_var($creator->email, FILTER_VALIDATE_EMAIL)) {
+            Log::warning('Could not send checklist group approval confirmation email — offboarding request has no recorded creator with a valid email.', [
+                'offboarding_request_id' => $offboardingRequest->id,
+                'employee_id' => $employeeId,
+            ]);
+
+            return;
+        }
+
+        $members->each->loadMissing('checklistTemplate.items', 'itemProgress.checkedBy');
+
+        $approver = $members->first()->employee ?? Employee::find($employeeId);
+        $offboardee = $offboardingRequest->employee;
+        $checklists = $this->buildChecklistsPayload($members);
+
+        try {
+            Mail::to($creator->email)->send(new ChecklistGroupApprovedMail(
+                creatorName: $creator->name,
+                approverName: $approver?->name ?? 'The assigned approver',
+                offboardeeName: $offboardee->name,
+                offboardeeEmployeeCode: $offboardee->employee_code,
+                checklists: $checklists,
+            ));
+        } catch (\Throwable $e) {
+            Log::error('Failed to send checklist group approval confirmation email.', [
+                'offboarding_request_id' => $offboardingRequest->id,
+                'employee_id' => $employeeId,
+                'recipient' => $creator->email,
+                'exception' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Shared shape for both the "ready for approval" and "group approved"
+     * emails: one entry per checklist template in the group, each with its
+     * own items and their current checked state — so an approver reviewing
+     * either email can see exactly which checklist each item belongs to.
+     *
+     * @param  Collection<int, OffboardingRequestApprover>  $members
+     * @return array<int, array{title: string, items: array<int, array{title: string, checkedByName: ?string, checkedAt: ?string, remark: ?string}>}>
+     */
+    private function buildChecklistsPayload(Collection $members): array
+    {
+        return $members->map(function (OffboardingRequestApprover $assignment) {
+            $progressByItemId = $assignment->itemProgress->keyBy('checklist_item_id');
+
+            return [
+                'title' => $assignment->checklistTemplate->title,
+                'items' => $assignment->checklistTemplate->items->map(function (ChecklistItem $item) use ($progressByItemId) {
+                    $progress = $progressByItemId->get($item->id);
+
+                    return [
+                        'title' => $item->title,
+                        'checkedByName' => $progress?->checkedBy?->name,
+                        'checkedAt' => $progress?->checked_at?->format('M d, Y g:i A'),
+                        'remark' => $progress?->remark,
+                    ];
+                })->all(),
+            ];
+        })->values()->all();
     }
 
     /**
@@ -380,7 +814,17 @@ class ChecklistApprovalNotifier
             $group = EmployeeGroup::where('group_head_employee_id', $template->department_head_id)->first();
 
             if ($group) {
-                $groupMembers = $group->employees()->where('status', 'active')->orderBy('employee_code')->get();
+                // Only members flagged `is_task_assignee` on the Employee
+                // Master page are eligible, and the Group Head/Clearance
+                // Signatory is always excluded — same rule already enforced
+                // for the manual Task Assignee picker, see
+                // `ChecklistTemplateController::eligibleSignatoryIds()`.
+                $groupMembers = $group->employees()
+                    ->where('status', 'active')
+                    ->where('is_task_assignee', true)
+                    ->where('id', '!=', $template->department_head_id)
+                    ->orderBy('employee_code')
+                    ->get();
             }
         }
 

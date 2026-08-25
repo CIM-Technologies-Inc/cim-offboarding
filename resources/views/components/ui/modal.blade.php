@@ -46,7 +46,7 @@
         @endif
 
         <!-- Modal Body -->
-        <div>
+        <div class="h-full">
             {{ $slot }}
         </div>
     </div>

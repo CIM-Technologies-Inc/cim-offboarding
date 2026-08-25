@@ -56,13 +56,7 @@
                                 <p class="text-gray-500 text-theme-sm dark:text-gray-400">{{ $template->department ?? '—' }}</p>
                             </td>
                             <td class="px-5 py-4 sm:px-6">
-                                @if ($template->is_general_signatory)
-                                    <span class="inline-flex items-center rounded-full bg-[#145a3a]/10 px-2.5 py-1 text-xs font-medium text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]">
-                                        General Signatory
-                                    </span>
-                                @else
-                                    <p class="text-gray-500 text-theme-sm dark:text-gray-400">{{ $template->items_count }} item(s)</p>
-                                @endif
+                                <p class="text-gray-500 text-theme-sm dark:text-gray-400">{{ $template->items_count }} item(s)</p>
                             </td>
                             <td class="px-5 py-4 sm:px-6">
                                 <p class="text-gray-500 text-theme-sm dark:text-gray-400">{{ $template->creator->name ?? '—' }}</p>

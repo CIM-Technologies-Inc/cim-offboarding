@@ -22,9 +22,14 @@ class Employee extends Model
         'employee_code',
         'name',
         'email',
+        'personal_email',
         'department',
         'employee_group_id',
+        'is_task_assignee',
         'designation',
+        'sup_one',
+        'sup_two',
+        'head',
         'date_of_joining',
         'status',
     ];
@@ -33,6 +38,7 @@ class Employee extends Model
     {
         return [
             'date_of_joining' => 'date',
+            'is_task_assignee' => 'boolean',
         ];
     }
 

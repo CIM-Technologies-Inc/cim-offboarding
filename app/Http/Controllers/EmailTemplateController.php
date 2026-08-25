@@ -32,7 +32,7 @@ class EmailTemplateController extends Controller
     private function workspace(?EmailTemplate $template): View
     {
         return view('pages.email-templates.workspace', [
-            'title' => 'Email Template Management',
+            'title' => 'Email and Notification',
             'templates' => EmailTemplate::latest('updated_at')->get(),
             'template' => $template,
             'employees' => Employee::orderBy('name')->get(['id', 'name', 'department']),
@@ -41,7 +41,7 @@ class EmailTemplateController extends Controller
 
     public function store(StoreEmailTemplateRequest $request): RedirectResponse
     {
-        $validated = $request->validated();
+        $validated = $this->normalizeSchedule($request->validated());
 
         DB::transaction(function () use ($request, $validated) {
             if ($validated['is_default_announcement']) {
@@ -59,7 +59,7 @@ class EmailTemplateController extends Controller
 
     public function update(UpdateEmailTemplateRequest $request, EmailTemplate $emailTemplate): RedirectResponse
     {
-        $validated = $request->validated();
+        $validated = $this->normalizeSchedule($request->validated());
 
         DB::transaction(function () use ($validated, $emailTemplate) {
             if ($validated['is_default_announcement']) {
@@ -71,6 +71,25 @@ class EmailTemplateController extends Controller
 
         return redirect()->route('email-templates.create')
             ->with('success', 'Template updated successfully.');
+    }
+
+    /**
+     * Discards a submitted timing/day count whenever scheduling is off, so
+     * unchecking "Schedule Before/After Last Working Day" on an update
+     * always clears any previously configured schedule rather than leaving
+     * stale values behind.
+     *
+     * @param  array<string, mixed>  $validated
+     * @return array<string, mixed>
+     */
+    private function normalizeSchedule(array $validated): array
+    {
+        if (empty($validated['is_scheduled'])) {
+            $validated['schedule_timing'] = null;
+            $validated['schedule_days'] = null;
+        }
+
+        return $validated;
     }
 
     /**

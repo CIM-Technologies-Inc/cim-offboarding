@@ -3,7 +3,7 @@
 @section('content')
     <x-common.page-breadcrumb pageTitle="New Checklist Template" />
 
-    <div x-data="checklistBuilder(@js(old('title', '')), @js(old('department_head_id', '')), @js((bool) old('is_immediate_head_checklist', false)), @js(old('department', '')), @js(old('due_in_days', '')), @js((bool) old('is_general_signatory', false)), @js(old('items', [['title' => '', 'signatory_id' => '']])), @js($employees->map(fn ($employee) => ['id' => (string) $employee->id, 'name' => $employee->name, 'department' => $employee->department])), @js($employeeGroups), @js($errors->any() ? $errors->first() : null))"
+    <div x-data="checklistBuilder(@js(old('title', '')), @js(old('department_head_id', '')), @js((bool) old('is_immediate_head_checklist', false)), @js(old('department', '')), @js(old('due_in_days', '')), @js(old('items', [['title' => '', 'signatory_id' => '']])), @js($employees->map(fn ($employee) => ['id' => (string) $employee->id, 'name' => $employee->name, 'department' => $employee->department])), @js($employeeGroups), @js($errors->any() ? $errors->first() : null))"
         class="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-white/[0.03] lg:p-6">
         <form method="POST" action="{{ route('checklist-templates.store') }}" class="flex flex-col">
             @csrf
@@ -30,9 +30,10 @@
 
             <div class="mt-5">
                 <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
-                    Department Head
+                    Clearance Signatory
                 </label>
                 <select name="department_head_id" x-model="departmentHeadId" :disabled="isImmediateHead"
+                    @change="onDepartmentHeadChange()"
                     :class="isImmediateHead ? 'cursor-not-allowed bg-gray-100 text-gray-400 dark:bg-gray-800 dark:text-gray-500' : 'bg-transparent text-gray-800 dark:text-white/90'"
                     class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-none px-4 py-2.5 text-sm shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:focus:border-brand-800">
                     <option value="">None</option>
@@ -41,7 +42,7 @@
                     @endforeach
                 </select>
                 <p class="mt-1.5 text-xs text-gray-400" x-show="!isImmediateHead">
-                    This department head has the authority over the whole checklist and is always the final approver. Each item below can have its own independent approver — if any item's approver differs from the department head, the checklist auto-approves once every item is checked, with no manual approval step.
+                    Clearance signatory has the authority over the whole checklist and is always the final approver. Each item below can have its own independent assignee.
                 </p>
                 <template x-if="currentGroupName()">
                     <p class="mt-1.5 text-xs font-medium text-[#145a3a] dark:text-[#3aa876]">
@@ -51,19 +52,8 @@
             </div>
 
             <div class="mt-5">
-                <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
-                    <input type="checkbox" name="is_general_signatory" value="1" x-model="isGeneralSignatory"
-                        class="h-4 w-4 accent-brand-500" />
-                    General Signatory
-                </label>
-                <!-- <p class="mt-1.5 text-xs text-gray-400">
-                    Adds this checklist as an additional signatory on the Clearance Form and removes the requirement to add any checklist items below — you can still add items now or later if this checklist should also use regular item approval. The Department Head above must still be selected for this signatory to appear on the Approval page.
-                </p> -->
-            </div>
-
-            <div class="mt-5">
                 <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
-                    Per Department
+                    Department Checklist
                 </label>
                 <select name="department" x-model="department"
                     class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:focus:border-brand-800">
@@ -93,7 +83,7 @@
                     <input type="checkbox" name="is_final_pay_checklist" value="1"
                         @checked(old('is_final_pay_checklist'))
                         class="h-4 w-4 accent-brand-500" />
-                    Final Pay Checklist
+                    For Final Pay Checklist
                 </label>
             </div>
 
@@ -113,23 +103,24 @@
 
                 <div class="space-y-4">
                     <template x-for="(item, index) in items" :key="index">
-                        <div class="flex flex-col gap-3 rounded-xl border border-gray-200 p-4 dark:border-gray-800 sm:flex-row sm:items-start">
+                        <div class="flex flex-col gap-3 rounded-xl border border-gray-200 p-4 dark:border-gray-800">
+                        <div class="flex flex-col gap-3 sm:flex-row sm:items-start">
                             <div class="flex-1">
                                 <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
-                                    Items for turn over
+                                    List Title
                                 </label>
                                 <input type="text" x-model="item.title" :name="`items[${index}][title]`" placeholder="e.g. Return company laptop"
                                     class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
                             </div>
                             <div class="relative sm:w-72" @click.away="item.signatory_open = false">
                                 <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
-                                    Signatory
+                                    Task Assignee
                                 </label>
                                 <input type="hidden" :name="`items[${index}][signatory_id]`" :value="item.signatory_id" />
                                 <div class="relative">
                                     <input type="text" x-model="item.signatory_query" autocomplete="off"
                                         @focus="item.signatory_open = true"
-                                        @input="item.signatory_id = ''; item.signatory_open = true"
+                                        @input="item.signatory_id = ''; item.notify_enabled = false; item.signatory_open = true"
                                         placeholder="Search employee..."
                                         class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 pr-9 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
                                     <button type="button" x-show="item.signatory_id" @click="clearSignatory(item)"
@@ -151,7 +142,8 @@
                                     </template>
                                     <div x-show="filteredEmployees(item.signatory_query).length === 0"
                                         class="px-4 py-2.5 text-sm text-gray-400">
-                                        No employees found
+                                        <span x-show="noEligibleEmployees()">No Task Assignees available — the selected group has no members.</span>
+                                        <span x-show="!noEligibleEmployees()">No employees found</span>
                                     </div>
                                 </div>
                             </div>
@@ -163,6 +155,52 @@
                                     </svg>
                                 </button>
                             </div>
+                        </div>
+
+                        <div>
+                            <label class="flex cursor-pointer items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-400">
+                                <input type="checkbox" :name="`items[${index}][notify_enabled]`" value="1"
+                                    x-model="item.notify_enabled" :disabled="!item.signatory_id"
+                                    class="h-4 w-4 accent-brand-500 disabled:cursor-not-allowed disabled:opacity-50" />
+                                Enable Scheduled Notification
+                            </label>
+                            <p class="mt-1 text-xs text-gray-400" x-show="!item.signatory_id">
+                                Select a Task Assignee to enable scheduling.
+                            </p>
+
+                            <div x-show="item.notify_enabled && item.signatory_id" x-cloak class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                                <div>
+                                    <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                                        Email/Notification Template
+                                    </label>
+                                    <select :name="`items[${index}][email_template_id]`" x-model="item.email_template_id"
+                                        class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:focus:border-brand-800">
+                                        <option value="">Select a template</option>
+                                        @foreach ($emailTemplates as $et)
+                                            <option value="{{ $et->id }}">{{ $et->template_name }}</option>
+                                        @endforeach
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                                        Send Timing
+                                    </label>
+                                    <select :name="`items[${index}][notify_timing]`" x-model="item.notify_timing"
+                                        class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-3 py-2.5 text-sm text-gray-800 shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:focus:border-brand-800">
+                                        <option value="before">Before Last Working Day</option>
+                                        <option value="after">After Last Working Day</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                                        Number of Days
+                                    </label>
+                                    <input type="number" min="1" step="1" :name="`items[${index}][notify_days]`"
+                                        x-model="item.notify_days" placeholder="e.g. 5"
+                                        class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
+                                </div>
+                            </div>
+                        </div>
                         </div>
                     </template>
                 </div>
@@ -182,14 +220,13 @@
     </div>
 
     <script>
-        function checklistBuilder(initialTitle, initialDepartmentHeadId, initialIsImmediateHead, initialDepartment, initialDueInDays, initialIsGeneralSignatory, initialItems, employees, employeeGroups, flashError = null) {
+        function checklistBuilder(initialTitle, initialDepartmentHeadId, initialIsImmediateHead, initialDepartment, initialDueInDays, initialItems, employees, employeeGroups, flashError = null) {
             return {
                 title: initialTitle,
                 departmentHeadId: initialDepartmentHeadId,
                 isImmediateHead: initialIsImmediateHead,
                 department: initialDepartment,
                 dueInDays: initialDueInDays,
-                isGeneralSignatory: initialIsGeneralSignatory,
                 employees: employees,
                 employeeGroups: employeeGroups,
                 items: [],
@@ -200,6 +237,10 @@
                         signatory_id: item.signatory_id || '',
                         signatory_query: this.labelFor(item.signatory_id),
                         signatory_open: false,
+                        notify_enabled: !!item.notify_enabled,
+                        email_template_id: item.email_template_id || '',
+                        notify_timing: item.notify_timing || 'before',
+                        notify_days: item.notify_days || '',
                     }));
 
                     if (flashError) {
@@ -227,13 +268,21 @@
                 currentGroupName() {
                     return this.currentGroup()?.name || '';
                 },
+                // The Clearance Signatory (Group Head) is always excluded
+                // from the Task Assignee pool — they're already the
+                // checklist's overall signatory, so they must never also be
+                // pickable as an individual item's Task Assignee, even if
+                // they happen to be a flagged member of their own group
+                // (the server already excludes them from `group.employeeIds`
+                // too — this filter is a belt-and-suspenders match).
                 eligibleEmployees() {
                     const group = this.currentGroup();
                     if (!group) {
                         return this.employees;
                     }
-                    const memberIds = group.employeeIds.map((id) => String(id));
-                    memberIds.push(String(this.departmentHeadId));
+                    const memberIds = group.employeeIds
+                        .map((id) => String(id))
+                        .filter((id) => id !== String(this.departmentHeadId));
                     return this.employees.filter((e) => memberIds.includes(e.id));
                 },
                 filteredEmployees(query) {
@@ -246,6 +295,23 @@
                         e.name.toLowerCase().includes(needle) || e.department.toLowerCase().includes(needle)
                     );
                 },
+                noEligibleEmployees() {
+                    return this.eligibleEmployees().length === 0;
+                },
+                // Changing the Clearance Signatory changes which group's
+                // members are eligible Task Assignees — any item already
+                // pointing at someone outside the newly selected group is
+                // cleared immediately so the UI never keeps showing a
+                // now-invalid assignee (the server independently enforces
+                // this too on save via `sanitizeSignatoryId()`).
+                onDepartmentHeadChange() {
+                    const eligibleIds = this.eligibleEmployees().map((e) => e.id);
+                    this.items.forEach((item) => {
+                        if (item.signatory_id && !eligibleIds.includes(String(item.signatory_id))) {
+                            this.clearSignatory(item);
+                        }
+                    });
+                },
                 selectSignatory(item, employee) {
                     item.signatory_id = employee.id;
                     item.signatory_query = employee.name;
@@ -255,9 +321,13 @@
                     item.signatory_id = '';
                     item.signatory_query = '';
                     item.signatory_open = false;
+                    item.notify_enabled = false;
                 },
                 addItem() {
-                    this.items.push({ title: '', signatory_id: '', signatory_query: '', signatory_open: false });
+                    this.items.push({
+                        title: '', signatory_id: '', signatory_query: '', signatory_open: false,
+                        notify_enabled: false, email_template_id: '', notify_timing: 'before', notify_days: '',
+                    });
                 },
                 removeItem(index) {
                     this.items.splice(index, 1);

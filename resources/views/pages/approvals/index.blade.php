@@ -63,11 +63,6 @@
                                 {{ implode(', ', $approval['checklistTemplates']) }}
                             </p>
                         @endif
-                        @if ($approval['isGeneralSignatory'])
-                            <span class="mt-1.5 inline-flex items-center rounded-full bg-[#145a3a]/10 px-2.5 py-0.5 text-xs font-medium text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]">
-                                General Signatory
-                            </span>
-                        @endif
 
                         @unless ($approval['isPrimaryApprover'])
                             <p class="mt-1 text-xs text-gray-400">
@@ -98,10 +93,10 @@
                                     <span class="font-medium {{ $approval['isOverdue'] ? 'text-error-600 dark:text-error-400' : 'text-gray-700 dark:text-gray-300' }}">{{ $approval['dueAt'] }}</span>
                                 </div>
                             @endif
-                            @if ($approval['delegation'])
+                            @if (!empty($approval['delegations']))
                                 <div class="flex items-center justify-between text-xs">
                                     <span class="text-gray-400">Assigned To</span>
-                                    <span class="font-medium text-gray-700 dark:text-gray-300">{{ $approval['delegation']['delegatedEmployeeName'] }}</span>
+                                    <span class="font-medium text-gray-700 dark:text-gray-300">{{ collect($approval['delegations'])->pluck('delegatedEmployeeName')->unique()->implode(', ') }}</span>
                                 </div>
                             @endif
                         </div>

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\ChecklistTemplate;
+use App\Models\EmailTemplate;
 use App\Models\Employee;
 use App\Models\EmployeeGroup;
 use Illuminate\Http\RedirectResponse;
@@ -35,15 +36,13 @@ class ChecklistTemplateController extends Controller
             'departmentHeads' => $this->departmentHeadOptions(),
             'employeeGroups' => $this->employeeGroupsForPicker(),
             'departments' => $this->departmentOptions(),
+            'emailTemplates' => $this->activeEmailTemplateOptions(),
         ]);
     }
 
     public function store(Request $request): RedirectResponse
     {
-        $isGeneralSignatory = $request->boolean('is_general_signatory');
         $isImmediateHeadChecklist = $request->boolean('is_immediate_head_checklist');
-
-        $this->dropBlankItemsWhenGeneralSignatory($request, $isGeneralSignatory);
 
         $validated = $request->validate([
             'title' => ['required', 'string', 'max:255'],
@@ -51,11 +50,14 @@ class ChecklistTemplateController extends Controller
             'is_immediate_head_checklist' => ['nullable', 'boolean'],
             'department' => ['nullable', 'string', Rule::in($this->departmentOptions())],
             'is_final_pay_checklist' => ['nullable', 'boolean'],
-            'is_general_signatory' => ['nullable', 'boolean'],
             'due_in_days' => ['nullable', 'integer', 'min:0', 'max:3650'],
-            'items' => $isGeneralSignatory ? ['nullable', 'array'] : ['required', 'array', 'min:1'],
+            'items' => ['required', 'array', 'min:1'],
             'items.*.title' => ['required', 'string', 'max:255'],
             'items.*.signatory_id' => ['nullable', 'exists:employees,id'],
+            'items.*.notify_enabled' => ['nullable', 'boolean'],
+            'items.*.email_template_id' => ['nullable', 'required_if:items.*.notify_enabled,1', 'exists:email_templates,id'],
+            'items.*.notify_timing' => ['nullable', 'required_if:items.*.notify_enabled,1', Rule::in(['before', 'after'])],
+            'items.*.notify_days' => ['nullable', 'required_if:items.*.notify_enabled,1', 'integer', 'min:1'],
         ]);
 
         // An Immediate Head checklist is assigned exclusively to whichever
@@ -66,24 +68,26 @@ class ChecklistTemplateController extends Controller
         $departmentHeadId = $isImmediateHeadChecklist ? null : ($validated['department_head_id'] ?: null);
         $eligibleSignatoryIds = $this->eligibleSignatoryIds($departmentHeadId);
 
-        DB::transaction(function () use ($validated, $request, $isGeneralSignatory, $isImmediateHeadChecklist, $departmentHeadId, $eligibleSignatoryIds) {
+        DB::transaction(function () use ($validated, $request, $isImmediateHeadChecklist, $departmentHeadId, $eligibleSignatoryIds) {
             $template = ChecklistTemplate::create([
                 'title' => $validated['title'],
                 'department_head_id' => $departmentHeadId,
                 'is_immediate_head_checklist' => $isImmediateHeadChecklist,
                 'department' => $validated['department'] ?? null,
                 'is_final_pay_checklist' => $request->boolean('is_final_pay_checklist'),
-                'is_general_signatory' => $isGeneralSignatory,
                 'due_in_days' => $validated['due_in_days'] ?: null,
                 'is_active' => true,
                 'created_by' => $request->user()->id,
             ]);
 
             foreach ($validated['items'] ?? [] as $index => $item) {
+                $signatoryId = $this->sanitizeSignatoryId($item['signatory_id'] ?? null, $eligibleSignatoryIds);
+
                 $template->items()->create([
                     'title' => $item['title'],
-                    'signatory_id' => $this->sanitizeSignatoryId($item['signatory_id'] ?? null, $eligibleSignatoryIds),
+                    'signatory_id' => $signatoryId,
                     'sort_order' => $index,
+                    ...$this->normalizeNotifyConfig($item, $signatoryId),
                 ]);
             }
         });
@@ -109,18 +113,16 @@ class ChecklistTemplateController extends Controller
             'title' => 'Edit Checklist Template',
             'template' => $checklistTemplate,
             'employees' => Employee::orderBy('name')->get(['id', 'name', 'department']),
-            'departmentHeads' => $this->departmentHeadOptions(),
+            'departmentHeads' => $this->departmentHeadOptions($checklistTemplate->department_head_id),
             'employeeGroups' => $this->employeeGroupsForPicker(),
             'departments' => $this->departmentOptions($checklistTemplate->department),
+            'emailTemplates' => $this->activeEmailTemplateOptions(),
         ]);
     }
 
     public function update(Request $request, ChecklistTemplate $checklistTemplate): RedirectResponse
     {
-        $isGeneralSignatory = $request->boolean('is_general_signatory');
         $isImmediateHeadChecklist = $request->boolean('is_immediate_head_checklist');
-
-        $this->dropBlankItemsWhenGeneralSignatory($request, $isGeneralSignatory);
 
         $validated = $request->validate([
             'title' => ['required', 'string', 'max:255'],
@@ -128,25 +130,27 @@ class ChecklistTemplateController extends Controller
             'is_immediate_head_checklist' => ['nullable', 'boolean'],
             'department' => ['nullable', 'string', Rule::in($this->departmentOptions($checklistTemplate->department))],
             'is_final_pay_checklist' => ['nullable', 'boolean'],
-            'is_general_signatory' => ['nullable', 'boolean'],
             'due_in_days' => ['nullable', 'integer', 'min:0', 'max:3650'],
-            'items' => $isGeneralSignatory ? ['nullable', 'array'] : ['required', 'array', 'min:1'],
+            'items' => ['required', 'array', 'min:1'],
             'items.*.id' => ['nullable', 'integer', Rule::exists('checklist_items', 'id')->where('checklist_template_id', $checklistTemplate->id)],
             'items.*.title' => ['required', 'string', 'max:255'],
             'items.*.signatory_id' => ['nullable', 'exists:employees,id'],
+            'items.*.notify_enabled' => ['nullable', 'boolean'],
+            'items.*.email_template_id' => ['nullable', 'required_if:items.*.notify_enabled,1', 'exists:email_templates,id'],
+            'items.*.notify_timing' => ['nullable', 'required_if:items.*.notify_enabled,1', Rule::in(['before', 'after'])],
+            'items.*.notify_days' => ['nullable', 'required_if:items.*.notify_enabled,1', 'integer', 'min:1'],
         ]);
 
         $departmentHeadId = $isImmediateHeadChecklist ? null : ($validated['department_head_id'] ?: null);
         $eligibleSignatoryIds = $this->eligibleSignatoryIds($departmentHeadId);
 
-        DB::transaction(function () use ($validated, $request, $checklistTemplate, $isGeneralSignatory, $isImmediateHeadChecklist, $departmentHeadId, $eligibleSignatoryIds) {
+        DB::transaction(function () use ($validated, $request, $checklistTemplate, $isImmediateHeadChecklist, $departmentHeadId, $eligibleSignatoryIds) {
             $checklistTemplate->update([
                 'title' => $validated['title'],
                 'department_head_id' => $departmentHeadId,
                 'is_immediate_head_checklist' => $isImmediateHeadChecklist,
                 'department' => $validated['department'] ?? null,
                 'is_final_pay_checklist' => $request->boolean('is_final_pay_checklist'),
-                'is_general_signatory' => $isGeneralSignatory,
                 'due_in_days' => $validated['due_in_days'] ?: null,
             ]);
 
@@ -154,34 +158,6 @@ class ChecklistTemplateController extends Controller
         });
 
         return redirect()->route('checklist-templates.index')->with('success', 'Checklist template updated.');
-    }
-
-    /**
-     * A General Signatory checklist's item form stays fully visible and
-     * usable (per design), so the UI still seeds a blank item row when there
-     * are none yet — left untouched, that row would submit as
-     * `items[0][title] = ''` and fail `items.*.title`'s `required` rule even
-     * though the admin never actually meant to add an item. Only relevant
-     * when General Signatory is enabled: any submitted row with no title is
-     * dropped here, before validation, so an all-blank `items` array
-     * correctly validates as empty. A normal (non-General-Signatory)
-     * checklist is untouched — a blank title there must keep failing
-     * validation exactly as before, since items are mandatory for it.
-     * Reindexed with `values()` so `items.*`/`sort_order` stay contiguous
-     * after any rows are dropped.
-     */
-    private function dropBlankItemsWhenGeneralSignatory(Request $request, bool $isGeneralSignatory): void
-    {
-        if (! $isGeneralSignatory) {
-            return;
-        }
-
-        $items = collect($request->input('items', []))
-            ->filter(fn ($item) => filled($item['title'] ?? null))
-            ->values()
-            ->all();
-
-        $request->merge(['items' => $items]);
     }
 
     /**
@@ -211,10 +187,13 @@ class ChecklistTemplateController extends Controller
         $checklistTemplate->items()->whereNotIn('id', $submittedIds)->delete();
 
         foreach ($items as $index => $item) {
+            $signatoryId = $this->sanitizeSignatoryId($item['signatory_id'] ?? null, $eligibleSignatoryIds);
+
             $attributes = [
                 'title' => $item['title'],
-                'signatory_id' => $this->sanitizeSignatoryId($item['signatory_id'] ?? null, $eligibleSignatoryIds),
+                'signatory_id' => $signatoryId,
                 'sort_order' => $index,
+                ...$this->normalizeNotifyConfig($item, $signatoryId),
             ];
 
             if (! empty($item['id'])) {
@@ -241,11 +220,30 @@ class ChecklistTemplateController extends Controller
     }
 
     /**
-     * Employees eligible to be picked as a department head: managers and above.
+     * Employees eligible to be picked as a Clearance Signatory: only those
+     * actually registered as a Group Head of an Employee Master group (see
+     * `EmployeeGroup.group_head_employee_id`) — this dropdown, and which
+     * employees are then eligible as each item's Task Assignee (see
+     * `eligibleSignatoryIds()`), both come from the exact same group
+     * structure, so picking a Clearance Signatory here always corresponds
+     * to a real, resolvable group of Task Assignee candidates.
+     *
+     * `$include` keeps a template's own already-saved Clearance Signatory
+     * selectable on its own edit page even if that employee is no longer a
+     * registered Group Head (e.g. their group was since deleted/renamed) —
+     * same reasoning as `departmentOptions()`'s own `$include` param: a
+     * routine re-save of an untouched template should never be blocked by a
+     * field the admin didn't touch.
      */
-    private function departmentHeadOptions()
+    private function departmentHeadOptions(?int $include = null): Collection
     {
-        return Employee::whereIn('designation', Employee::MANAGEMENT_DESIGNATIONS)
+        $headIds = EmployeeGroup::whereNotNull('group_head_employee_id')->pluck('group_head_employee_id');
+
+        if ($include && ! $headIds->contains($include)) {
+            $headIds = $headIds->push($include);
+        }
+
+        return Employee::whereIn('id', $headIds)
             ->orderBy('name')
             ->get(['id', 'name', 'department', 'designation']);
     }
@@ -289,16 +287,26 @@ class ChecklistTemplateController extends Controller
      * means no restriction applies (see `eligibleSignatoryIds()`), so a
      * checklist can still be configured exactly as it could before this
      * feature existed.
+     *
+     * Only members flagged `is_task_assignee` on the Employee Master page
+     * are included, and the group's own Group Head is always excluded here
+     * too — even if the head happens to also be a member of their own group
+     * with the flag enabled, they're already the Clearance Signatory and
+     * must never additionally appear as a selectable Task Assignee. A group
+     * member who isn't marked as a Task Assignee simply never appears in
+     * the Task Assignee picker, even though they're still a group member
+     * for every other purpose (Clearance Signatory eligibility, group
+     * membership counts, etc. are untouched by this flag).
      */
     private function employeeGroupsForPicker()
     {
         return EmployeeGroup::whereNotNull('group_head_employee_id')
-            ->with('employees:id,employee_group_id')
+            ->with(['employees' => fn ($q) => $q->where('is_task_assignee', true)->select('id', 'employee_group_id')])
             ->get()
             ->map(fn (EmployeeGroup $group) => [
                 'name' => $group->name,
                 'headId' => $group->group_head_employee_id,
-                'employeeIds' => $group->employees->pluck('id'),
+                'employeeIds' => $group->employees->reject(fn (Employee $employee) => $employee->id === $group->group_head_employee_id)->pluck('id'),
             ])
             ->values();
     }
@@ -306,9 +314,11 @@ class ChecklistTemplateController extends Controller
     /**
      * The set of employee IDs allowed as an item signatory on this
      * checklist template — the given Department Head's Employee Master
-     * group members, plus the Department Head themselves (they may still
-     * take an item directly, matching how they can already take over any
-     * item during approval). Returns null (meaning "unrestricted", today's
+     * group members who are flagged `is_task_assignee`, EXCLUDING the
+     * Department Head themselves: they're already the Clearance Signatory
+     * for the whole checklist, so they must never also appear as a
+     * selectable Task Assignee, even if they're a member of their own group
+     * with the flag enabled. Returns null (meaning "unrestricted", today's
      * original behavior) when the Department Head isn't registered as any
      * group's Group Head — the explicit fallback this feature requires.
      */
@@ -324,7 +334,12 @@ class ChecklistTemplateController extends Controller
             return null;
         }
 
-        return $group->employees()->pluck('id')->push($departmentHeadId)->unique()->values()->all();
+        return $group->employees()
+            ->where('is_task_assignee', true)
+            ->where('id', '!=', $departmentHeadId)
+            ->pluck('id')
+            ->values()
+            ->all();
     }
 
     /**
@@ -346,5 +361,45 @@ class ChecklistTemplateController extends Controller
         }
 
         return in_array((int) $signatoryId, $eligibleSignatoryIds, true) ? (int) $signatoryId : null;
+    }
+
+    /**
+     * Every active Email & Notification template, for the item-level
+     * "Enable Scheduled Notification" picker — the admin selects an
+     * existing template rather than authoring new content here.
+     */
+    private function activeEmailTemplateOptions(): Collection
+    {
+        return EmailTemplate::where('is_active', true)->orderBy('template_name')->get(['id', 'template_name']);
+    }
+
+    /**
+     * Scheduled notification config is only meaningful once an item has a
+     * (sanitized) Task Assignee — same silent-clear convention as
+     * `sanitizeSignatoryId()` above, rather than failing the whole save:
+     * unchecking "Enable Scheduled Notification" during an update, or the
+     * item's assignee being cleared/rejected, both simply drop the config
+     * back to disabled instead of blocking the save.
+     *
+     * @param  array<string, mixed>  $item
+     * @return array{notify_enabled: bool, email_template_id: int|null, notify_timing: string|null, notify_days: int|null}
+     */
+    private function normalizeNotifyConfig(array $item, ?int $signatoryId): array
+    {
+        if (empty($item['notify_enabled']) || ! $signatoryId) {
+            return [
+                'notify_enabled' => false,
+                'email_template_id' => null,
+                'notify_timing' => null,
+                'notify_days' => null,
+            ];
+        }
+
+        return [
+            'notify_enabled' => true,
+            'email_template_id' => (int) $item['email_template_id'],
+            'notify_timing' => $item['notify_timing'],
+            'notify_days' => (int) $item['notify_days'],
+        ];
     }
 }

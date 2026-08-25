@@ -8,13 +8,28 @@
             <p class="text-sm text-gray-500 dark:text-gray-400">
                 Organize employees into groups and assign the Group Head/Department Head responsible for each one.
             </p>
-            <button type="button" @click="openCreateModal()"
-                class="shadow-theme-xs flex items-center justify-center gap-2 rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white hover:bg-[#0f4630]">
-                <svg class="fill-current" width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M9 3.75V14.25M3.75 9H14.25" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-                </svg>
-                Manage Employee
-            </button>
+            <div class="flex items-center gap-3">
+                <form method="POST" action="{{ route('employee-groups.import') }}" enctype="multipart/form-data" x-ref="importForm">
+                    @csrf
+                    <input type="file" name="excel_file" accept=".xlsx,.xls" class="hidden" x-ref="importInput"
+                        @change="confirmImport($event)" />
+                </form>
+                <button type="button" @click="$refs.importInput.click()"
+                    class="shadow-theme-xs flex items-center justify-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-white/[0.03]">
+                    <svg class="fill-current" width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M9 12.75V3.75M9 3.75L5.25 7.5M9 3.75L12.75 7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                        <path d="M2.25 12.75V13.5C2.25 14.7426 3.25736 15.75 4.5 15.75H13.5C14.7426 15.75 15.75 14.7426 15.75 13.5V12.75" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                    Upload Excel
+                </button>
+                <button type="button" @click="openCreateModal()"
+                    class="shadow-theme-xs flex items-center justify-center gap-2 rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white hover:bg-[#0f4630]">
+                    <svg class="fill-current" width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M9 3.75V14.25M3.75 9H14.25" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                    Manage Employee
+                </button>
+            </div>
         </div>
 
         @if ($groups->isEmpty())
@@ -343,6 +358,7 @@
                                             <th class="px-4 py-2.5 text-left"><p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Name</p></th>
                                             <th class="px-4 py-2.5 text-left"><p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Position</p></th>
                                             <th class="px-4 py-2.5 text-left"><p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Department</p></th>
+                                            <th class="px-4 py-2.5 text-left"><p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Task Assignee</p></th>
                                             <th class="px-4 py-2.5 text-right"><p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Action</p></th>
                                         </tr>
                                     </thead>
@@ -354,6 +370,11 @@
                                                 </td>
                                                 <td class="px-4 py-2.5 text-sm text-gray-500 dark:text-gray-400" x-text="employee.designation || '—'"></td>
                                                 <td class="px-4 py-2.5 text-sm text-gray-500 dark:text-gray-400" x-text="employee.department || '—'"></td>
+                                                <td class="px-4 py-2.5">
+                                                    <input type="checkbox" x-model="employee.is_task_assignee"
+                                                        @change="toggleTaskAssignee(employee, employee.is_task_assignee)"
+                                                        class="h-4 w-4 accent-brand-500" />
+                                                </td>
                                                 <td class="px-4 py-2.5 text-right">
                                                     <button type="button" @click="removeEmployeeFromGroup(employee)"
                                                         class="rounded-md border border-error-300 px-2.5 py-1 text-xs font-medium text-error-500 hover:bg-error-50 dark:border-error-500/30 dark:hover:bg-error-500/10">
@@ -363,7 +384,7 @@
                                             </tr>
                                         </template>
                                         <tr x-show="currentGroupEmployees().length === 0">
-                                            <td colspan="4" class="px-4 py-6 text-center text-sm text-gray-400">No employees in this group yet.</td>
+                                            <td colspan="5" class="px-4 py-6 text-center text-sm text-gray-400">No employees in this group yet.</td>
                                         </tr>
                                     </tbody>
                                 </table>
@@ -561,6 +582,31 @@
                         this.notify('error', flashError);
                     }
                 },
+                confirmImport(event) {
+                    const input = event.target;
+
+                    if (!input.files.length) {
+                        return;
+                    }
+
+                    window.Swal.fire({
+                        title: 'Replace Employee Master roster?',
+                        text: 'This will replace the current employee records with the contents of the uploaded file. This cannot be undone.',
+                        icon: 'warning',
+                        showCancelButton: true,
+                        confirmButtonText: 'Upload & Replace',
+                        cancelButtonText: 'Cancel',
+                        confirmButtonColor: '#145a3a',
+                        cancelButtonColor: '#dc2626',
+                        reverseButtons: true,
+                    }).then((result) => {
+                        if (result.isConfirmed) {
+                            this.$refs.importForm.requestSubmit();
+                        } else {
+                            input.value = '';
+                        }
+                    });
+                },
                 notify(icon, title) {
                     window.Swal?.fire({
                         toast: true,
@@ -712,6 +758,36 @@
                                 this.notify('error', error.message);
                             });
                     });
+                },
+                // Same reactive pattern as addEmployeeToGroup()/removeEmployeeFromGroup()
+                // — flips whether this member is eligible to be picked as a
+                // Task Assignee on an Offboarding Checklist item. `checked`
+                // is the checkbox's new (already-toggled-in-the-DOM) value;
+                // on failure it's reverted so the checkbox never silently
+                // drifts from the server's actual state.
+                toggleTaskAssignee(employee, checked) {
+                    fetch(`/employee-groups/${this.viewingGroup.id}/employees/${employee.id}/task-assignee`, {
+                        method: 'PATCH',
+                        headers: {
+                            'X-CSRF-TOKEN': this.csrfToken(),
+                            Accept: 'application/json',
+                        },
+                    })
+                        .then(async (response) => {
+                            const data = await response.json().catch(() => ({}));
+                            if (!response.ok) {
+                                throw new Error(data.message || 'Could not update Task Assignee status.');
+                            }
+                            return data;
+                        })
+                        .then((data) => {
+                            this.applyEmployeeUpdate(data.employee);
+                            this.notify('success', data.message);
+                        })
+                        .catch((error) => {
+                            employee.is_task_assignee = !checked;
+                            this.notify('error', error.message);
+                        });
                 },
                 // Merges the server's fresh employee record back into the
                 // shared `employees` list (the single source of truth every

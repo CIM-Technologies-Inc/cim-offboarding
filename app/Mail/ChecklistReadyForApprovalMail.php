@@ -13,14 +13,13 @@ class ChecklistReadyForApprovalMail extends Mailable
     use Queueable, SerializesModels;
 
     /**
-     * @param  array<int, array{title: string, checkedByName: ?string, checkedAt: ?string, remark: ?string}>  $items
+     * @param  array<int, array{title: string, items: array<int, array{title: string, checkedByName: ?string, checkedAt: ?string, remark: ?string}>}>  $checklists
      */
     public function __construct(
         public string $departmentHeadName,
         public string $offboardeeName,
         public string $offboardeeEmployeeCode,
-        public string $checklistTitle,
-        public array $items,
+        public array $checklists,
         public string $approvalUrl,
         public string $approveUrl,
     ) {}

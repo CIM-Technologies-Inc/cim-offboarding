@@ -2,7 +2,7 @@
 
 @section('content')
     <div class="mb-6">
-        <h2 class="text-xl font-semibold text-gray-800 dark:text-white/90">Email Template Management</h2>
+        <h2 class="text-xl font-semibold text-gray-800 dark:text-white/90">Email and Notification</h2>
         <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
             Create and manage email templates used throughout the offboarding process.
         </p>
@@ -28,6 +28,16 @@
                                     </span>
                                 @endif
                             </div>
+
+                            @if ($item->scheduleLabel())
+                                <p class="mt-1 flex items-center gap-1 text-[11px] font-medium text-blue-600 dark:text-blue-400">
+                                    <svg width="12" height="12" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path d="M10 5V10L13.3333 11.6667" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                                        <circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.5" />
+                                    </svg>
+                                    {{ $item->scheduleLabel() }}
+                                </p>
+                            @endif
 
                             <div class="mt-2 flex items-center gap-1.5">
                                 <button type="button"
@@ -114,6 +124,38 @@
                             <label for="is_default_announcement" class="text-sm font-medium text-gray-700 dark:text-gray-400">
                                 Default Template (Offboarding Announcement)
                             </label>
+                        </div>
+
+                        <div x-data="{ isScheduled: {{ old('is_scheduled', $template->is_scheduled ?? false) ? 'true' : 'false' }} }">
+                            <div class="flex items-center gap-2">
+                                <input type="checkbox" id="is_scheduled" name="is_scheduled" value="1" x-model="isScheduled"
+                                    class="h-4 w-4 rounded border-gray-300 text-[#145a3a] accent-[#145a3a] focus:ring-[#145a3a]/40 dark:border-gray-700" />
+                                <label for="is_scheduled" class="text-sm font-medium text-gray-700 dark:text-gray-400">
+                                    Schedule Email/Notification
+                                </label>
+                            </div>
+
+                            <div x-show="isScheduled" x-cloak class="mt-3 grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                                        Timing
+                                    </label>
+                                    <select name="schedule_timing"
+                                        class="h-11 w-full rounded-xl border border-gray-300 bg-transparent px-4 py-2.5 text-sm text-gray-800 shadow-sm focus:border-[#145a3a]/50 focus:outline-hidden focus:ring-3 focus:ring-[#145a3a]/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90">
+                                        <option value="before" @selected(old('schedule_timing', $template->schedule_timing ?? 'before') === 'before')>Before Last Working Day</option>
+                                        <option value="after" @selected(old('schedule_timing', $template->schedule_timing ?? '') === 'after')>After Last Working Day</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                                        Number of Days
+                                    </label>
+                                    <input type="number" name="schedule_days" min="1" step="1"
+                                        value="{{ old('schedule_days', $template->schedule_days ?? '') }}"
+                                        placeholder="e.g. 5"
+                                        class="h-11 w-full rounded-xl border border-gray-300 bg-transparent px-4 py-2.5 text-sm text-gray-800 shadow-sm placeholder:text-gray-400 focus:border-[#145a3a]/50 focus:outline-hidden focus:ring-3 focus:ring-[#145a3a]/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30" />
+                                </div>
+                            </div>
                         </div>
 
                         <div>

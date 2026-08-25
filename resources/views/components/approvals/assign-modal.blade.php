@@ -36,14 +36,18 @@
                     <h4 class="text-xl font-semibold text-gray-800 dark:text-white/90">Assign Checklist</h4>
                     <p class="mb-5 text-sm text-gray-500 dark:text-gray-400" x-text="selected.name"></p>
 
-                    <template x-if="selected.delegation">
-                        <div class="mb-4 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-xs dark:border-gray-800 dark:bg-white/[0.03]">
-                            <p class="text-gray-400">Currently Assigned To</p>
-                            <p class="mt-0.5 font-medium text-gray-700 dark:text-gray-300">
-                                <span x-text="selected.delegation.delegatedEmployeeName"></span>
-                                (<span x-text="selected.delegation.delegatedEmployeeCode"></span>)
-                                &mdash; <span class="capitalize" x-text="selected.delegation.delegationStatus"></span>
-                            </p>
+                    <template x-if="selected.delegations && selected.delegations.length">
+                        <div class="mb-4 space-y-2">
+                            <template x-for="delegation in selected.delegations" :key="delegation.templateTitle">
+                                <div class="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-xs dark:border-gray-800 dark:bg-white/[0.03]">
+                                    <p class="text-gray-400" x-text="selected.checklistTemplates.length > 1 ? `Currently Assigned To (${delegation.templateTitle})` : 'Currently Assigned To'"></p>
+                                    <p class="mt-0.5 font-medium text-gray-700 dark:text-gray-300">
+                                        <span x-text="delegation.delegatedEmployeeName"></span>
+                                        (<span x-text="delegation.delegatedEmployeeCode"></span>)
+                                        &mdash; <span class="capitalize" x-text="delegation.delegationStatus"></span>
+                                    </p>
+                                </div>
+                            </template>
                         </div>
                     </template>
 
@@ -81,10 +85,10 @@
                             @submit="if (!confirmed) {
                                 $event.preventDefault();
                                 Swal.fire({
-                                    title: selected.delegation ? 'Reassign this checklist?' : 'Assign this checklist?',
-                                    text: selected.delegation
-                                        ? 'This replaces the current delegated approver. Their previous progress stays on record.'
-                                        : 'The selected employee will be able to complete checklist items and add remarks, but cannot give final approval.',
+                                    title: (selected.delegations && selected.delegations.length) ? 'Reassign this checklist?' : 'Assign this checklist?',
+                                    text: (selected.delegations && selected.delegations.length)
+                                        ? 'This replaces the current delegated approver on every checklist in this card. Their previous progress stays on record.'
+                                        : 'The selected employee will be able to complete checklist items and add remarks on every checklist in this card, but cannot give final approval.',
                                     icon: 'question',
                                     showCancelButton: true,
                                     confirmButtonText: 'Assign',

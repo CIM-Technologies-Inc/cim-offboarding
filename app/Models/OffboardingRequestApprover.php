@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -79,9 +80,41 @@ class OffboardingRequestApprover extends Model
         return $this->hasMany(ChecklistItemAssignment::class);
     }
 
+    public function followUps(): HasMany
+    {
+        return $this->hasMany(ChecklistFollowUp::class)->orderByDesc('sent_at');
+    }
+
     public function isDelegated(): bool
     {
         return $this->delegated_employee_id !== null;
+    }
+
+    /**
+     * Rows this user may see/act on: every row for an admin, otherwise only
+     * rows where they're the primary approver, the delegate, an item
+     * signatory, or hold an active per-item override — the exact predicate
+     * `ApprovalController::index()` used to have inlined, now shared with
+     * the grouped save-progress endpoint so a delegate/item-signatory who
+     * only has rights on SOME of a combined group's checklists can never
+     * touch the rest of that group through it.
+     */
+    public function scopeVisibleTo(Builder $query, User $user): Builder
+    {
+        if ($user->isAdmin()) {
+            return $query;
+        }
+
+        $employee = $user->employee;
+
+        if (! $employee) {
+            return $query->whereRaw('1 = 0');
+        }
+
+        return $query->where(fn (Builder $q) => $q->where('employee_id', $employee->id)
+            ->orWhere('delegated_employee_id', $employee->id)
+            ->orWhereHas('checklistTemplate.items', fn ($qi) => $qi->where('signatory_id', $employee->id))
+            ->orWhereHas('itemAssignments', fn ($qi) => $qi->where('assigned_employee_id', $employee->id)->where('status', 'active')));
     }
 
     public function department(): ?string

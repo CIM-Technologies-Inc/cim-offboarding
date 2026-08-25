@@ -9,11 +9,15 @@ use Symfony\Component\HttpFoundation\Response;
 class EnsureUserHasRole
 {
     /**
-     * Handle an incoming request.
+     * Handle an incoming request. Backed by Spatie's `hasAnyRole()` instead
+     * of a raw string comparison against the legacy `role` column — every
+     * `Route::middleware('role:...')` group across the app keeps working
+     * verbatim, since the route syntax (comma-separated role names) is
+     * unchanged, only what backs the check.
      */
     public function handle(Request $request, Closure $next, string ...$roles): Response
     {
-        if (! in_array($request->user()?->role, $roles, true)) {
+        if (! $request->user()?->hasAnyRole($roles)) {
             abort(403);
         }
 

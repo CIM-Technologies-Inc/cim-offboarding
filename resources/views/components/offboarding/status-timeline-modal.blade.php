@@ -10,8 +10,8 @@
         },
     }"
     @open-offboardee-modal.window="selected = $event.detail; activeTab = 'status'">
-    <x-ui.modal x-data="{ open: false }" @open-offboardee-modal.window="open = true" :isOpen="$initial !== null" class="max-w-[600px]">
-        <div class="relative flex max-h-[85vh] w-full max-w-[600px] flex-col rounded-3xl bg-white dark:bg-gray-900" x-show="selected" x-cloak>
+    <x-ui.modal x-data="{ open: false }" @open-offboardee-modal.window="open = true" :isOpen="$initial !== null" class="w-full sm:w-[60vw] sm:max-w-[60vw]">
+        <div class="relative flex max-h-[85vh] w-full sm:max-w-[60vw] flex-col rounded-3xl bg-white dark:bg-gray-900" x-show="selected" x-cloak>
             <template x-if="selected">
                 <div class="flex min-h-0 flex-1 flex-col">
                     <!-- Pinned header: stays visible while the timeline below scrolls -->
@@ -95,12 +95,13 @@
                                         </div>
                                         <span class="shrink-0 rounded-full px-2.5 py-1 text-xs font-medium"
                                             :class="{
-                                                'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300': step.status === 'pending',
-                                                'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400': step.status === 'viewed',
+                                                'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300': step.status === 'pending' && !step.isOverdue,
+                                                'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400': step.status === 'viewed' && !step.isOverdue,
                                                 'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]': step.status === 'approved',
-                                                'bg-error-50 text-error-700 dark:bg-error-500/15 dark:text-error-400': step.status === 'declined'
+                                                'bg-error-50 text-error-700 dark:bg-error-500/15 dark:text-error-400': step.status === 'declined',
+                                                'bg-orange-50 text-orange-700 dark:bg-orange-500/15 dark:text-orange-400': step.isOverdue
                                             }"
-                                            x-text="step.status === 'approved' ? 'Cleared' : (step.status.charAt(0).toUpperCase() + step.status.slice(1))"></span>
+                                            x-text="step.isOverdue ? 'Overdue' : (step.status === 'approved' ? 'Cleared' : (step.status === 'viewed' ? 'In Progress' : (step.status.charAt(0).toUpperCase() + step.status.slice(1))))"></span>
                                     </div>
 
                                     <div class="mt-2 space-y-1 text-xs text-gray-500 dark:text-gray-400">
@@ -220,12 +221,13 @@
                                             </div>
                                             <span class="shrink-0 rounded-full px-2.5 py-1 text-xs font-medium"
                                                 :class="{
-                                                    'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300': step.status === 'pending',
-                                                    'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400': step.status === 'viewed',
+                                                    'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300': step.status === 'pending' && !step.isOverdue,
+                                                    'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400': step.status === 'viewed' && !step.isOverdue,
                                                     'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]': step.status === 'approved',
-                                                    'bg-error-50 text-error-700 dark:bg-error-500/15 dark:text-error-400': step.status === 'declined'
+                                                    'bg-error-50 text-error-700 dark:bg-error-500/15 dark:text-error-400': step.status === 'declined',
+                                                    'bg-orange-50 text-orange-700 dark:bg-orange-500/15 dark:text-orange-400': step.isOverdue
                                                 }"
-                                                x-text="step.status === 'approved' ? 'Cleared' : (step.status.charAt(0).toUpperCase() + step.status.slice(1))"></span>
+                                                x-text="step.isOverdue ? 'Overdue' : (step.status === 'approved' ? 'Cleared' : (step.status === 'viewed' ? 'In Progress' : (step.status.charAt(0).toUpperCase() + step.status.slice(1))))"></span>
                                         </div>
 
                                         <div class="mt-2 space-y-1 text-xs text-gray-500 dark:text-gray-400">

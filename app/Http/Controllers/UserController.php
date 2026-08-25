@@ -1,0 +1,114 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Employee;
+use App\Models\User;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
+use Illuminate\View\View;
+use Spatie\Permission\Models\Role;
+
+class UserController extends Controller
+{
+    /**
+     * The 3 built-in roles the rest of the app still depends on BY NAME for
+     * identity-scoped behavior that isn't itself permission-driven — the
+     * post-login redirect (`AuthController::homeRouteFor()`,
+     * `ChangePasswordController::update()`, `MenuHelper::homePath()`) and
+     * the Employee Dashboard's own `role:employee` route gate. Used only to
+     * pick a sensible "primary" value for the legacy `role` column when a
+     * user holds one of these alongside others (or any custom role) — it
+     * is NOT a restriction on which roles can be assigned; see
+     * `updateRole()` below, which accepts any role that actually exists.
+     */
+    private const ROLE_PRIORITY = [User::ROLE_ADMIN, User::ROLE_EMPLOYEE, User::ROLE_APPROVER];
+
+    /**
+     * Role-assignment only — not full account CRUD. Lists every Employee
+     * (not just those with a login account already — accounts are lazily
+     * auto-provisioned, see `User::findOrCreateApprover()`/
+     * `findOrCreateEmployee()`), so an admin can assign roles to a freshly
+     * imported employee before they've ever needed to log in. An employee
+     * with no account yet displays/defaults to the Employee role — exactly
+     * what `findOrCreateEmployee()` would create if saved as-is — without
+     * actually creating that account until the admin saves a change (see
+     * `updateRole()`). The assignable options come straight from the
+     * `roles` table, never a hardcoded list.
+     */
+    public function index(): View
+    {
+        $employees = Employee::with('user.roles')
+            ->orderBy('name')
+            ->get()
+            ->map(fn (Employee $employee) => [
+                'id' => $employee->id,
+                'name' => $employee->name,
+                'employeeCode' => $employee->employee_code,
+                'email' => $employee->email,
+                'username' => $employee->user?->username,
+                'hasAccount' => (bool) $employee->user,
+                'roles' => $employee->user
+                    ? $employee->user->roles->pluck('name')->values()->all()
+                    : [User::ROLE_EMPLOYEE],
+            ]);
+
+        return view('pages.users.index', [
+            'title' => 'Users',
+            'users' => $employees,
+            'roleOptions' => Role::where('guard_name', 'web')->orderBy('name')->pluck('name')->all(),
+        ]);
+    }
+
+    /**
+     * Accepts any combination of any role that currently exists (validated
+     * against the `roles` table itself, not a hardcoded list) — a newly
+     * created custom role like "Test" is assignable the moment it exists,
+     * with whatever permissions are attached to it at the time (and any
+     * later, since Spatie's permission checks are always live — updating a
+     * role's permissions afterward changes what every user holding that
+     * role can do, automatically, with no per-user re-sync needed).
+     * `EnsureUserHasRole`/Spatie's own `hasAnyRole()`/`can()` already treat
+     * "has ANY of the assigned roles" as the gate everywhere in this app,
+     * so holding several roles only ever grants the union of what each
+     * role alone would allow — it can't conflict with or take away access
+     * a single role would have had.
+     */
+    public function updateRole(Request $request, Employee $employee): RedirectResponse
+    {
+        $validated = $request->validate([
+            'roles' => ['required', 'array', 'min:1'],
+            'roles.*' => [Rule::exists('roles', 'name')->where('guard_name', 'web')],
+        ]);
+
+        $roles = array_values(array_unique($validated['roles']));
+
+        $user = User::findOrCreateEmployee($employee);
+        $user->syncRoles($roles);
+        $user->update(['role' => $this->primaryRole($roles)]);
+
+        $label = collect($roles)->map(fn ($role) => ucfirst($role))->implode(' + ');
+
+        return back()->with('success', "{$employee->name}'s role has been updated to \"{$label}\".");
+    }
+
+    /**
+     * Picks whichever of the 3 built-in roles ranks highest for the legacy
+     * `role` column (see `ROLE_PRIORITY`'s docblock) — falls back to
+     * whatever was submitted first when none of the 3 are present, e.g. a
+     * user assigned only a custom role like "Test".
+     *
+     * @param  array<int, string>  $roles
+     */
+    private function primaryRole(array $roles): string
+    {
+        foreach (self::ROLE_PRIORITY as $role) {
+            if (in_array($role, $roles, true)) {
+                return $role;
+            }
+        }
+
+        return $roles[0];
+    }
+}

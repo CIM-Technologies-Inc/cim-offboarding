@@ -14,3 +14,17 @@ Artisan::command('inspire', function () {
 // `php artisan schedule:run` every minute via cron or Windows Task
 // Scheduler); the definition here is inert without it.
 Schedule::command('app:notify-overdue-checklists')->everyFiveMinutes();
+
+// Sends every active, scheduled Email and Notification template whose "N
+// days before/after Last Working Day" date is due, for every still-active
+// offboarding request. Daily is sufficient granularity since the trigger is
+// a calendar date, not a time-of-day deadline — same scheduler-must-be-
+// running caveat as the overdue-checklist job above.
+Schedule::command('app:send-scheduled-email-templates')->dailyAt('08:00');
+
+// Per-task-item version of the same idea: sends each checklist item's own
+// scheduled Email and Notification template to that item's Task Assignee
+// once its "N days before/after Last Working Day" date is due. Staggered 10
+// minutes after the template-level job purely to avoid same-minute
+// contention.
+Schedule::command('app:send-scheduled-checklist-item-notifications')->dailyAt('08:10');

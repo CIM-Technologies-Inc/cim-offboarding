@@ -7,6 +7,7 @@ use App\Models\ChecklistDelegation;
 use App\Models\ChecklistItem;
 use App\Models\ChecklistItemProgress;
 use App\Models\Employee;
+use App\Models\OffboardingRequest;
 use App\Models\OffboardingRequestApprover;
 use App\Models\User;
 use App\Services\ChecklistCompletionService;
@@ -79,6 +80,72 @@ class ChecklistDelegationController extends Controller
         });
 
         return back()->with('success', "Checklist assigned to {$employee->name}.");
+    }
+
+    /**
+     * The combined-card equivalent of `assign()`: delegates EVERY checklist
+     * this employee is the assigned approver for on this request to the
+     * same delegate in one action, instead of one "Assign To" per
+     * checklist. Group membership is re-derived from the database, never
+     * trusted from the client.
+     */
+    public function assignGroup(Request $request, OffboardingRequest $offboardingRequest, Employee $employee): RedirectResponse
+    {
+        $this->authorizeGroupPrimary($employee);
+
+        $members = OffboardingRequestApprover::where('offboarding_request_id', $offboardingRequest->id)
+            ->where('employee_id', $employee->id)
+            ->whereIn('status', ['pending', 'viewed'])
+            ->get();
+
+        abort_if($members->isEmpty(), 422, 'This checklist has already been actioned.');
+
+        $validated = $request->validate([
+            'employee_id' => ['required', 'exists:employees,id'],
+        ]);
+
+        abort_if(
+            (int) $validated['employee_id'] === $employee->id,
+            422,
+            'You cannot delegate a checklist to yourself.'
+        );
+
+        $delegate = Employee::findOrFail($validated['employee_id']);
+
+        DB::transaction(function () use ($members, $delegate) {
+            $delegateUser = User::findOrCreateApprover($delegate);
+
+            foreach ($members as $member) {
+                $member->delegations()
+                    ->where('status', 'active')
+                    ->update(['status' => 'superseded', 'superseded_at' => now()]);
+
+                $member->update([
+                    'delegated_employee_id' => $delegate->id,
+                    'delegation_status' => 'assigned',
+                    'delegated_at' => now(),
+                    'delegate_completed_at' => null,
+                ]);
+
+                $member->delegations()->create([
+                    'assigned_by_user_id' => auth()->id(),
+                    'delegated_employee_id' => $delegate->id,
+                    'delegated_user_id' => $delegateUser->id,
+                    'status' => 'active',
+                    'assigned_at' => now(),
+                ]);
+
+                $member->offboardingRequest->activities()->create([
+                    'user_id' => auth()->id(),
+                    'offboarding_request_approver_id' => $member->id,
+                    'action' => 'checklist_assigned',
+                    'status' => $member->offboardingRequest->status,
+                    'comment' => "Assigned to: {$delegate->name} ({$delegate->employee_code})",
+                ]);
+            }
+        });
+
+        return back()->with('success', "Checklist(s) assigned to {$delegate->name}.");
     }
 
     /**
@@ -365,9 +432,85 @@ class ChecklistDelegationController extends Controller
 
         // No-op for legacy/non-per-item assignments, so this is always safe
         // to call unconditionally. Notifies the Department Head once every
-        // item is checked — the Department Head still has to review and
-        // click Submit themselves; this does not approve anything.
-        app(ChecklistCompletionService::class)->checkReadyForDepartmentHeadApproval($offboardingRequestApprover);
+        // checklist in this employee's whole group for this request is
+        // ready — not just this one — the Department Head still has to
+        // review and click Submit themselves; this does not approve
+        // anything.
+        app(ChecklistCompletionService::class)->checkGroupReadyForApproval(
+            $offboardingRequestApprover->offboardingRequest,
+            $offboardingRequestApprover->employee_id
+        );
+
+        return back()->with('success', 'Checklist progress saved.');
+    }
+
+    /**
+     * The combined-card equivalent of `saveProgress()`: persists item
+     * progress across EVERY checklist this employee is the assigned
+     * approver for on this request in one submission — what the Approvals
+     * page's combined card's Save Progress button now posts to. Scoped to
+     * `OffboardingRequestApprover::visibleTo()` so a delegate or item-
+     * signatory who only has rights on SOME of the group's checklists can
+     * never touch the rest of it through this endpoint — the true primary
+     * approver (or admin) always sees their own full group already (see
+     * that scope's docblock), so no member is silently skipped for them.
+     */
+    public function saveProgressGroup(Request $request, OffboardingRequest $offboardingRequest, Employee $employee): RedirectResponse
+    {
+        $members = OffboardingRequestApprover::visibleTo(auth()->user())
+            ->where('offboarding_request_id', $offboardingRequest->id)
+            ->where('employee_id', $employee->id)
+            ->whereIn('status', ['pending', 'viewed'])
+            ->get();
+
+        abort_if($members->isEmpty(), 403);
+
+        $validated = $request->validate([
+            'items' => ['array'],
+            'items.*.checklist_item_id' => ['required', 'exists:checklist_items,id'],
+            'items.*.is_checked' => ['nullable', 'boolean'],
+            'items.*.remark' => ['nullable', 'string'],
+        ]);
+
+        $itemToAssignmentId = [];
+
+        foreach ($members as $member) {
+            $member->loadMissing('checklistTemplate.items');
+
+            foreach ($member->checklistTemplate->items as $item) {
+                $itemToAssignmentId[$item->id] = $member->id;
+            }
+        }
+
+        $itemsByAssignmentId = collect($validated['items'] ?? [])
+            ->filter(fn (array $row) => isset($itemToAssignmentId[$row['checklist_item_id']]))
+            ->groupBy(fn (array $row) => $itemToAssignmentId[$row['checklist_item_id']]);
+
+        foreach ($members as $member) {
+            // Every member row here already passed `visibleTo()`, which
+            // covers exactly the same ground `authorizeItemAction()` checks
+            // (primary/delegate, or an owned item via the template's static
+            // signatory or an active per-request override) — so this never
+            // actually aborts for a row reached through this method; it
+            // still returns the correct item-id scope for a bare
+            // item-approver, same as the single-row `saveProgress()`.
+            $itemScope = $this->authorizeItemAction($member);
+            $items = collect($itemsByAssignmentId->get($member->id, collect())->all());
+
+            if ($itemScope !== null) {
+                $items = $items->whereIn('checklist_item_id', $itemScope);
+            }
+
+            $this->logTakeoverActivity($member, $items->all());
+
+            ChecklistItemProgress::syncForAssignment($member, $items->all(), auth()->id());
+
+            if ($member->isDelegated() && $member->delegation_status === 'assigned') {
+                $member->update(['delegation_status' => 'in_progress']);
+            }
+        }
+
+        app(ChecklistCompletionService::class)->checkGroupReadyForApproval($offboardingRequest, $employee->id);
 
         return back()->with('success', 'Checklist progress saved.');
     }
@@ -445,6 +588,22 @@ class ChecklistDelegationController extends Controller
         }
 
         abort_unless($offboardingRequestApprover->employee_id === $user->employee?->id, 403);
+    }
+
+    /**
+     * The group equivalent of `authorizePrimaryApprover()`: only the true
+     * primary approver (or admin) may bulk-delegate a whole combined group
+     * to someone else.
+     */
+    private function authorizeGroupPrimary(Employee $employee): void
+    {
+        $user = auth()->user();
+
+        if ($user->isAdmin()) {
+            return;
+        }
+
+        abort_unless($employee->id === $user->employee?->id, 403);
     }
 
     /**

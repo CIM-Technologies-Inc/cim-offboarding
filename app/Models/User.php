@@ -7,11 +7,12 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Spatie\Permission\Traits\HasRoles;
 
 class User extends Authenticatable
 {
     /** @use HasFactory<\Database\Factories\UserFactory> */
-    use HasFactory, Notifiable;
+    use HasFactory, Notifiable, HasRoles;
 
     /**
      * The attributes that are mass assignable.
@@ -34,15 +35,28 @@ class User extends Authenticatable
 
     public const ROLE_ADMIN = 'admin';
     public const ROLE_APPROVER = 'approver';
+    public const ROLE_EMPLOYEE = 'employee';
 
+    /**
+     * Backed by Spatie's `HasRoles` trait rather than the plain `role`
+     * column below — every existing caller of `isAdmin()`/`isApprover()`/
+     * `isEmployee()` across the app keeps working unchanged, since the
+     * decision now comes from `model_has_roles` instead of a raw string
+     * comparison, without any of those call sites needing to change.
+     */
     public function isAdmin(): bool
     {
-        return $this->role === self::ROLE_ADMIN;
+        return $this->hasRole(self::ROLE_ADMIN);
     }
 
     public function isApprover(): bool
     {
-        return $this->role === self::ROLE_APPROVER;
+        return $this->hasRole(self::ROLE_APPROVER);
+    }
+
+    public function isEmployee(): bool
+    {
+        return $this->hasRole(self::ROLE_EMPLOYEE);
     }
 
     /**
@@ -72,10 +86,22 @@ class User extends Authenticatable
      * created account is flagged `must_change_password` immediately (not
      * left to be detected only on their first login) since password ===
      * username is true by construction here.
+     *
+     * Sets BOTH the legacy `role` column and the Spatie role — deliberately
+     * dual-written (not a one-time migration cutover) so the plain column
+     * stays accurate for anything that might still read it directly, while
+     * `hasRole()`/`assignRole()` become the actual source of truth `isAdmin()`
+     * etc. consult.
      */
     public static function findOrCreateApprover(Employee $employee): self
     {
-        return static::firstWhere('username', $employee->employee_code) ?? static::create([
+        $user = static::firstWhere('username', $employee->employee_code);
+
+        if ($user) {
+            return $user;
+        }
+
+        $user = static::create([
             'name' => $employee->name,
             'username' => $employee->employee_code,
             'password' => $employee->employee_code,
@@ -83,6 +109,43 @@ class User extends Authenticatable
             'email' => $employee->email,
             'must_change_password' => true,
         ]);
+
+        $user->assignRole(self::ROLE_APPROVER);
+
+        return $user;
+    }
+
+    /**
+     * Finds the existing account for this employee, or creates one with the
+     * Employee role using the same established convention as
+     * `findOrCreateApprover()` above (username = password = employee_code,
+     * flagged `must_change_password` immediately). Never promotes/downgrades
+     * an existing account's role — an employee who already has an account
+     * (e.g. as someone else's approver) keeps that role rather than being
+     * switched to Employee, same rule `findOrCreateApprover()` already
+     * follows. Dual-writes the legacy `role` column and the Spatie role —
+     * see `findOrCreateApprover()`'s docblock for why.
+     */
+    public static function findOrCreateEmployee(Employee $employee): self
+    {
+        $user = static::firstWhere('username', $employee->employee_code);
+
+        if ($user) {
+            return $user;
+        }
+
+        $user = static::create([
+            'name' => $employee->name,
+            'username' => $employee->employee_code,
+            'password' => $employee->employee_code,
+            'role' => self::ROLE_EMPLOYEE,
+            'email' => $employee->email,
+            'must_change_password' => true,
+        ]);
+
+        $user->assignRole(self::ROLE_EMPLOYEE);
+
+        return $user;
     }
 
     /**

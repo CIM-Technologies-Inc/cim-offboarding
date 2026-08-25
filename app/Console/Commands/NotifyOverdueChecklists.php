@@ -116,7 +116,7 @@ class NotifyOverdueChecklists extends Command
         }
 
         $recipients = $recipients
-            ->merge(User::where('role', User::ROLE_ADMIN)->get())
+            ->merge(User::role(User::ROLE_ADMIN)->get())
             ->filter()
             ->unique('id');
 

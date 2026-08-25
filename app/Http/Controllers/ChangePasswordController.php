@@ -43,8 +43,14 @@ class ChangePasswordController extends Controller
             'must_change_password' => false,
         ]);
 
+        $homeRoute = match (true) {
+            $user->isAdmin() => 'dashboard',
+            $user->isEmployee() => 'employee.dashboard',
+            default => 'approvals.index',
+        };
+
         return redirect()
-            ->route($user->isAdmin() ? 'dashboard' : 'approvals.index')
+            ->route($homeRoute)
             ->with('success', 'Your password has been changed successfully.');
     }
 }

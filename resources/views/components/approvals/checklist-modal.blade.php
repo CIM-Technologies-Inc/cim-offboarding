@@ -30,9 +30,11 @@
         // button alongside Hold, gated on the checkbox above being checked.
         // Legacy (non-per-item-approver) checklists never use this path, so
         // the Department Head's existing checkbox-only experience on those
-        // is completely unchanged.
+        // is completely unchanged. Read off the ITEM's own originating
+        // checklist (not the card as a whole) since a combined card can mix
+        // per-item-approver and legacy checklists together.
         isDoneFlowItem(item) {
-            return !!this.selected?.usesPerItemApprovers && !!item.isOwnItem;
+            return !!item.usesPerItemApprovers && !!item.isOwnItem;
         },
         canHold(item) {
             return !!(this.remarks[item.id] || '').trim() && !this.holdProcessing[item.id];
@@ -126,27 +128,21 @@
             return !!this.selected && (this.selected.checklistItems || []).every((item) => item.editable);
         },
         canApprove() {
-            // The Department Head (primary approver) may submit once ready.
-            // Legacy (non-per-item-approver) checklists: regardless of
-            // individual item checkmarks — submitting is itself their
-            // confirmation that clearance is complete, same as always.
-            // Per-item-approver checklists: only once every item is checked
-            // — by its own signatory, or by the Department Head directly
-            // taking over someone else's item. Immediate Head checklists:
-            // same full-completion gate as per-item-approver checklists,
-            // even though the Immediate Head is a single approver with no
-            // distinct item-level signatories — `isImmediateHeadChecklist`
-            // is fixed for the assignment's lifetime (unlike
-            // `usesPerItemApprovers`, which can flip live via 'Check This
-            // List'), so it's safe to read directly off `selected` here.
-            // Computed from the live `checked` state (not a stale server
-            // flag) so the Submit button re-enables the instant the last
-            // box is ticked, without needing a page reload.
+            // The Department Head (primary approver) may submit once every
+            // item that MUST be checked before submission is checked.
+            // `mustBeCheckedForSubmit` is computed per item, off that
+            // item's own originating checklist — a legacy
+            // (non-per-item-approver) checklist's items are never required
+            // (submitting is itself the confirmation that clearance is
+            // complete, same as always), while a per-item-approver or
+            // Immediate Head checklist's items all are. A combined card can
+            // freely mix both kinds of checklist; this generalizes cleanly
+            // to a single, non-combined checklist too. Computed from the
+            // live `checked` state (not a stale server flag) so the Submit
+            // button re-enables the instant the last required box is
+            // ticked, without needing a page reload.
             if (!this.selected) return false;
-            if (this.selected.usesPerItemApprovers || this.selected.isImmediateHeadChecklist) {
-                return (this.selected.checklistItems || []).every((item) => !!this.checked[item.id]);
-            }
-            return true;
+            return (this.selected.checklistItems || []).every((item) => !item.mustBeCheckedForSubmit || !!this.checked[item.id]);
         },
     }" @open-checklist-modal.window="setSelected($event.detail)">
     <x-ui.modal x-data="{ open: false }" @open-checklist-modal.window="open = true" :isOpen="false" class="w-full sm:max-w-[50vw]">
@@ -154,12 +150,6 @@
             <template x-if="selected">
                 <div>
                     <h4 class="text-xl font-semibold text-gray-800 dark:text-white/90" x-text="selected.name"></h4>
-
-                    <template x-if="selected.isGeneralSignatory">
-                        <span class="mb-2 inline-flex items-center rounded-full bg-[#145a3a]/10 px-2.5 py-1 text-xs font-medium text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]">
-                            General Signatory
-                        </span>
-                    </template>
 
                     <template x-if="!selected.isPrimaryApprover">
                         <p class="mb-1 text-sm text-[#145a3a] dark:text-[#3aa876]">
@@ -190,23 +180,31 @@
                         All checklist items have been checked and this checklist is ready for your final approval. Review the details below, then click Submit.
                     </p>
 
-                    <template x-if="selected.isPrimaryApprover && selected.delegation">
-                        <div class="mb-5 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-xs dark:border-gray-800 dark:bg-white/[0.03]">
-                            <div class="flex items-center justify-between">
-                                <span class="text-gray-400">Assigned To</span>
-                                <span class="font-medium text-gray-700 dark:text-gray-300">
-                                    <span x-text="selected.delegation.delegatedEmployeeName"></span>
-                                    (<span x-text="selected.delegation.delegatedEmployeeCode"></span>)
-                                </span>
-                            </div>
-                            <div class="mt-1.5 flex items-center justify-between">
-                                <span class="text-gray-400">Delegated Approver Status</span>
-                                <span class="font-medium capitalize text-gray-700 dark:text-gray-300" x-text="selected.delegation.delegationStatus === 'done' ? '✓ Done' : selected.delegation.delegationStatus"></span>
-                            </div>
-                            <template x-if="selected.delegation.delegateCompletedAt">
-                                <div class="mt-1.5 flex items-center justify-between">
-                                    <span class="text-gray-400">Completed</span>
-                                    <span class="font-medium text-gray-700 dark:text-gray-300" x-text="selected.delegation.delegateCompletedAt"></span>
+                    <template x-if="selected.isPrimaryApprover && selected.delegations && selected.delegations.length">
+                        <div class="mb-5 space-y-2">
+                            <template x-for="delegation in selected.delegations" :key="delegation.templateTitle">
+                                <div class="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-xs dark:border-gray-800 dark:bg-white/[0.03]">
+                                    <div class="mb-1.5 flex items-center justify-between" x-show="selected.checklistTemplates.length > 1">
+                                        <span class="text-gray-400">Checklist</span>
+                                        <span class="font-medium text-gray-700 dark:text-gray-300" x-text="delegation.templateTitle"></span>
+                                    </div>
+                                    <div class="flex items-center justify-between">
+                                        <span class="text-gray-400">Assigned To</span>
+                                        <span class="font-medium text-gray-700 dark:text-gray-300">
+                                            <span x-text="delegation.delegatedEmployeeName"></span>
+                                            (<span x-text="delegation.delegatedEmployeeCode"></span>)
+                                        </span>
+                                    </div>
+                                    <div class="mt-1.5 flex items-center justify-between">
+                                        <span class="text-gray-400">Delegated Approver Status</span>
+                                        <span class="font-medium capitalize text-gray-700 dark:text-gray-300" x-text="delegation.delegationStatus === 'done' ? '✓ Done' : delegation.delegationStatus"></span>
+                                    </div>
+                                    <template x-if="delegation.delegateCompletedAt">
+                                        <div class="mt-1.5 flex items-center justify-between">
+                                            <span class="text-gray-400">Completed</span>
+                                            <span class="font-medium text-gray-700 dark:text-gray-300" x-text="delegation.delegateCompletedAt"></span>
+                                        </div>
+                                    </template>
                                 </div>
                             </template>
                         </div>
@@ -224,12 +222,7 @@
                         id="checklistProgressForm" x-data="{ processing: false }" @submit="processing = true">
                         @csrf
                         <div class="max-h-80 space-y-3 overflow-y-auto pr-1">
-                            <template x-if="selected.isGeneralSignatory && (!selected.checklistItems || selected.checklistItems.length === 0)">
-                                <p class="rounded-lg bg-gray-50 px-4 py-3 text-sm text-gray-500 dark:bg-white/[0.03] dark:text-gray-400">
-                                    This is a General Signatory checklist — no checklist items are required. Click Submit to approve and add this signatory to the Clearance Form.
-                                </p>
-                            </template>
-                            <template x-if="!selected.isGeneralSignatory && (!selected.checklistItems || selected.checklistItems.length === 0)">
+                            <template x-if="!selected.checklistItems || selected.checklistItems.length === 0">
                                 <p class="rounded-lg bg-gray-50 px-4 py-3 text-sm text-gray-500 dark:bg-white/[0.03] dark:text-gray-400">
                                     No checklist items are assigned to this request.
                                 </p>

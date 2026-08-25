@@ -130,45 +130,61 @@ class ChecklistCompletionService
     }
 
     /**
-     * For per-item-approver assignments only: once every item is checked,
-     * marks the assignment ready for the Department Head's own manual
-     * Submit and emails them — this does NOT approve anything itself, the
-     * Department Head still has to review and click Submit. No-op for
-     * legacy single-approver assignments (they've never needed a
-     * "ready" signal — the Department Head can already submit any time).
-     * Guarded by `ready_for_approval_notified_at` under a row lock, the
-     * same pattern as `final_pay_notified_at`, so the notification only
-     * ever fires once even if items get toggled back and forth afterward
-     * (e.g. the Department Head correcting something during review) and
-     * two item-approvers finishing their last item at nearly the same
+     * The group equivalent of the old per-row "ready for approval" check:
+     * once EVERY checklist this employee is the assigned approver for on
+     * this request (i.e. the same combined group the Approvals page now
+     * shows as one card) has all its items checked, marks the whole group
+     * ready for the Department Head's own manual Submit and sends ONE
+     * combined email — this does NOT approve anything itself, the
+     * Department Head still has to review and click Submit. A no-op group
+     * (nothing in it uses per-item approvers) never gets this nudge — the
+     * Department Head can already submit any time, same as a legacy
+     * single-approver checklist always could. Guarded by every member's own
+     * `ready_for_approval_notified_at` under a row lock, so the
+     * notification only ever fires once per group even if items get
+     * toggled back and forth afterward, and two people finishing their last
+     * item on different checklists in the same group at nearly the same
      * moment can never send a duplicate email.
      */
-    public function checkReadyForDepartmentHeadApproval(OffboardingRequestApprover $assignment): bool
+    public function checkGroupReadyForApproval(OffboardingRequest $offboardingRequest, int $employeeId): bool
     {
-        return DB::transaction(function () use ($assignment) {
-            $locked = OffboardingRequestApprover::whereKey($assignment->id)
-                ->whereNull('ready_for_approval_notified_at')
+        return DB::transaction(function () use ($offboardingRequest, $employeeId) {
+            $members = OffboardingRequestApprover::where('offboarding_request_id', $offboardingRequest->id)
+                ->where('employee_id', $employeeId)
+                ->whereIn('status', ['pending', 'viewed'])
                 ->lockForUpdate()
-                ->first();
+                ->get();
 
-            if (! $locked || ! in_array($locked->status, ['pending', 'viewed'], true)) {
+            if ($members->isEmpty() || $members->every(fn (OffboardingRequestApprover $m) => $m->ready_for_approval_notified_at !== null)) {
                 return false;
             }
 
-            if (! $locked->usesPerItemApprovers() || ! $locked->allItemsCompleted()) {
+            $usesPerItemApprovers = $members->contains(fn (OffboardingRequestApprover $m) => $m->usesPerItemApprovers());
+
+            if (! $usesPerItemApprovers) {
                 return false;
             }
 
-            $locked->update(['ready_for_approval_notified_at' => now()]);
+            $allReady = $members->every(
+                fn (OffboardingRequestApprover $m) => ! $m->requiresAllItemsCompletedBeforeApproval() || $m->allItemsCompleted()
+            );
 
-            $locked->offboardingRequest->activities()->create([
-                'offboarding_request_approver_id' => $locked->id,
+            if (! $allReady) {
+                return false;
+            }
+
+            $members->each(fn (OffboardingRequestApprover $m) => $m->update(['ready_for_approval_notified_at' => now()]));
+
+            $offboardingRequest->activities()->create([
+                'offboarding_request_approver_id' => $members->first()->id,
                 'action' => 'checklist_ready_for_approval',
-                'status' => $locked->offboardingRequest->status,
-                'comment' => 'All checklist items have been checked. Awaiting Department Head approval.',
+                'status' => $offboardingRequest->status,
+                'comment' => 'All checklist items have been checked for: '
+                    . $members->pluck('checklistTemplate.title')->filter()->implode(', ')
+                    . '. Awaiting Department Head approval.',
             ]);
 
-            app(ChecklistApprovalNotifier::class)->notifyDepartmentHeadReady($locked);
+            app(ChecklistApprovalNotifier::class)->notifyDepartmentHeadReady($offboardingRequest, $employeeId, $members);
 
             return true;
         });

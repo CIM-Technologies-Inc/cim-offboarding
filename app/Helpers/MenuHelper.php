@@ -6,69 +6,106 @@ class MenuHelper
 {
     public static function getMainNavItems()
     {
-        $role = auth()->user()?->role;
+        $user = auth()->user();
 
+        // Every item is gated by its own `.view` permission — real,
+        // Spatie-backed module access control, not a hardcoded role list —
+        // EXCEPT the two identity-scoped self-service pages (a user's own
+        // profile, an Employee-role account's own dashboard), which have
+        // no corresponding admin-toggleable permission on purpose: every
+        // authenticated account always has a profile, and every Employee-
+        // role account always has their own dashboard, regardless of what
+        // permissions an admin has or hasn't assigned.
         $items = [
             [
                 'icon' => 'dashboard',
                 'name' => 'Dashboard',
                 'path' => '/',
-                'roles' => ['admin'],
+                'permission' => 'dashboard.view',
+            ],
+            [
+                'icon' => 'dashboard',
+                'name' => 'My Dashboard',
+                'path' => '/employee/dashboard',
+                'roles' => ['employee'],
             ],
             [
                 'icon' => 'user-profile',
                 'name' => 'User Profile',
                 'path' => '/profile',
-                'roles' => ['admin', 'approver'],
+                'roles' => ['admin', 'approver', 'employee'],
             ],
             [
                 'icon' => 'task',
                 'name' => 'Offboarding Checklist',
                 'path' => '/offboarding-checklists',
-                'roles' => ['admin'],
+                'permission' => 'offboarding-checklists.view',
             ],
             [
                 'icon' => 'offboardee',
                 'name' => 'Offboardee',
                 'path' => '/offboardees',
-                'roles' => ['admin'],
+                'permission' => 'offboardees.view',
             ],
             [
                 'icon' => 'tables',
                 'name' => 'Employee Master',
                 'path' => '/employee-groups',
-                'roles' => ['admin'],
+                'permission' => 'employee-master.view',
             ],
             [
                 'icon' => 'approval',
                 'name' => 'Approval',
                 'path' => '/approvals',
-                'roles' => ['admin', 'approver'],
+                'permission' => 'approvals.view',
             ],
             [
                 'icon' => 'calendar',
                 'name' => 'Calendar',
                 'path' => '/calendar',
-                'roles' => ['admin', 'approver'],
+                'permission' => 'calendar.view',
             ],
             [
                 'icon' => 'email',
-                'name' => 'Email Templates',
+                'name' => 'Email and Notification',
                 'path' => '/email-templates',
-                'roles' => ['admin'],
+                'permission' => 'email-templates.view',
+            ],
+            [
+                'icon' => 'authentication',
+                'name' => 'Roles & Permissions',
+                'path' => '/roles-permissions',
+                'permission' => 'roles.view',
+            ],
+            [
+                'icon' => 'tables',
+                'name' => 'Users',
+                'path' => '/users',
+                'permission' => 'users.view',
             ],
         ];
 
-        return array_values(array_filter($items, fn ($item) => in_array($role, $item['roles'], true)));
+        return array_values(array_filter($items, function ($item) use ($user) {
+            return isset($item['permission'])
+                ? ($user?->can($item['permission']) ?? false)
+                : ($user?->hasAnyRole($item['roles']) ?? false);
+        }));
     }
 
     /**
-     * Where the logo/home links should point: the dashboard for admins,
-     * since approvers can't access it, Approvals instead.
+     * Where the logo/home links should point: the dashboard for admins
+     * (approvers and employees can't access it), the Employee Dashboard for
+     * employees, Approvals for everyone else (approvers).
      */
     public static function homePath(): string
     {
-        return auth()->user()?->isAdmin() ? '/' : '/approvals';
+        $user = auth()->user();
+
+        return match (true) {
+            $user?->isAdmin() => '/',
+            $user?->isEmployee() => '/employee/dashboard',
+            default => '/approvals',
+        };
     }
 
     public static function getMenuGroups()

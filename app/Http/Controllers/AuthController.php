@@ -59,11 +59,17 @@ class AuthController extends Controller
     }
 
     /**
-     * The approver role can't see the dashboard, so it lands on Approvals instead.
+     * The approver role can't see the admin dashboard, so it lands on
+     * Approvals instead; the Employee role can't see either, so it lands on
+     * its own dashboard.
      */
     private function homeRouteFor(User $user): string
     {
-        return $user->isAdmin() ? 'dashboard' : 'approvals.index';
+        return match (true) {
+            $user->isAdmin() => 'dashboard',
+            $user->isEmployee() => 'employee.dashboard',
+            default => 'approvals.index',
+        };
     }
 
     public function destroy(Request $request): RedirectResponse

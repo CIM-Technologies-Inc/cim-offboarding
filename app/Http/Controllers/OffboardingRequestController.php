@@ -3,7 +3,6 @@
 namespace App\Http\Controllers;
 
 use App\Models\ChecklistTemplate;
-use App\Models\EmailTemplate;
 use App\Models\Employee;
 use App\Models\OffboardingRequest;
 use App\Models\User;
@@ -25,15 +24,48 @@ class OffboardingRequestController extends Controller
             'reason' => ['required', 'in:resignation,termination,retirement,layoff,other'],
         ]);
 
+        $employee = Employee::findOrFail($validated['employee_id']);
+
+        // Fallback: if the admin didn't manually pick an Immediate Head,
+        // use the offboardee's Employee Master Group Head instead — the
+        // same "group's registered head" concept `Employee::departmentHead()`
+        // already uses for checklist template department heads, applied
+        // here to the per-request Immediate Head field. A manually-picked
+        // Immediate Head is never overridden (this only runs when the field
+        // came in empty), and an employee with no group (or a group with no
+        // registered head) simply gets no fallback, same as today.
+        if (empty($validated['immediate_head_id'])) {
+            $groupHead = $employee->employeeGroup?->groupHead;
+
+            if ($groupHead && $groupHead->id !== $employee->id) {
+                $validated['immediate_head_id'] = $groupHead->id;
+            }
+        }
+
         // No longer a user-facing choice on the New Offboarding Request form
         // — every request is created async, same as the form's own prior
         // default. Kept as a stored value (rather than dropping the column)
         // since ApprovalController still reads it for the Approvals page's
         // "Approval Mode" display.
-        $offboardingRequest = OffboardingRequest::create($validated + ['status' => 'pending', 'approval_mode' => 'async']);
+        $offboardingRequest = OffboardingRequest::create($validated + [
+            'status' => 'pending',
+            'approval_mode' => 'async',
+            'created_by' => $request->user()->id,
+        ]);
 
-        $employee = Employee::findOrFail($validated['employee_id']);
         $employee->update(['status' => 'offboarding']);
+
+        // Every offboardee gets their own login the moment their request is
+        // created, so they can track their own process from day one — see
+        // `ChecklistApprovalNotifier::notifyOffboardee()` below, which emails
+        // these exact credentials only when the account is genuinely new.
+        // Never promotes/downgrades an existing account's role (see
+        // `User::findOrCreateEmployee()`), so an employee who already has an
+        // account (e.g. as someone else's approver) keeps that role and
+        // simply never receives credentials in this email.
+        $existingEmployeeUser = User::firstWhere('username', $employee->employee_code);
+        $employeeUser = $existingEmployeeUser ?? User::findOrCreateEmployee($employee);
+        $isNewEmployeeAccount = $existingEmployeeUser === null;
 
         // The Immediate Head is an additional authorized signatory on the
         // Clearance Form, outside the checklist approval workflow — they
@@ -47,11 +79,7 @@ class OffboardingRequestController extends Controller
         $successMessage = 'Offboarding request submitted.';
 
         try {
-            if (! EmailTemplate::activeDefaultAnnouncement()) {
-                $successMessage .= ' Warning: no active default Offboarding Announcement template is set, so approvers were not emailed — set one on the Email Templates page.';
-            }
-
-            $this->notifyDepartmentHeads($offboardingRequest, $request->user());
+            $this->notifyDepartmentHeads($offboardingRequest, $request->user(), $employeeUser, $isNewEmployeeAccount);
         } catch (\Throwable $e) {
             Log::error('Failed to process offboarding approver notifications.', [
                 'offboarding_request_id' => $offboardingRequest->id,
@@ -68,13 +96,27 @@ class OffboardingRequestController extends Controller
      * `department` set applies to everyone as before; one WITH a
      * `department` set only attaches when it exactly matches the
      * offboardee's own `department` (Final Pay is a separate, later stage
-     * handled by ApprovalController once these are all approved) — and
-     * email each attached template's department head an announcement,
-     * using whichever active template is flagged as the default
-     * Offboarding Announcement template — no manual template selection
-     * required.
+     * handled by ApprovalController once these are all approved). The
+     * dedicated "Offboarding Request Notification" email (see
+     * `ChecklistApprovalNotifier::notifyDepartmentHeadsOfNewRequest()`) is
+     * what actually informs each Department Head — the older, freely
+     * admin-editable "default Offboarding Announcement" template is
+     * deliberately NOT used here (passing `null` skips that email loop
+     * entirely inside `attachAndNotify()`), since it's redundant with the
+     * dedicated notification and no longer wanted on this trigger.
+     *
+     * An Immediate Head checklist (see `ChecklistApprovalNotifier::attachAndNotify()`)
+     * attaches and notifies right alongside every other template here —
+     * it is NOT a prerequisite for the rest. Every assigned Department Head
+     * and signatory gets access to, and is notified about, their own
+     * checklist immediately, independent of whether/when the Immediate Head
+     * completes theirs. The Immediate Head checklist still only ever
+     * assigns to that specific request's Immediate Head, and still requires
+     * every item checked before it can be submitted (see
+     * `OffboardingRequestApprover::requiresAllItemsCompletedBeforeApproval()`)
+     * — none of that changes, only the "wait for it first" sequencing does.
      */
-    private function notifyDepartmentHeads(OffboardingRequest $offboardingRequest, User $creator): void
+    private function notifyDepartmentHeads(OffboardingRequest $offboardingRequest, User $creator, User $employeeUser, bool $isNewEmployeeAccount): void
     {
         $templates = ChecklistTemplate::where('is_active', true)
             ->where('is_final_pay_checklist', false)
@@ -82,19 +124,23 @@ class OffboardingRequestController extends Controller
             ->with(['departmentHead', 'items.signatory'])
             ->get();
 
-        $emailTemplate = EmailTemplate::activeDefaultAnnouncement();
-
-        if (! $emailTemplate) {
-            Log::warning('No active default Offboarding Announcement email template configured — approvers were not emailed.', [
-                'offboarding_request_id' => $offboardingRequest->id,
-            ]);
-        }
+        app(ChecklistApprovalNotifier::class)->notifyDepartmentHeadsOfNewRequest($offboardingRequest, $templates);
 
         app(ChecklistApprovalNotifier::class)->attachAndNotify(
             $offboardingRequest,
             $templates,
-            $emailTemplate,
+            null,
             $creator->name
+        );
+
+        // Sent last so the checklist summary reflects the templates just
+        // attached above (with their resolved due dates/signatories),
+        // rather than the bare template list.
+        app(ChecklistApprovalNotifier::class)->notifyOffboardee(
+            $offboardingRequest,
+            $employeeUser,
+            $isNewEmployeeAccount,
+            $isNewEmployeeAccount ? $offboardingRequest->employee->employee_code : null,
         );
     }
 }

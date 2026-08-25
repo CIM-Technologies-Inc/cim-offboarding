@@ -16,7 +16,6 @@ class ChecklistTemplate extends Model
         'is_immediate_head_checklist',
         'department',
         'is_final_pay_checklist',
-        'is_general_signatory',
         'is_active',
         'created_by',
         'due_in_days',
@@ -27,7 +26,6 @@ class ChecklistTemplate extends Model
         return [
             'is_active' => 'boolean',
             'is_final_pay_checklist' => 'boolean',
-            'is_general_signatory' => 'boolean',
             'is_immediate_head_checklist' => 'boolean',
             'due_in_days' => 'integer',
         ];

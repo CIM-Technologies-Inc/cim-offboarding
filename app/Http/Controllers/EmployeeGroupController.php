@@ -7,7 +7,10 @@ use App\Models\EmployeeGroup;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Illuminate\View\View;
+use PhpOffice\PhpSpreadsheet\IOFactory;
 
 class EmployeeGroupController extends Controller
 {
@@ -21,7 +24,7 @@ class EmployeeGroupController extends Controller
                 ->get(),
             'employees' => Employee::with('employeeGroup.groupHead')
                 ->orderBy('name')
-                ->get(['id', 'name', 'email', 'employee_code', 'department', 'designation', 'employee_group_id', 'status']),
+                ->get(['id', 'name', 'email', 'employee_code', 'department', 'designation', 'employee_group_id', 'is_task_assignee', 'status']),
         ]);
     }
 
@@ -136,5 +139,255 @@ class EmployeeGroupController extends Controller
         }
 
         return back()->with('success', $message);
+    }
+
+    /**
+     * Flips whether this group member is eligible to be picked as a Task
+     * Assignee on an Offboarding Checklist item (see
+     * `ChecklistTemplateController::eligibleSignatoryIds()`, which reads
+     * this same `is_task_assignee` flag when narrowing the Task Assignee
+     * pool to the selected Clearance Signatory's group). Lives on the
+     * `Employee` record itself, not scoped to any one group, since an
+     * employee belongs to at most one group at a time — this action is just
+     * exposed from within the Members table of whichever group they
+     * currently belong to. JSON-aware for the same reactive checkbox
+     * pattern as `addEmployee()`/`removeEmployee()` above.
+     */
+    public function toggleTaskAssignee(Request $request, EmployeeGroup $employeeGroup, Employee $employee): RedirectResponse|JsonResponse
+    {
+        abort_unless($employee->employee_group_id === $employeeGroup->id, 404);
+
+        $employee->update(['is_task_assignee' => ! $employee->is_task_assignee]);
+
+        $message = "{$employee->name} marked as " . ($employee->is_task_assignee ? 'a Task Assignee.' : 'not a Task Assignee.');
+
+        if ($request->wantsJson()) {
+            return response()->json([
+                'employee' => $employee->fresh(['employeeGroup.groupHead']),
+                'message' => $message,
+            ]);
+        }
+
+        return back()->with('success', $message);
+    }
+
+    /**
+     * The exact 11 columns the Employee Master import expects, in header
+     * order. Every one of these must be present in the uploaded file's
+     * header row (structure check) — but not every one requires a value on
+     * every data row (see the required-value subset in `validateRows()`).
+     */
+    private const IMPORT_COLUMNS = [
+        'employeeNo', 'lastName', 'firstName', 'middleName', 'position',
+        'department', 'email', 'personalEmail', 'supOne', 'supTwo', 'head',
+    ];
+
+    /**
+     * Replaces the entire Employee Master roster from an uploaded Excel
+     * file, using `employeeNo` as the sync key: a matched employee is
+     * updated in place (preserving its `id` and every relationship —
+     * offboarding history, checklist assignments, group membership — since
+     * `updateOrCreate`-style matching never deletes-then-recreates), a new
+     * `employeeNo` is inserted, and any existing employee whose
+     * `employeeNo` is no longer in the file is deleted (cascading per the
+     * same foreign keys that already govern deleting an employee anywhere
+     * else in this app). The whole file is validated — structure AND every
+     * row's data — before a single database write happens; any failure
+     * leaves the existing roster completely untouched.
+     */
+    public function import(Request $request): RedirectResponse
+    {
+        $request->validate([
+            'excel_file' => ['required', 'file', 'mimes:xlsx,xls'],
+        ]);
+
+        try {
+            $sheet = IOFactory::load($request->file('excel_file')->getRealPath())->getActiveSheet();
+        } catch (\Throwable $e) {
+            return back()->withErrors(['excel_file' => 'Could not read that file — please upload a valid Excel (.xlsx or .xls) file.']);
+        }
+
+        $rows = $sheet->toArray(null, true, true, false);
+
+        if (empty($rows)) {
+            return back()->withErrors(['excel_file' => 'The uploaded file is empty.']);
+        }
+
+        $headerRow = array_shift($rows);
+        $headerMap = $this->matchHeaders($headerRow);
+
+        if ($headerMap === null) {
+            $present = array_keys($this->normalizedHeaders($headerRow));
+            $missing = array_filter(self::IMPORT_COLUMNS, fn ($column) => ! in_array(strtolower($column), $present, true));
+
+            return back()->withErrors(['excel_file' => 'Missing required column(s): ' . implode(', ', $missing) . '.']);
+        }
+
+        [$validRows, $errors] = $this->validateRows($rows, $headerMap);
+
+        if (! empty($errors)) {
+            $shown = array_slice($errors, 0, 5);
+            $suffix = count($errors) > 5 ? ' (+' . (count($errors) - 5) . ' more)' : '';
+
+            return back()->withErrors(['excel_file' => implode('; ', $shown) . $suffix]);
+        }
+
+        $created = 0;
+        $updated = 0;
+        $deleted = 0;
+        $importedCodes = [];
+
+        DB::transaction(function () use ($validRows, &$created, &$updated, &$deleted, &$importedCodes) {
+            foreach ($validRows as $row) {
+                $employee = Employee::firstOrNew(['employee_code' => $row['employeeNo']]);
+                $isNew = ! $employee->exists;
+
+                $employee->fill([
+                    'name' => $row['name'],
+                    'email' => $row['email'],
+                    'personal_email' => $row['personalEmail'] ?: null,
+                    'department' => $row['department'],
+                    'designation' => $row['position'] ?: '',
+                    'sup_one' => $row['supOne'] ?: null,
+                    'sup_two' => $row['supTwo'] ?: null,
+                    'head' => $row['head'] ?: null,
+                ]);
+
+                if ($isNew) {
+                    $employee->status = 'active';
+                    $employee->date_of_joining = now();
+                }
+
+                $employee->save();
+
+                $importedCodes[] = $row['employeeNo'];
+                $isNew ? $created++ : $updated++;
+            }
+
+            $deleted = Employee::whereNotIn('employee_code', $importedCodes)->count();
+            Employee::whereNotIn('employee_code', $importedCodes)->delete();
+        });
+
+        $total = $created + $updated;
+
+        return back()->with('success', "Imported {$total} employee(s) ({$created} added, {$updated} updated, {$deleted} removed).");
+    }
+
+    /**
+     * @param  array<int, string>  $headerRow
+     * @return array<string, string>
+     */
+    private function normalizedHeaders(array $headerRow): array
+    {
+        $normalized = [];
+
+        foreach ($headerRow as $cell) {
+            $key = strtolower(trim((string) $cell));
+
+            if ($key !== '') {
+                $normalized[$key] = (string) $cell;
+            }
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * Case-insensitively matches the uploaded header row against
+     * `IMPORT_COLUMNS`, returning `[normalizedColumnName => cellIndex]`, or
+     * null if any required column is missing entirely.
+     *
+     * @param  array<int, string>  $headerRow
+     * @return array<string, int>|null
+     */
+    private function matchHeaders(array $headerRow): ?array
+    {
+        $byLower = [];
+
+        foreach ($headerRow as $index => $cell) {
+            $byLower[strtolower(trim((string) $cell))] = $index;
+        }
+
+        $map = [];
+
+        foreach (self::IMPORT_COLUMNS as $column) {
+            $index = $byLower[strtolower($column)] ?? null;
+
+            if ($index === null) {
+                return null;
+            }
+
+            $map[$column] = $index;
+        }
+
+        return $map;
+    }
+
+    /**
+     * Validates every data row against the required/optional fields in
+     * `import()`'s docblock, collecting every failure (never stopping at
+     * the first one) so a single re-upload can fix everything at once.
+     * Returns `[validatedRows, errorMessages]` — `validatedRows` is only
+     * meaningful when `errorMessages` is empty, since a single bad row must
+     * block the entire file (see `import()`).
+     *
+     * @param  array<int, array<int, mixed>>  $rows
+     * @param  array<string, int>  $headerMap
+     * @return array{0: array<int, array<string, string>>, 1: array<int, string>}
+     */
+    private function validateRows(array $rows, array $headerMap): array
+    {
+        $required = ['employeeNo', 'lastName', 'firstName', 'department', 'email'];
+        $validRows = [];
+        $errors = [];
+        $seenCodes = [];
+
+        foreach ($rows as $offset => $row) {
+            $rowNumber = $offset + 2; // +1 for 0-index, +1 for the header row already shifted off
+
+            $values = [];
+            foreach ($headerMap as $column => $index) {
+                $values[$column] = trim((string) ($row[$index] ?? ''));
+            }
+
+            // A completely blank row (common trailing spreadsheet artifact)
+            // is silently skipped rather than reported as an error.
+            if (implode('', $values) === '') {
+                continue;
+            }
+
+            foreach ($required as $field) {
+                if ($values[$field] === '') {
+                    $errors[] = "Row {$rowNumber}: {$field} is required";
+                }
+            }
+
+            if ($values['email'] !== '' && ! filter_var($values['email'], FILTER_VALIDATE_EMAIL)) {
+                $errors[] = "Row {$rowNumber}: email is not a valid email address";
+            }
+
+            if ($values['personalEmail'] !== '' && ! filter_var($values['personalEmail'], FILTER_VALIDATE_EMAIL)) {
+                $errors[] = "Row {$rowNumber}: personalEmail is not a valid email address";
+            }
+
+            if ($values['employeeNo'] !== '') {
+                if (isset($seenCodes[$values['employeeNo']])) {
+                    $errors[] = "Row {$rowNumber}: duplicate employeeNo \"{$values['employeeNo']}\" (already used on row {$seenCodes[$values['employeeNo']]})";
+                } else {
+                    $seenCodes[$values['employeeNo']] = $rowNumber;
+                }
+            }
+
+            $nameParts = array_filter([
+                $values['firstName'] !== '' ? Str::title(strtolower($values['firstName'])) : null,
+                $values['middleName'] !== '' ? Str::title(strtolower($values['middleName'])) : null,
+                $values['lastName'] !== '' ? Str::title(strtolower($values['lastName'])) : null,
+            ]);
+
+            $values['name'] = implode(' ', $nameParts);
+            $validRows[] = $values;
+        }
+
+        return [$validRows, $errors];
     }
 }

@@ -30,38 +30,44 @@
                                     <td style="padding:4px 0; font-weight:bold;">{{ $offboardeeEmployeeCode }}</td>
                                 </tr>
                                 <tr>
-                                    <td style="padding:4px 0; color:#6b7280;">Checklist</td>
-                                    <td style="padding:4px 0; font-weight:bold;">{{ $checklistTitle }}</td>
+                                    <td style="padding:4px 0; color:#6b7280;">Checklist(s)</td>
+                                    <td style="padding:4px 0; font-weight:bold;">{{ collect($checklists)->pluck('title')->implode(', ') }}</td>
                                 </tr>
                             </table>
 
                             <p style="margin:0 0 4px; font-weight:bold;">Current Status:</p>
                             <p style="margin:0 0 20px; color:#145a3a; font-weight:bold;">Ready for Department Head Approval</p>
 
-                            <p style="margin:0 0 8px; font-weight:bold;">Checklist Details:</p>
-                            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; margin-bottom:16px; font-size:14px;">
-                                <tr>
-                                    <td style="padding:8px 10px; background-color:#f3f4f6; font-weight:bold; border:1px solid #e5e7eb;">Item</td>
-                                    <td style="padding:8px 10px; background-color:#f3f4f6; font-weight:bold; border:1px solid #e5e7eb;">Status</td>
-                                    <td style="padding:8px 10px; background-color:#f3f4f6; font-weight:bold; border:1px solid #e5e7eb;">Checked By</td>
-                                    <td style="padding:8px 10px; background-color:#f3f4f6; font-weight:bold; border:1px solid #e5e7eb;">Date/Time</td>
-                                    <td style="padding:8px 10px; background-color:#f3f4f6; font-weight:bold; border:1px solid #e5e7eb;">Remarks</td>
-                                </tr>
-                                @foreach ($items as $item)
+                            @foreach ($checklists as $checklist)
+                                <p style="margin:0 0 8px; font-weight:bold;">{{ $checklist['title'] }}:</p>
+                                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; margin-bottom:16px; font-size:14px;">
                                     <tr>
-                                        <td style="padding:8px 10px; border:1px solid #e5e7eb;">{{ $loop->iteration }}. {{ $item['title'] }}</td>
-                                        <td style="padding:8px 10px; border:1px solid #e5e7eb;">Checked</td>
-                                        <td style="padding:8px 10px; border:1px solid #e5e7eb;">{{ $item['checkedByName'] ?? '—' }}</td>
-                                        <td style="padding:8px 10px; border:1px solid #e5e7eb;">{{ $item['checkedAt'] ?? '—' }}</td>
-                                        <td style="padding:8px 10px; border:1px solid #e5e7eb;">{{ $item['remark'] ?? '—' }}</td>
+                                        <td style="padding:8px 10px; background-color:#f3f4f6; font-weight:bold; border:1px solid #e5e7eb;">Item</td>
+                                        <td style="padding:8px 10px; background-color:#f3f4f6; font-weight:bold; border:1px solid #e5e7eb;">Status</td>
+                                        <td style="padding:8px 10px; background-color:#f3f4f6; font-weight:bold; border:1px solid #e5e7eb;">Checked By</td>
+                                        <td style="padding:8px 10px; background-color:#f3f4f6; font-weight:bold; border:1px solid #e5e7eb;">Date/Time</td>
+                                        <td style="padding:8px 10px; background-color:#f3f4f6; font-weight:bold; border:1px solid #e5e7eb;">Remarks</td>
                                     </tr>
-                                @endforeach
-                            </table>
+                                    @forelse ($checklist['items'] as $item)
+                                        <tr>
+                                            <td style="padding:8px 10px; border:1px solid #e5e7eb;">{{ $loop->iteration }}. {{ $item['title'] }}</td>
+                                            <td style="padding:8px 10px; border:1px solid #e5e7eb;">Checked</td>
+                                            <td style="padding:8px 10px; border:1px solid #e5e7eb;">{{ $item['checkedByName'] ?? '—' }}</td>
+                                            <td style="padding:8px 10px; border:1px solid #e5e7eb;">{{ $item['checkedAt'] ?? '—' }}</td>
+                                            <td style="padding:8px 10px; border:1px solid #e5e7eb;">{{ $item['remark'] ?? '—' }}</td>
+                                        </tr>
+                                    @empty
+                                        <tr>
+                                            <td colspan="5" style="padding:8px 10px; border:1px solid #e5e7eb; color:#6b7280;">No individual checklist items.</td>
+                                        </tr>
+                                    @endforelse
+                                </table>
+                            @endforeach
 
                             <p style="margin:0 0 24px;">All checklist items have been checked.</p>
 
                             <p style="margin:0 0 24px;">
-                                Review the checklist in the system, or approve it directly from this email.
+                                Review the checklist(s) in the system, or approve them all directly from this email.
                             </p>
 
                             <p style="margin:0;">

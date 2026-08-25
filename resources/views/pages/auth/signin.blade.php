@@ -115,7 +115,7 @@
                     <x-common.common-grid-shape/>
                     <div class="flex max-w-xs flex-col items-center">
                         <a href="/" class="block">
-                            <img src="./images/logo/signin-logo.svg" alt="Logo" />
+                            <img src="./images/logo/CIM_logo.png" alt="CIM Logo" class="h-14 w-auto" />
                         </a>
                         <p class="text-center text-gray-400 dark:text-white/60">
                             Welcome To Employee Offboarding Platform

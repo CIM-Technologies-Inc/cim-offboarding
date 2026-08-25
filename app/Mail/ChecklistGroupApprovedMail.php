@@ -1,0 +1,47 @@
+<?php
+
+namespace App\Mail;
+
+use Illuminate\Bus\Queueable;
+use Illuminate\Mail\Mailable;
+use Illuminate\Mail\Mailables\Content;
+use Illuminate\Mail\Mailables\Envelope;
+use Illuminate\Queue\SerializesModels;
+
+class ChecklistGroupApprovedMail extends Mailable
+{
+    use Queueable, SerializesModels;
+
+    /**
+     * @param  array<int, array{title: string, items: array<int, array{title: string, checkedByName: ?string, checkedAt: ?string, remark: ?string}>}>  $checklists
+     */
+    public function __construct(
+        public string $creatorName,
+        public string $approverName,
+        public string $offboardeeName,
+        public string $offboardeeEmployeeCode,
+        public array $checklists,
+    ) {}
+
+    public function envelope(): Envelope
+    {
+        return new Envelope(
+            subject: 'Checklist Approval Confirmed',
+        );
+    }
+
+    public function content(): Content
+    {
+        return new Content(
+            view: 'emails.checklist-group-approved',
+        );
+    }
+
+    /**
+     * @return array<int, \Illuminate\Mail\Mailables\Attachment>
+     */
+    public function attachments(): array
+    {
+        return [];
+    }
+}

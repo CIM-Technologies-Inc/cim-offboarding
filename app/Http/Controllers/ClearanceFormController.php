@@ -57,6 +57,17 @@ class ClearanceFormController extends Controller
     {
         $offboardingRequest->loadMissing(['employee', 'immediateHead.user', 'checklistTemplates', 'approvers.employee.user', 'approvers.itemProgress']);
 
+        // Logged once (guarded below) so the employee's own timeline can
+        // show when their clearance form was first generated — every later
+        // regeneration (viewing again, re-printing) is a no-op here.
+        if (! $offboardingRequest->activities()->where('action', 'clearance_generated')->exists()) {
+            $offboardingRequest->activities()->create([
+                'user_id' => auth()->id(),
+                'action' => 'clearance_generated',
+                'status' => $offboardingRequest->status,
+            ]);
+        }
+
         $employee = $offboardingRequest->employee;
         $immediateHead = $offboardingRequest->immediateHead;
 
@@ -74,6 +85,13 @@ class ClearanceFormController extends Controller
 
         $rows = $offboardingRequest->checklistTemplates
             ->where('is_active', true)
+            // The Immediate Head checklist is already shown once, above this
+            // table, via `$immediateHeadRow` — it has no `department` of its
+            // own, so leaving it in here would fall back to displaying the
+            // signatory's own personal department (e.g. "IT"), producing a
+            // confusing second row that looks like a duplicate of that
+            // department's real row.
+            ->reject(fn (ChecklistTemplate $template) => $template->is_immediate_head_checklist)
             ->map(function (ChecklistTemplate $template) use ($offboardingRequest) {
                 $approver = $offboardingRequest->approvers->firstWhere('checklist_template_id', $template->id);
                 $signatoryEmployee = $approver?->employee;
