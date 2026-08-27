@@ -149,6 +149,220 @@ class ChecklistDelegationController extends Controller
     }
 
     /**
+     * Bulk "Assign Checklist": directly assigns every eligible item on one
+     * or more of this employee's still undifferentiated checklists (see
+     * `OffboardingRequestApprover::isEligibleForPoolAssignment()`) to the
+     * selected employee(s) in one action, instead of reassigning items one
+     * at a time via `assignItem()`. Reuses the EXACT same mechanism "Check
+     * This List" (`takeOverItem()`) already uses — a real, active
+     * `ChecklistItemAssignment` override per item — just applied to every
+     * eligible item at once instead of one item a peer voluntarily claims
+     * for themselves. When several employees are selected together,
+     * eligible items on each checklist are distributed round-robin, one
+     * real assignee per item (an item can only ever have one active
+     * assignee, so a shared "pool" isn't meaningful once items are
+     * genuinely being assigned rather than merely made visible). Because
+     * every assignee immediately owns at least one real item, they
+     * automatically get full visibility AND take-over rights over the rest
+     * of that checklist via the exact same `scopeVisibleTo()`/
+     * `authorizeItemAction()` paths any other item-approver already uses —
+     * no separate visibility mechanism is needed on top. A checklist that
+     * already has any real per-item ownership is never reopened here, and
+     * already checked/held items are always skipped — only genuinely
+     * eligible items are ever (re)assigned.
+     */
+    public function assignPool(Request $request, OffboardingRequest $offboardingRequest, Employee $employee): RedirectResponse
+    {
+        $this->authorizeGroupPrimary($employee);
+
+        $validated = $request->validate([
+            'checklist_template_ids' => ['required', 'array', 'min:1'],
+            'checklist_template_ids.*' => ['integer', 'exists:checklist_templates,id'],
+            'employee_ids' => ['required', 'array', 'min:1'],
+            'employee_ids.*' => ['integer', 'exists:employees,id'],
+        ]);
+
+        abort_if(
+            in_array($employee->id, $validated['employee_ids'], true),
+            422,
+            'You cannot assign the checklist\'s own owner as one of its assignees.'
+        );
+
+        $assignments = OffboardingRequestApprover::where('offboarding_request_id', $offboardingRequest->id)
+            ->where('employee_id', $employee->id)
+            ->whereIn('status', ['pending', 'viewed'])
+            ->whereIn('checklist_template_id', $validated['checklist_template_ids'])
+            ->get();
+
+        abort_if($assignments->isEmpty(), 422, 'No eligible checklists were selected.');
+
+        foreach ($assignments as $assignment) {
+            abort_if(
+                ! $assignment->isEligibleForPoolAssignment(),
+                422,
+                "\"{$assignment->checklistTemplate->title}\" already has assigned signatories and can no longer be bulk-assigned."
+            );
+        }
+
+        // Every assignment fetched above shares the same `employee_id`
+        // (filtered on it just above), so `eligiblePoolAssigneeIds()` —
+        // anchored on that owner, not on any one checklist's own template —
+        // returns the identical pool regardless of which assignment it's
+        // called on. Re-derived here rather than trusting the client's own
+        // (identical) filtering, so a manually crafted request can never
+        // assign someone outside the current Clearance Signatory/Immediate
+        // Head's own scope.
+        $eligibleIds = $assignments->first()->eligiblePoolAssigneeIds();
+
+        abort_if(
+            count(array_diff($validated['employee_ids'], $eligibleIds)) > 0,
+            422,
+            'One or more selected employees are not eligible to be assigned to this checklist.'
+        );
+
+        // Stable submitted order, so distribution is predictable and a
+        // repeat submission with the same selection lands the same way.
+        $assigneePool = Employee::whereIn('id', $validated['employee_ids'])->get()
+            ->sortBy(fn (Employee $e) => array_search($e->id, $validated['employee_ids'], true))
+            ->values();
+
+        // Every item this action actually assigned, grouped by its new
+        // assignee (and whether their account is brand new) — built inside
+        // the transaction, consumed by the consolidated per-recipient email
+        // afterward. Never includes another recipient's share of the same
+        // checklist.
+        $assignedByEmployeeId = [];
+
+        DB::transaction(function () use ($assignments, $assigneePool, &$assignedByEmployeeId) {
+            foreach ($assignments as $assignment) {
+                $assignment->loadMissing('checklistTemplate.items', 'itemProgress');
+
+                $checkedItemIds = $assignment->itemProgress->where('is_checked', true)->pluck('checklist_item_id');
+                $heldItemIds = $assignment->itemProgress->where('status', 'hold')->pluck('checklist_item_id');
+
+                // Only items with no real ownership and no reason to stay
+                // untouched — `isEligibleForPoolAssignment()` above already
+                // guarantees no item here has a distinct signatory, but the
+                // PRIMARY approver may still have personally checked (or
+                // held) some items directly even on a checklist that's
+                // never had per-item approvers, so this is re-checked here.
+                $eligibleItems = $assignment->checklistTemplate->items
+                    ->reject(fn (ChecklistItem $item) => $checkedItemIds->contains($item->id) || $heldItemIds->contains($item->id))
+                    ->values();
+
+                if ($eligibleItems->isEmpty()) {
+                    continue;
+                }
+
+                $assignedNames = [];
+                $dueAt = $assignment->due_at?->format('M d, Y');
+
+                foreach ($eligibleItems as $index => $item) {
+                    /** @var Employee $assignee */
+                    $assignee = $assigneePool[$index % $assigneePool->count()];
+
+                    $isFirstTimeThisRun = ! isset($assignedByEmployeeId[$assignee->id]);
+                    $existingUser = $isFirstTimeThisRun ? User::firstWhere('username', $assignee->employee_code) : null;
+                    $assignedUser = User::findOrCreateApprover($assignee);
+
+                    // Supersede any existing active override — always the
+                    // "no signatory" snapshot row at this point, since
+                    // `isEligibleForPoolAssignment()` already ruled out any
+                    // item with a real distinct signatory — exactly the
+                    // same supersede-then-create pattern `takeOverItem()`
+                    // already uses for a single, voluntarily claimed item.
+                    $assignment->itemAssignments()
+                        ->where('checklist_item_id', $item->id)
+                        ->where('status', 'active')
+                        ->update(['status' => 'superseded', 'superseded_at' => now()]);
+
+                    $assignment->itemAssignments()->create([
+                        'checklist_item_id' => $item->id,
+                        'assigned_by_user_id' => auth()->id(),
+                        'assigned_employee_id' => $assignee->id,
+                        'assigned_user_id' => $assignedUser->id,
+                        'status' => 'active',
+                        'assigned_at' => now(),
+                    ]);
+
+                    $assignedNames[$assignee->id] ??= "{$assignee->name} ({$assignee->employee_code})";
+                    $assignedByEmployeeId[$assignee->id]['employee'] ??= $assignee;
+                    if ($isFirstTimeThisRun) {
+                        $assignedByEmployeeId[$assignee->id]['isNewAccount'] = $existingUser === null;
+                    }
+                    $assignedByEmployeeId[$assignee->id]['items'][] = [
+                        'checklistTitle' => $assignment->checklistTemplate->title,
+                        'itemTitle' => $item->title,
+                        'dueAt' => $dueAt,
+                    ];
+                }
+
+                $assignment->offboardingRequest->activities()->create([
+                    'user_id' => auth()->id(),
+                    'offboarding_request_approver_id' => $assignment->id,
+                    'action' => 'checklist_pool_assigned',
+                    'status' => $assignment->offboardingRequest->status,
+                    'comment' => "\"{$assignment->checklistTemplate->title}\" ({$eligibleItems->count()} item(s)) assigned to: " . implode(', ', $assignedNames) . '.',
+                ]);
+            }
+        });
+
+        $this->notifyPoolAssignees($offboardingRequest, $assignedByEmployeeId);
+
+        $assignedCount = count($assignedByEmployeeId);
+
+        return back()->with('success', $assignedCount > 0
+            ? "Checklist(s) assigned to {$assignedCount} employee(s)."
+            : 'No eligible task lists were available to assign.');
+    }
+
+    /**
+     * Sends the same "Offboarding Checklist Assigned to You" email
+     * `notifyItemApprovers()` sends at creation time, consolidated per
+     * recipient across every item they were just directly assigned in this
+     * one bulk action (possibly across several checklists) — reused
+     * completely unchanged, since a bulk-assigned employee is functionally
+     * in the exact same position as any other newly-assigned item
+     * approver. Listed items are ONLY the ones THIS recipient was actually
+     * assigned — never a co-recipient's share of the same checklist.
+     *
+     * @param  array<int, array{employee: Employee, isNewAccount: bool, items: array<int, array{checklistTitle: string, itemTitle: string, dueAt: ?string}>}>  $assignedByEmployeeId
+     */
+    private function notifyPoolAssignees(OffboardingRequest $offboardingRequest, array $assignedByEmployeeId): void
+    {
+        $offboardee = $offboardingRequest->employee;
+
+        foreach ($assignedByEmployeeId as $entry) {
+            $employee = $entry['employee'];
+
+            if (! $employee->email || ! filter_var($employee->email, FILTER_VALIDATE_EMAIL)) {
+                continue;
+            }
+
+            try {
+                Mail::to($employee->email)->send(new ChecklistItemApproverAssignedMail(
+                    approverName: $employee->name,
+                    offboardeeName: $offboardee->name,
+                    offboardeeEmployeeCode: $offboardee->employee_code,
+                    assignedItems: $entry['items'],
+                    approvalUrl: route('approvals.index'),
+                    credentials: $entry['isNewAccount'] ? [
+                        'username' => $employee->employee_code,
+                        'password' => $employee->employee_code,
+                    ] : null,
+                ));
+            } catch (\Throwable $e) {
+                Log::error('Failed to send checklist bulk assignment email.', [
+                    'offboarding_request_id' => $offboardingRequest->id,
+                    'employee_id' => $employee->id,
+                    'recipient' => $employee->email,
+                    'exception' => $e->getMessage(),
+                ]);
+            }
+        }
+    }
+
+    /**
      * The Department Head reassigns a single checklist item to a different
      * employee — e.g. because the item's originally assigned signatory is
      * unavailable. Scoped to just this one item on this one offboarding
@@ -338,6 +552,7 @@ class ChecklistDelegationController extends Controller
                 'canTakeOver' => false,
             ],
             'usesPerItemApprovers' => $offboardingRequestApprover->usesPerItemApprovers(),
+            'mustBeCheckedForSubmit' => $offboardingRequestApprover->requiresAllItemsCompletedBeforeApproval(),
             'allItemsCompleted' => $offboardingRequestApprover->allItemsCompleted(),
         ]);
     }
@@ -426,6 +641,14 @@ class ChecklistDelegationController extends Controller
 
         ChecklistItemProgress::syncForAssignment($offboardingRequestApprover, $items->all(), auth()->id());
 
+        // At least one item was actually checked/completed in this save —
+        // the checklist has now genuinely been acted upon, so its status
+        // should read "In Progress" rather than sit at "Pending" until the
+        // Department Head separately views or approves it.
+        if ($items->contains(fn (array $row) => ! empty($row['is_checked']))) {
+            $offboardingRequestApprover->markInProgressIfPending();
+        }
+
         if ($offboardingRequestApprover->isDelegated() && $offboardingRequestApprover->delegation_status === 'assigned') {
             $offboardingRequestApprover->update(['delegation_status' => 'in_progress']);
         }
@@ -455,7 +678,7 @@ class ChecklistDelegationController extends Controller
      * approver (or admin) always sees their own full group already (see
      * that scope's docblock), so no member is silently skipped for them.
      */
-    public function saveProgressGroup(Request $request, OffboardingRequest $offboardingRequest, Employee $employee): RedirectResponse
+    public function saveProgressGroup(Request $request, OffboardingRequest $offboardingRequest, Employee $employee): RedirectResponse|JsonResponse
     {
         $members = OffboardingRequestApprover::visibleTo(auth()->user())
             ->where('offboarding_request_id', $offboardingRequest->id)
@@ -505,6 +728,12 @@ class ChecklistDelegationController extends Controller
 
             ChecklistItemProgress::syncForAssignment($member, $items->all(), auth()->id());
 
+            // Same "genuinely acted upon" bump as the single-row
+            // `saveProgress()` above, per member of the combined group.
+            if ($items->contains(fn (array $row) => ! empty($row['is_checked']))) {
+                $member->markInProgressIfPending();
+            }
+
             if ($member->isDelegated() && $member->delegation_status === 'assigned') {
                 $member->update(['delegation_status' => 'in_progress']);
             }
@@ -512,7 +741,76 @@ class ChecklistDelegationController extends Controller
 
         app(ChecklistCompletionService::class)->checkGroupReadyForApproval($offboardingRequest, $employee->id);
 
+        // The "Done" button on the Approvals page's checklist modal submits
+        // here via `fetch()` (not a real form navigation) precisely so the
+        // dialog never closes/reloads on a single item's completion — it
+        // asks for JSON and patches just the now-checked item(s) into its
+        // own live Alpine state instead. A real browser form submission
+        // (Save Progress) never sends this header, so that flow is
+        // completely unaffected — same redirect-with-flash as always.
+        if ($request->wantsJson()) {
+            return response()->json([
+                'items' => $this->checkedItemPatches($members),
+                'message' => 'Task list successfully checked.',
+            ]);
+        }
+
         return back()->with('success', 'Checklist progress saved.');
+    }
+
+    /**
+     * The fresh, post-save state of every currently-checked item across the
+     * given assignments — shape-compatible with a single checklist item
+     * entry on the Approvals page (`checked`/`clearedByName`/`clearedByCode`/
+     * `clearedAt`), so the "Done" button's `fetch()` response can
+     * `Object.assign()` it straight onto the matching item in the modal's
+     * live state with no further transformation. Scoped to only checked
+     * items (never held/pending ones) since this exists purely to reflect
+     * what a `saveProgress()`/`saveProgressGroup()` submission just
+     * persisted back to the client without a page reload.
+     *
+     * @param  \Illuminate\Support\Collection<int, OffboardingRequestApprover>  $members
+     * @return array<int, array{id: int, checked: bool, onHold: bool, editable: bool, clearedByName: ?string, clearedByCode: ?string, clearedAt: ?string}>
+     */
+    private function checkedItemPatches($members): array
+    {
+        $patches = [];
+
+        foreach ($members as $member) {
+            // A forced `load()`, not `loadMissing()` — `authorizeItemAction()`
+            // already cached this same relation (empty, pre-sync) earlier in
+            // this same request for every member, so `loadMissing()` here
+            // would silently keep serving that stale, empty snapshot instead
+            // of the rows `ChecklistItemProgress::syncForAssignment()` just
+            // created/updated moments ago.
+            $member->load('checklistTemplate.items', 'itemProgress.checkedBy.employee');
+            $progressByItemId = $member->itemProgress->keyBy('checklist_item_id');
+
+            foreach ($member->checklistTemplate->items as $item) {
+                $progress = $progressByItemId->get($item->id);
+
+                if (! $progress?->is_checked) {
+                    continue;
+                }
+
+                $checkedByEmployee = $progress->checkedBy?->employee;
+
+                $patches[] = [
+                    'id' => $item->id,
+                    'checked' => true,
+                    'onHold' => false,
+                    // Already checked — never editable again, matching the
+                    // template's own `x-if="item.editable && !item.checked"`
+                    // gate that hides Hold/Done the moment `checked` is true.
+                    'editable' => false,
+                    'clearedByName' => $progress->checkedBy?->name,
+                    'clearedByCode' => $checkedByEmployee?->employee_code,
+                    'clearedAt' => $progress->checked_at?->format('M d, Y g:i A'),
+                ];
+            }
+        }
+
+        return $patches;
     }
 
     /**
@@ -524,7 +822,7 @@ class ChecklistDelegationController extends Controller
      * the remark/holder without logging a second audit entry — only the
      * genuine not-held -> held transition is recorded.
      */
-    public function holdItem(Request $request, OffboardingRequestApprover $offboardingRequestApprover, ChecklistItem $checklistItem): RedirectResponse
+    public function holdItem(Request $request, OffboardingRequestApprover $offboardingRequestApprover, ChecklistItem $checklistItem): RedirectResponse|JsonResponse
     {
         abort_unless($checklistItem->checklist_template_id === $offboardingRequestApprover->checklist_template_id, 404);
 
@@ -572,6 +870,33 @@ class ChecklistDelegationController extends Controller
             ]);
         }
 
+        // Placing an item on Hold is itself being acted upon — the
+        // checklist should read "In Progress" rather than "Pending" from
+        // this point on, same as actually checking an item does.
+        $offboardingRequestApprover->markInProgressIfPending();
+
+        // The checklist modal's Hold button submits here via `fetch()` (not
+        // a real form navigation) precisely so the dialog never
+        // closes/reloads on a successful hold — same convention as the
+        // "Done" button's `saveProgressGroup()` JSON branch. Deliberately
+        // does NOT mark the item non-editable or checked — per spec, a held
+        // item must stay fully available so the assignee can still clear it
+        // later; only `onHold`/`heldByName`/`heldByCode`/`heldAt` change.
+        if ($request->wantsJson()) {
+            $heldByEmployee = auth()->user()?->employee;
+
+            return response()->json([
+                'item' => [
+                    'id' => $checklistItem->id,
+                    'onHold' => true,
+                    'heldByName' => $heldByEmployee?->name ?? auth()->user()?->name,
+                    'heldByCode' => $heldByEmployee?->employee_code,
+                    'heldAt' => now()->format('M d, Y g:i A'),
+                ],
+                'message' => "\"{$checklistItem->title}\" successfully placed on Hold.",
+            ]);
+        }
+
         return back()->with('success', "\"{$checklistItem->title}\" placed on Hold.");
     }
 
@@ -608,14 +933,20 @@ class ChecklistDelegationController extends Controller
 
     /**
      * The delegate (doing the work), the primary approver (reviewing /
-     * correcting), or an item's own assigned approver may save item
-     * progress — never an unrelated approver. Returns the caller's allowed
-     * item-id scope: `null` means unrestricted (admin, primary approver, or
-     * delegate — same as today), an array restricts a bare item-approver to
-     * only the item(s) they're actually assigned, PLUS any other item on
-     * this same assignment that hasn't been checked yet ("Check This
-     * List" — a peer item-approver may voluntarily take over an item that
-     * isn't theirs, but never one someone has already completed).
+     * correcting), an item's own assigned approver, or a flagged Task
+     * Assignee of the Clearance Signatory's own Employee Master group (see
+     * `OffboardingRequestApprover::scopeVisibleTo()`'s matching clause) may
+     * save item progress — never an unrelated approver. Returns the
+     * caller's allowed item-id scope: `null` means unrestricted (admin,
+     * primary approver, or delegate — same as today), an array restricts a
+     * bare item-approver to only the item(s) they're actually assigned,
+     * PLUS any other item on this same assignment that hasn't been checked
+     * yet ("Check This List" — a peer item-approver may voluntarily take
+     * over an item that isn't theirs, but never one someone has already
+     * completed). A group-flagged Task Assignee with no item of their own
+     * yet simply gets an empty owned set merged with that same take-over-
+     * eligible pool — identical to any other item-approver's first visit,
+     * before they've claimed anything.
      *
      * @return array<int, int>|null
      */
@@ -627,8 +958,9 @@ class ChecklistDelegationController extends Controller
             return null;
         }
 
-        $employeeId = $user->employee?->id;
-        abort_if($employeeId === null, 403);
+        $employee = $user->employee;
+        abort_if($employee === null, 403);
+        $employeeId = $employee->id;
 
         if ($offboardingRequestApprover->employee_id === $employeeId
             || $offboardingRequestApprover->delegated_employee_id === $employeeId) {
@@ -641,10 +973,26 @@ class ChecklistDelegationController extends Controller
             ->filter(fn (ChecklistItem $item) => $offboardingRequestApprover->effectiveSignatoryFor($item)?->id === $employeeId)
             ->pluck('id');
 
-        // Must legitimately be an item-approver on THIS assignment somewhere
-        // to be granted visibility/access at all — being an item-approver
-        // elsewhere in the app doesn't count.
-        abort_if($ownedItemIds->isEmpty(), 403);
+        // Same "flagged Task Assignee of this checklist's own group"
+        // predicate as `scopeVisibleTo()` — someone who reaches this
+        // assignment only through that clause (not yet the effective
+        // signatory of any specific item) must still be let through, with
+        // an empty owned set, rather than 403'd outright.
+        $template = $offboardingRequestApprover->checklistTemplate;
+        $isGroupTaskAssignee = $employee->is_task_assignee
+            && $employee->employee_group_id !== null
+            && $template->employee_group_id === $employee->employee_group_id
+            && $template->department_head_id !== $employeeId;
+
+        // Must legitimately be an item-approver on THIS assignment
+        // somewhere, OR a flagged group Task Assignee of it, to be granted
+        // visibility/access at all — being an item-approver elsewhere in
+        // the app doesn't count. Someone reached via the bulk "Assign
+        // Checklist" action already owns at least one item by the time they
+        // get here (it assigns real `ChecklistItemAssignment` rows, exactly
+        // like "Check This List" does), so `$ownedItemIds` is never empty
+        // for them — no separate carve-out needed.
+        abort_if($ownedItemIds->isEmpty() && ! $isGroupTaskAssignee, 403);
 
         $checkedItemIds = $offboardingRequestApprover->itemProgress
             ->where('is_checked', true)

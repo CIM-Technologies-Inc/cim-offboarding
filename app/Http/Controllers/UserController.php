@@ -84,13 +84,41 @@ class UserController extends Controller
 
         $roles = array_values(array_unique($validated['roles']));
 
+        // Checked BEFORE `findOrCreateEmployee()` runs — that call is itself
+        // the "does an account already exist, else create one" logic (unique
+        // on `username`, so this employee can never end up with two), but it
+        // returns the account either way with no signal of which branch it
+        // took. This flag is only used to decide which message/modal the
+        // admin sees below — it never changes what account ends up existing.
+        $accountExisted = User::where('username', $employee->employee_code)->exists();
+
         $user = User::findOrCreateEmployee($employee);
         $user->syncRoles($roles);
         $user->update(['role' => $this->primaryRole($roles)]);
 
         $label = collect($roles)->map(fn ($role) => ucfirst($role))->implode(' + ');
 
-        return back()->with('success', "{$employee->name}'s role has been updated to \"{$label}\".");
+        $accountNote = $accountExisted
+            ? 'This employee already has an existing user account.'
+            : 'A new user account was created for them.';
+
+        $redirect = back()->with('success', "{$employee->name}'s role has been updated to \"{$label}\". {$accountNote}");
+
+        if (! $accountExisted) {
+            // The password is never read back off `$user` (it's hashed the
+            // moment `findOrCreateEmployee()` saves it) — it's shown here
+            // purely because `findOrCreateEmployee()`'s own convention
+            // guarantees it equals `employee_code`, which this response
+            // already has in plain text regardless of the account.
+            $redirect->with('newAccount', [
+                'name' => $employee->name,
+                'employeeCode' => $employee->employee_code,
+                'username' => $user->username,
+                'password' => $employee->employee_code,
+            ]);
+        }
+
+        return $redirect;
     }
 
     /**

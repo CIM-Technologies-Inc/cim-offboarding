@@ -15,8 +15,10 @@ class EmailTemplate extends Model
         'is_active',
         'is_default_announcement',
         'is_scheduled',
+        'schedule_type',
         'schedule_timing',
         'schedule_days',
+        'schedule_interval_days',
         'created_by',
     ];
 
@@ -27,6 +29,7 @@ class EmailTemplate extends Model
             'is_default_announcement' => 'boolean',
             'is_scheduled' => 'boolean',
             'schedule_days' => 'integer',
+            'schedule_interval_days' => 'integer',
         ];
     }
 
@@ -41,13 +44,31 @@ class EmailTemplate extends Model
     }
 
     /**
-     * Human-readable summary of this template's Last-Working-Day schedule
-     * (e.g. "5 days before Last Working Day") for the template list, or null
-     * when scheduling isn't enabled/configured.
+     * Human-readable summary of this template's schedule for the template
+     * list, or null when scheduling isn't enabled/configured. Two
+     * independent modes: 'one_time' (e.g. "5 days before Last Working
+     * Day" — fires once) and 'recurring' (e.g. "Every 5 days until Last
+     * Working Day" — keeps firing on that interval, counted from the
+     * offboarding request's creation date, until its Last Working Day is
+     * reached — see `SendScheduledEmailTemplates::processRecurringTemplate()`).
      */
     public function scheduleLabel(): ?string
     {
-        if (! $this->is_scheduled || ! $this->schedule_days || ! $this->schedule_timing) {
+        if (! $this->is_scheduled) {
+            return null;
+        }
+
+        if ($this->schedule_type === 'recurring') {
+            if (! $this->schedule_interval_days) {
+                return null;
+            }
+
+            $unit = $this->schedule_interval_days === 1 ? 'day' : 'days';
+
+            return "Every {$this->schedule_interval_days} {$unit} until Last Working Day";
+        }
+
+        if (! $this->schedule_days || ! $this->schedule_timing) {
             return null;
         }
 
@@ -86,7 +107,16 @@ class EmailTemplate extends Model
      * themselves, "{{department_head_name}}" / "{{assigned_signatories}}" /
      * "{{checklist_progress}}" / "{{remaining_items}}" /
      * "{{follow_up_sent_at}}" for the employee-initiated Follow-Up
-     * notification, plus the legacy bare-word / single-brace "approver" /
+     * notification, "{{general_signatory_tasks}}" for the General
+     * Signatory Offboarding Notification — a single pre-rendered HTML blob
+     * (heading included) listing that General Signatory's configured
+     * tasks, or an empty string when they have none, so a template
+     * referencing this token shows no Task List section at all rather than
+     * an empty one, and "{{approve_button}}" for that same email — a
+     * pre-rendered "Approve" `<a>` button linking the General Signatory's
+     * one-click approval, or an empty string once they've already approved
+     * (so a template referencing this token never shows a stale/dead
+     * button) — plus the legacy bare-word / single-brace "approver" /
      * "offboardee" / "employee" placeholders still used by the
      * drag-and-drop email template editor. A placeholder with no value
      * available at this call site (e.g. "{{due_date}}" when the caller has
@@ -120,6 +150,8 @@ class EmailTemplate extends Model
         ?string $checklistProgress = null,
         ?string $remainingItems = null,
         ?string $followUpSentAt = null,
+        ?string $generalSignatoryTasks = null,
+        ?string $approveButton = null,
     ): array {
         $values = $this->placeholderValues(
             $approverName, $offboardeeName, $creatorName, $employeeNumber, $checklistName,
@@ -127,6 +159,7 @@ class EmailTemplate extends Model
             $dateHired, $separationDate, $reason, $requestDate, $offboardingStatus,
             $username, $temporaryPassword, $checklistSummary, $departmentHeadName,
             $assignedSignatories, $checklistProgress, $remainingItems, $followUpSentAt,
+            $generalSignatoryTasks, $approveButton,
         );
 
         return [
@@ -163,6 +196,8 @@ class EmailTemplate extends Model
         ?string $checklistProgress,
         ?string $remainingItems,
         ?string $followUpSentAt,
+        ?string $generalSignatoryTasks,
+        ?string $approveButton,
     ): array {
         return [
             'approver_name' => $approverName,
@@ -189,6 +224,8 @@ class EmailTemplate extends Model
             'checklist_progress' => $checklistProgress ?? '',
             'remaining_items' => $remainingItems ?? '',
             'follow_up_sent_at' => $followUpSentAt ?? '',
+            'general_signatory_tasks' => $generalSignatoryTasks ?? '',
+            'approve_button' => $approveButton ?? '',
             'offboarding_link' => '<a href="' . route('login') . '">CIM Offboarding</a>',
             'approver' => $approverName,
             'offboardee' => $offboardeeName,
@@ -204,7 +241,7 @@ class EmailTemplate extends Model
         $pattern = '/\{\{\s*(approver_name|offboardee_name|employee_name|employee_number|checklist_name|due_date'
             . '|department|position|days_overdue|pending_items|checklist_status|date_hired|separation_date|reason|offboarding_link'
             . '|request_date|offboarding_status|username|temporary_password|checklist_summary'
-            . '|department_head_name|assigned_signatories|checklist_progress|remaining_items|follow_up_sent_at)\s*\}\}'
+            . '|department_head_name|assigned_signatories|checklist_progress|remaining_items|follow_up_sent_at|general_signatory_tasks|approve_button)\s*\}\}'
             . '|\{\s*(approver|offboardee|employee)\s*\}'
             . '|\b(approver|offboardee|employee)\b/i';
 

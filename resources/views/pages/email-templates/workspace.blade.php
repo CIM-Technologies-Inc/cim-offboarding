@@ -126,7 +126,10 @@
                             </label>
                         </div>
 
-                        <div x-data="{ isScheduled: {{ old('is_scheduled', $template->is_scheduled ?? false) ? 'true' : 'false' }} }">
+                        <div x-data="{
+                                isScheduled: {{ old('is_scheduled', $template->is_scheduled ?? false) ? 'true' : 'false' }},
+                                scheduleType: '{{ old('schedule_type', $template->schedule_type ?? 'one_time') }}',
+                            }">
                             <div class="flex items-center gap-2">
                                 <input type="checkbox" id="is_scheduled" name="is_scheduled" value="1" x-model="isScheduled"
                                     class="h-4 w-4 rounded border-gray-300 text-[#145a3a] accent-[#145a3a] focus:ring-[#145a3a]/40 dark:border-gray-700" />
@@ -135,25 +138,51 @@
                                 </label>
                             </div>
 
-                            <div x-show="isScheduled" x-cloak class="mt-3 grid grid-cols-2 gap-4">
+                            <div x-show="isScheduled" x-cloak class="mt-3 space-y-4">
                                 <div>
                                     <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
-                                        Timing
+                                        Schedule Type
                                     </label>
-                                    <select name="schedule_timing"
+                                    <select name="schedule_type" x-model="scheduleType"
                                         class="h-11 w-full rounded-xl border border-gray-300 bg-transparent px-4 py-2.5 text-sm text-gray-800 shadow-sm focus:border-[#145a3a]/50 focus:outline-hidden focus:ring-3 focus:ring-[#145a3a]/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90">
-                                        <option value="before" @selected(old('schedule_timing', $template->schedule_timing ?? 'before') === 'before')>Before Last Working Day</option>
-                                        <option value="after" @selected(old('schedule_timing', $template->schedule_timing ?? '') === 'after')>After Last Working Day</option>
+                                        <option value="one_time">One-time (Before/After Last Working Day)</option>
+                                        <option value="recurring">Recurring (Every N Days from Request Creation)</option>
                                     </select>
                                 </div>
-                                <div>
+
+                                <div x-show="scheduleType === 'one_time'" x-cloak class="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                                            Timing
+                                        </label>
+                                        <select name="schedule_timing"
+                                            class="h-11 w-full rounded-xl border border-gray-300 bg-transparent px-4 py-2.5 text-sm text-gray-800 shadow-sm focus:border-[#145a3a]/50 focus:outline-hidden focus:ring-3 focus:ring-[#145a3a]/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90">
+                                            <option value="before" @selected(old('schedule_timing', $template->schedule_timing ?? 'before') === 'before')>Before Last Working Day</option>
+                                            <option value="after" @selected(old('schedule_timing', $template->schedule_timing ?? '') === 'after')>After Last Working Day</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                                            Number of Days
+                                        </label>
+                                        <input type="number" name="schedule_days" min="1" step="1"
+                                            value="{{ old('schedule_days', $template->schedule_days ?? '') }}"
+                                            placeholder="e.g. 5"
+                                            class="h-11 w-full rounded-xl border border-gray-300 bg-transparent px-4 py-2.5 text-sm text-gray-800 shadow-sm placeholder:text-gray-400 focus:border-[#145a3a]/50 focus:outline-hidden focus:ring-3 focus:ring-[#145a3a]/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30" />
+                                    </div>
+                                </div>
+
+                                <div x-show="scheduleType === 'recurring'" x-cloak>
                                     <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
-                                        Number of Days
+                                        Send Every (Days)
                                     </label>
-                                    <input type="number" name="schedule_days" min="1" step="1"
-                                        value="{{ old('schedule_days', $template->schedule_days ?? '') }}"
+                                    <input type="number" name="schedule_interval_days" min="1" step="1"
+                                        value="{{ old('schedule_interval_days', $template->schedule_interval_days ?? '') }}"
                                         placeholder="e.g. 5"
-                                        class="h-11 w-full rounded-xl border border-gray-300 bg-transparent px-4 py-2.5 text-sm text-gray-800 shadow-sm placeholder:text-gray-400 focus:border-[#145a3a]/50 focus:outline-hidden focus:ring-3 focus:ring-[#145a3a]/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30" />
+                                        class="h-11 w-full max-w-xs rounded-xl border border-gray-300 bg-transparent px-4 py-2.5 text-sm text-gray-800 shadow-sm placeholder:text-gray-400 focus:border-[#145a3a]/50 focus:outline-hidden focus:ring-3 focus:ring-[#145a3a]/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30" />
+                                    <p class="mt-1.5 text-xs text-gray-400">
+                                        Sends every {N} days starting from the offboarding request's creation date, and stops automatically once the Last Working Day is reached.
+                                    </p>
                                 </div>
                             </div>
                         </div>

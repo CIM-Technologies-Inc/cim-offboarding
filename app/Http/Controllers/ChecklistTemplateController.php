@@ -6,6 +6,7 @@ use App\Models\ChecklistTemplate;
 use App\Models\EmailTemplate;
 use App\Models\Employee;
 use App\Models\EmployeeGroup;
+use App\Models\GeneralSignatory;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
@@ -25,6 +26,13 @@ class ChecklistTemplateController extends Controller
         return view('pages.checklist-templates.index', [
             'title' => 'Offboarding Checklist',
             'templates' => $templates,
+            // General Signatory is a separate, independent record type (see
+            // GeneralSignatoryController's docblock) that happens to live on
+            // this same page — its list and the data its create/edit modal
+            // needs are fetched here alongside the checklist templates.
+            'generalSignatories' => GeneralSignatory::with(['clearanceSignatory', 'tasks.signatory'])->latest()->get(),
+            'employees' => Employee::orderBy('name')->get(['id', 'name', 'department']),
+            'employeeGroups' => $this->employeeGroupsForPicker(),
         ]);
     }
 
@@ -33,7 +41,7 @@ class ChecklistTemplateController extends Controller
         return view('pages.checklist-templates.create', [
             'title' => 'New Checklist Template',
             'employees' => Employee::orderBy('name')->get(['id', 'name', 'department']),
-            'departmentHeads' => $this->departmentHeadOptions(),
+            'departmentHeadGroups' => $this->departmentHeadGroupOptions(),
             'employeeGroups' => $this->employeeGroupsForPicker(),
             'departments' => $this->departmentOptions(),
             'emailTemplates' => $this->activeEmailTemplateOptions(),
@@ -46,7 +54,7 @@ class ChecklistTemplateController extends Controller
 
         $validated = $request->validate([
             'title' => ['required', 'string', 'max:255'],
-            'department_head_id' => ['nullable', 'exists:employees,id'],
+            'employee_group_id' => ['nullable', 'exists:employee_groups,id'],
             'is_immediate_head_checklist' => ['nullable', 'boolean'],
             'department' => ['nullable', 'string', Rule::in($this->departmentOptions())],
             'is_final_pay_checklist' => ['nullable', 'boolean'],
@@ -65,12 +73,19 @@ class ChecklistTemplateController extends Controller
         // (see ChecklistApprovalNotifier::attachAndNotify()) — it never has
         // its own Department Head, regardless of what the (disabled-in-the-
         // UI, but still defended here) field submitted.
-        $departmentHeadId = $isImmediateHeadChecklist ? null : ($validated['department_head_id'] ?: null);
-        $eligibleSignatoryIds = $this->eligibleSignatoryIds($departmentHeadId);
+        $employeeGroupId = $isImmediateHeadChecklist ? null : ($validated['employee_group_id'] ?: null);
+        // The submitted value is the specific GROUP the admin picked (never
+        // trust a raw employee id from the client for this) — the actual
+        // Department Head employee is derived from that group's own
+        // registered `group_head_employee_id`, so `department_head_id`
+        // keeps its exact existing meaning for every downstream consumer.
+        $departmentHeadId = $employeeGroupId ? EmployeeGroup::find($employeeGroupId)?->group_head_employee_id : null;
+        $eligibleSignatoryIds = $this->eligibleSignatoryIds($employeeGroupId);
 
-        DB::transaction(function () use ($validated, $request, $isImmediateHeadChecklist, $departmentHeadId, $eligibleSignatoryIds) {
+        DB::transaction(function () use ($validated, $request, $isImmediateHeadChecklist, $employeeGroupId, $departmentHeadId, $eligibleSignatoryIds) {
             $template = ChecklistTemplate::create([
                 'title' => $validated['title'],
+                'employee_group_id' => $employeeGroupId,
                 'department_head_id' => $departmentHeadId,
                 'is_immediate_head_checklist' => $isImmediateHeadChecklist,
                 'department' => $validated['department'] ?? null,
@@ -113,7 +128,7 @@ class ChecklistTemplateController extends Controller
             'title' => 'Edit Checklist Template',
             'template' => $checklistTemplate,
             'employees' => Employee::orderBy('name')->get(['id', 'name', 'department']),
-            'departmentHeads' => $this->departmentHeadOptions($checklistTemplate->department_head_id),
+            'departmentHeadGroups' => $this->departmentHeadGroupOptions(),
             'employeeGroups' => $this->employeeGroupsForPicker(),
             'departments' => $this->departmentOptions($checklistTemplate->department),
             'emailTemplates' => $this->activeEmailTemplateOptions(),
@@ -126,7 +141,7 @@ class ChecklistTemplateController extends Controller
 
         $validated = $request->validate([
             'title' => ['required', 'string', 'max:255'],
-            'department_head_id' => ['nullable', 'exists:employees,id'],
+            'employee_group_id' => ['nullable', 'exists:employee_groups,id'],
             'is_immediate_head_checklist' => ['nullable', 'boolean'],
             'department' => ['nullable', 'string', Rule::in($this->departmentOptions($checklistTemplate->department))],
             'is_final_pay_checklist' => ['nullable', 'boolean'],
@@ -141,12 +156,14 @@ class ChecklistTemplateController extends Controller
             'items.*.notify_days' => ['nullable', 'required_if:items.*.notify_enabled,1', 'integer', 'min:1'],
         ]);
 
-        $departmentHeadId = $isImmediateHeadChecklist ? null : ($validated['department_head_id'] ?: null);
-        $eligibleSignatoryIds = $this->eligibleSignatoryIds($departmentHeadId);
+        $employeeGroupId = $isImmediateHeadChecklist ? null : ($validated['employee_group_id'] ?: null);
+        $departmentHeadId = $employeeGroupId ? EmployeeGroup::find($employeeGroupId)?->group_head_employee_id : null;
+        $eligibleSignatoryIds = $this->eligibleSignatoryIds($employeeGroupId);
 
-        DB::transaction(function () use ($validated, $request, $checklistTemplate, $isImmediateHeadChecklist, $departmentHeadId, $eligibleSignatoryIds) {
+        DB::transaction(function () use ($validated, $request, $checklistTemplate, $isImmediateHeadChecklist, $employeeGroupId, $departmentHeadId, $eligibleSignatoryIds) {
             $checklistTemplate->update([
                 'title' => $validated['title'],
+                'employee_group_id' => $employeeGroupId,
                 'department_head_id' => $departmentHeadId,
                 'is_immediate_head_checklist' => $isImmediateHeadChecklist,
                 'department' => $validated['department'] ?? null,
@@ -220,32 +237,28 @@ class ChecklistTemplateController extends Controller
     }
 
     /**
-     * Employees eligible to be picked as a Clearance Signatory: only those
-     * actually registered as a Group Head of an Employee Master group (see
-     * `EmployeeGroup.group_head_employee_id`) — this dropdown, and which
-     * employees are then eligible as each item's Task Assignee (see
-     * `eligibleSignatoryIds()`), both come from the exact same group
-     * structure, so picking a Clearance Signatory here always corresponds
-     * to a real, resolvable group of Task Assignee candidates.
+     * Every Employee Master group eligible to be picked as a Clearance
+     * Signatory — one option per GROUP, not deduped by its Group Head, so
+     * two different groups sharing the same Group Head (e.g. "Admin and
+     * Operations Group" and "Human Resources Group" both headed by the same
+     * employee) both appear here and remain independently selectable. The
+     * option's VALUE is the group's own id (`employee_group_id` on
+     * `ChecklistTemplate`) — `store()`/`update()` resolve the actual
+     * Department Head employee from that group server-side, never trusting
+     * a raw employee id from the client for this field.
      *
-     * `$include` keeps a template's own already-saved Clearance Signatory
-     * selectable on its own edit page even if that employee is no longer a
-     * registered Group Head (e.g. their group was since deleted/renamed) —
-     * same reasoning as `departmentOptions()`'s own `$include` param: a
-     * routine re-save of an untouched template should never be blocked by a
-     * field the admin didn't touch.
+     * No `$include`-style fallback is needed here (unlike
+     * `departmentOptions()`'s own `$include` param): if a template's
+     * previously-selected group is ever deleted, `employee_group_id` is
+     * `nullOnDelete()`'d back to null on that row automatically, so there's
+     * nothing dangling left to keep selectable.
      */
-    private function departmentHeadOptions(?int $include = null): Collection
+    private function departmentHeadGroupOptions(): Collection
     {
-        $headIds = EmployeeGroup::whereNotNull('group_head_employee_id')->pluck('group_head_employee_id');
-
-        if ($include && ! $headIds->contains($include)) {
-            $headIds = $headIds->push($include);
-        }
-
-        return Employee::whereIn('id', $headIds)
+        return EmployeeGroup::whereNotNull('group_head_employee_id')
+            ->with('groupHead:id,name,department,designation')
             ->orderBy('name')
-            ->get(['id', 'name', 'department', 'designation']);
+            ->get(['id', 'name', 'group_head_employee_id']);
     }
 
     /**
@@ -304,6 +317,11 @@ class ChecklistTemplateController extends Controller
             ->with(['employees' => fn ($q) => $q->where('is_task_assignee', true)->select('id', 'employee_group_id')])
             ->get()
             ->map(fn (EmployeeGroup $group) => [
+                // The group's own id — the unique reference the Clearance
+                // Signatory picker now matches against (`employeeGroupId`),
+                // instead of the ambiguous `headId` alone, which two
+                // different groups can share.
+                'id' => $group->id,
                 'name' => $group->name,
                 'headId' => $group->group_head_employee_id,
                 'employeeIds' => $group->employees->reject(fn (Employee $employee) => $employee->id === $group->group_head_employee_id)->pluck('id'),
@@ -313,22 +331,22 @@ class ChecklistTemplateController extends Controller
 
     /**
      * The set of employee IDs allowed as an item signatory on this
-     * checklist template — the given Department Head's Employee Master
-     * group members who are flagged `is_task_assignee`, EXCLUDING the
-     * Department Head themselves: they're already the Clearance Signatory
-     * for the whole checklist, so they must never also appear as a
-     * selectable Task Assignee, even if they're a member of their own group
-     * with the flag enabled. Returns null (meaning "unrestricted", today's
-     * original behavior) when the Department Head isn't registered as any
-     * group's Group Head — the explicit fallback this feature requires.
+     * checklist template — the selected group's members who are flagged
+     * `is_task_assignee`, EXCLUDING the group's own Group Head: they're
+     * already the Clearance Signatory for the whole checklist, so they must
+     * never also appear as a selectable Task Assignee, even if they're a
+     * member of their own group with the flag enabled. Returns null
+     * (meaning "unrestricted", today's original behavior) when no group is
+     * selected. Resolved by the group's own id — never by its Group Head's
+     * employee id alone, which two different groups can share.
      */
-    private function eligibleSignatoryIds(?int $departmentHeadId): ?array
+    private function eligibleSignatoryIds(?int $employeeGroupId): ?array
     {
-        if (! $departmentHeadId) {
+        if (! $employeeGroupId) {
             return null;
         }
 
-        $group = EmployeeGroup::where('group_head_employee_id', $departmentHeadId)->first();
+        $group = EmployeeGroup::find($employeeGroupId);
 
         if (! $group) {
             return null;
@@ -336,7 +354,7 @@ class ChecklistTemplateController extends Controller
 
         return $group->employees()
             ->where('is_task_assignee', true)
-            ->where('id', '!=', $departmentHeadId)
+            ->where('id', '!=', $group->group_head_employee_id)
             ->pluck('id')
             ->values()
             ->all();

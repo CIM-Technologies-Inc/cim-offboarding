@@ -11,6 +11,51 @@
         </p> -->
     </div>
 
+    {{-- A brand-new account's one-time credentials are shown here as a real
+         (non-auto-dismissing) modal, distinct from the toast above, so the
+         admin has time to read/copy the initial password before it's gone —
+         this is the ONLY place it's ever shown; it's never retrievable again
+         afterward, since only the hash is stored. Renders nothing when the
+         role update didn't create a new account (an existing account keeps
+         the plain toast above, which already says so).
+
+         A plain <script> tag rather than an inline x-data attribute — the
+         HTML this builds needs double-quoted style="..." attributes, which
+         would otherwise prematurely close the (also double-quoted) x-data
+         attribute value the moment the browser reached the first one. --}}
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const newAccount = @json(session('newAccount'));
+
+            if (!newAccount) {
+                return;
+            }
+
+            const escapeHtml = (value) => {
+                const div = document.createElement('div');
+                div.textContent = value ?? '';
+                return div.innerHTML;
+            };
+
+            window.Swal?.fire({
+                icon: 'success',
+                title: 'User Account Created',
+                html: '<div style="text-align:left;font-size:14px;line-height:1.7;">'
+                    + '<p>A new user account was automatically created for this employee.</p>'
+                    + '<table style="width:100%;margin-top:12px;border-collapse:collapse;">'
+                    + '<tr><td style="color:#6b7280;padding:3px 10px 3px 0;">Employee Name</td><td style="font-weight:600;">' + escapeHtml(newAccount.name) + '</td></tr>'
+                    + '<tr><td style="color:#6b7280;padding:3px 10px 3px 0;">Employee No.</td><td style="font-weight:600;">' + escapeHtml(newAccount.employeeCode) + '</td></tr>'
+                    + '<tr><td style="color:#6b7280;padding:3px 10px 3px 0;">Username</td><td style="font-weight:600;">' + escapeHtml(newAccount.username) + '</td></tr>'
+                    + '<tr><td style="color:#6b7280;padding:3px 10px 3px 0;">Initial Password</td><td style="font-weight:600;">' + escapeHtml(newAccount.password) + '</td></tr>'
+                    + '</table>'
+                    + '<p style="margin-top:12px;color:#6b7280;font-size:12px;">Please share these credentials with the employee — they will be required to set a new password on first login.</p>'
+                    + '</div>',
+                confirmButtonText: 'Got it',
+                confirmButtonColor: '#145a3a',
+            });
+        });
+    </script>
+
     @php
         $roleBadgeClass = [
             'admin' => 'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]',

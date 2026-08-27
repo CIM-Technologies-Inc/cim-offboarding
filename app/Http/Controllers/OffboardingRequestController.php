@@ -22,6 +22,13 @@ class OffboardingRequestController extends Controller
             'last_working_day' => ['required', 'date', 'after_or_equal:notice_date'],
             'resignation_type' => ['nullable', 'string', 'max:255'],
             'reason' => ['required', 'in:resignation,termination,retirement,layoff,other'],
+            // Per-request overrides for the 3 fixed-name email templates
+            // that fire at creation time — see the matching Select fields
+            // on the New Offboarding Request modal, and
+            // `ChecklistApprovalNotifier`'s use of these once stored.
+            'approver_notification_template_id' => ['nullable', 'exists:email_templates,id'],
+            'offboardee_notification_template_id' => ['nullable', 'exists:email_templates,id'],
+            'general_signatory_notification_template_id' => ['nullable', 'exists:email_templates,id'],
         ]);
 
         $employee = Employee::findOrFail($validated['employee_id']);
@@ -142,5 +149,11 @@ class OffboardingRequestController extends Controller
             $isNewEmployeeAccount,
             $isNewEmployeeAccount ? $offboardingRequest->employee->employee_code : null,
         );
+
+        // General Signatories are a completely independent, checklist-free
+        // workflow (see `GeneralSignatory`'s own docblock) — every active
+        // one is snapshotted onto this request and notified regardless of
+        // department, Immediate Head, or any of the checklist logic above.
+        app(ChecklistApprovalNotifier::class)->notifyGeneralSignatories($offboardingRequest);
     }
 }

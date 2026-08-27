@@ -149,6 +149,49 @@ class User extends Authenticatable
     }
 
     /**
+     * Finds the existing account for this General Signatory (Clearance
+     * Signatory), or creates one using the same established convention as
+     * `findOrCreateApprover()`/`findOrCreateEmployee()` above (username =
+     * password = employee_code, flagged `must_change_password`
+     * immediately). Never promotes/downgrades an existing account's role —
+     * a General Signatory who already has an account (e.g. as a department
+     * head elsewhere, or already holding the Approver role) keeps whatever
+     * they already have untouched.
+     *
+     * `$shouldBeApprover` decides the role ONLY for a freshly created
+     * account: Approver when this General Signatory has active employees
+     * under them (Employee Master group), Employee otherwise — see
+     * `ChecklistApprovalNotifier::notifyGeneralSignatories()` for how that's
+     * determined. This is the one place this factory family's role isn't
+     * hardcoded to a single constant, since a General Signatory isn't
+     * inherently either role the way a checklist department head or a
+     * plain offboardee is.
+     */
+    public static function findOrCreateGeneralSignatory(Employee $employee, bool $shouldBeApprover): self
+    {
+        $user = static::firstWhere('username', $employee->employee_code);
+
+        if ($user) {
+            return $user;
+        }
+
+        $role = $shouldBeApprover ? self::ROLE_APPROVER : self::ROLE_EMPLOYEE;
+
+        $user = static::create([
+            'name' => $employee->name,
+            'username' => $employee->employee_code,
+            'password' => $employee->employee_code,
+            'role' => $role,
+            'email' => $employee->email,
+            'must_change_password' => true,
+        ]);
+
+        $user->assignRole($role);
+
+        return $user;
+    }
+
+    /**
      * The attributes that should be hidden for serialization.
      *
      * @var list<string>

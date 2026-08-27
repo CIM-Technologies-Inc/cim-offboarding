@@ -5,12 +5,20 @@
         query: '',
         employeeDropdownOpen: false,
         selectedEmployeeId: '',
+        // Replaced on every open with this specific item's own checklist's
+        // `assignableEmployees` — employees under that checklist's own
+        // Clearance Signatory only, never the full active-employee
+        // roster. The static fallback below only ever applies if the
+        // dispatched detail somehow omits that field.
         employees: @js($employees->map(fn ($employee) => ['id' => (string) $employee->id, 'name' => $employee->name, 'code' => $employee->employee_code, 'department' => $employee->department])),
         setSelected(detail) {
             this.selected = detail;
             this.query = '';
             this.selectedEmployeeId = '';
             this.employeeDropdownOpen = false;
+            if (detail?.assignableEmployees !== undefined) {
+                this.employees = detail.assignableEmployees;
+            }
         },
         filteredEmployees() {
             const needle = this.query.toLowerCase();

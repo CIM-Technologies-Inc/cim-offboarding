@@ -1,15 +1,46 @@
-@props(['initial' => null])
+@props(['initial' => null, 'hideStatusTab' => false, 'emailTemplates' => []])
+
+@php
+    // Pages that don't need the reminder-template picker (Approvals,
+    // Calendar) don't pass `emailTemplates` at all, leaving the plain-array
+    // default above — `collect()` normalizes that to an empty Collection so
+    // `firstWhere()` below always works regardless of caller.
+    $emailTemplates = collect($emailTemplates);
+
+    // Whichever template `ApprovalController::remind()` would use by
+    // default for each of the two reminder kinds it sends — resolved here
+    // from the already-loaded `$emailTemplates` list (no extra query),
+    // purely to pre-select the right option in the per-step "Select Email
+    // Template" picker below. Matches `ApprovalController::REMINDER_TEMPLATE`
+    // / `OVERDUE_TEMPLATE` by name exactly.
+    $defaultReminderTemplateId = optional($emailTemplates->firstWhere('template_name', 'Offboarding Reminder'))->id;
+    $defaultOverdueTemplateId = optional($emailTemplates->firstWhere('template_name', 'Offboarding Overdue Notice'))->id;
+@endphp
 
 <div x-data="{
         selected: @js($initial),
         csrfToken: document.querySelector('meta[name=csrf-token]').content,
         isAdmin: @js(auth()->user()?->isAdmin() ?? false),
-        activeTab: 'status',
+        hideStatusTab: @js($hideStatusTab),
+        activeTab: '{{ $hideStatusTab ? 'timeline' : 'status' }}',
+        emailTemplates: @js($emailTemplates),
+        defaultReminderTemplateId: @js($defaultReminderTemplateId),
+        defaultOverdueTemplateId: @js($defaultOverdueTemplateId),
         richSteps() {
             return this.selected?.timeline?.filter((step) => step.rich) ?? [];
         },
+        // The template a step's reminder would use if the admin never
+        // touches the picker — same before/after-due-date split
+        // `ApprovalController::remind()` itself makes server-side, so the
+        // pre-selected option always matches what would actually be sent.
+        defaultTemplateIdFor(step) {
+            return step.isOverdue ? this.defaultOverdueTemplateId : this.defaultReminderTemplateId;
+        },
+        templateNameFor(id) {
+            return this.emailTemplates.find((t) => t.id === Number(id))?.template_name ?? '';
+        },
     }"
-    @open-offboardee-modal.window="selected = $event.detail; activeTab = 'status'">
+    @open-offboardee-modal.window="selected = $event.detail; activeTab = hideStatusTab ? 'timeline' : 'status'">
     <x-ui.modal x-data="{ open: false }" @open-offboardee-modal.window="open = true" :isOpen="$initial !== null" class="w-full sm:w-[60vw] sm:max-w-[60vw]">
         <div class="relative flex max-h-[85vh] w-full sm:max-w-[60vw] flex-col rounded-3xl bg-white dark:bg-gray-900" x-show="selected" x-cloak>
             <template x-if="selected">
@@ -57,22 +88,24 @@
                             </div>
                         </template>
 
-                        <div class="mt-7 flex items-center gap-6 border-b border-gray-200 dark:border-gray-800">
-                            <button type="button" @click="activeTab = 'status'"
-                                class="border-b-2 pb-3 text-sm font-medium transition-colors"
-                                :class="activeTab === 'status'
-                                    ? 'border-[#145a3a] text-[#145a3a] dark:border-[#3aa876] dark:text-[#3aa876]'
-                                    : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'">
-                                Offboarding Status
-                            </button>
-                            <button type="button" @click="activeTab = 'timeline'"
-                                class="border-b-2 pb-3 text-sm font-medium transition-colors"
-                                :class="activeTab === 'timeline'
-                                    ? 'border-[#145a3a] text-[#145a3a] dark:border-[#3aa876] dark:text-[#3aa876]'
-                                    : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'">
-                                Timeline
-                            </button>
-                        </div>
+                        <template x-if="!hideStatusTab">
+                            <div class="mt-7 flex items-center gap-6 border-b border-gray-200 dark:border-gray-800">
+                                <button type="button" @click="activeTab = 'status'"
+                                    class="border-b-2 pb-3 text-sm font-medium transition-colors"
+                                    :class="activeTab === 'status'
+                                        ? 'border-[#145a3a] text-[#145a3a] dark:border-[#3aa876] dark:text-[#3aa876]'
+                                        : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'">
+                                    Offboarding Status
+                                </button>
+                                <button type="button" @click="activeTab = 'timeline'"
+                                    class="border-b-2 pb-3 text-sm font-medium transition-colors"
+                                    :class="activeTab === 'timeline'
+                                        ? 'border-[#145a3a] text-[#145a3a] dark:border-[#3aa876] dark:text-[#3aa876]'
+                                        : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'">
+                                    Timeline
+                                </button>
+                            </div>
+                        </template>
                     </div>
 
                     <!-- Scrollable content area: only this region scrolls, both tabs share the same scroll container -->
@@ -148,30 +181,66 @@
                                             <p class="text-xs text-gray-400">Last reminder sent: <span x-text="step.reminderSentAt"></span></p>
                                         </template>
                                         <template x-if="step.canRemind">
-                                            <form method="POST" :action="step.remindUrl" x-data="{ confirmed: false }"
-                                                @submit="if (!confirmed) {
-                                                    $event.preventDefault();
-                                                    Swal.fire({
-                                                        title: 'Send reminder to ' + step.approverName + '?',
-                                                        icon: 'question',
-                                                        showCancelButton: true,
-                                                        confirmButtonText: 'Send Reminder',
-                                                        confirmButtonColor: '#145a3a',
-                                                        cancelButtonColor: '#6b7280',
-                                                        reverseButtons: true
-                                                    }).then((result) => {
-                                                        if (result.isConfirmed) {
-                                                            confirmed = true;
-                                                            $el.requestSubmit();
-                                                        }
-                                                    });
-                                                }">
-                                                <input type="hidden" name="_token" :value="csrfToken" />
-                                                <button type="submit" :disabled="confirmed"
-                                                    class="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
-                                                    Notify Approver
-                                                </button>
-                                            </form>
+                                            <div x-data="{ confirmed: false, showEmailPicker: false, selectedTemplateId: defaultTemplateIdFor(step) }">
+                                                <div class="flex items-center gap-2">
+                                                    <form method="POST" :action="step.remindUrl"
+                                                        @submit="if (!confirmed) {
+                                                            $event.preventDefault();
+                                                            Swal.fire({
+                                                                title: 'Send reminder to ' + step.approverName + '?',
+                                                                html: 'Using template: <b>' + (templateNameFor(selectedTemplateId) || 'none') + '</b>',
+                                                                icon: 'question',
+                                                                showCancelButton: true,
+                                                                confirmButtonText: 'Send Reminder',
+                                                                confirmButtonColor: '#145a3a',
+                                                                cancelButtonColor: '#6b7280',
+                                                                reverseButtons: true
+                                                            }).then((result) => {
+                                                                if (result.isConfirmed) {
+                                                                    confirmed = true;
+                                                                    $el.requestSubmit();
+                                                                }
+                                                            });
+                                                        }">
+                                                        <input type="hidden" name="_token" :value="csrfToken" />
+                                                        <input type="hidden" name="email_template_id" :value="selectedTemplateId" />
+                                                        <button type="submit" :disabled="confirmed || !emailTemplates.length"
+                                                            class="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
+                                                            Notify Approver
+                                                        </button>
+                                                    </form>
+                                                    <button type="button" title="Choose Email Template" @click="showEmailPicker = !showEmailPicker"
+                                                        class="rounded-lg border border-gray-300 p-1.5 text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
+                                                        <svg width="14" height="14" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                            <path d="M2.25 5.25C2.25 4.42157 2.92157 3.75 3.75 3.75H14.25C15.0784 3.75 15.75 4.42157 15.75 5.25V12.75C15.75 13.5784 15.0784 14.25 14.25 14.25H3.75C2.92157 14.25 2.25 13.5784 2.25 12.75V5.25Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+                                                            <path d="M2.75 5L9 9.75L15.25 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                                                        </svg>
+                                                    </button>
+                                                </div>
+                                                <div x-show="showEmailPicker" x-cloak class="mt-2 rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900"
+                                                    x-transition:enter="transition ease-out duration-200"
+                                                    x-transition:enter-start="opacity-0 -translate-y-1"
+                                                    x-transition:enter-end="opacity-100 translate-y-0"
+                                                    x-transition:leave="transition ease-in duration-150"
+                                                    x-transition:leave-start="opacity-100 translate-y-0"
+                                                    x-transition:leave-end="opacity-0 -translate-y-1">
+                                                    <label class="mb-1.5 block text-xs font-medium text-gray-500 dark:text-gray-400">Select Email Template</label>
+                                                    <template x-if="emailTemplates.length">
+                                                        <select x-model="selectedTemplateId"
+                                                            class="dark:bg-dark-900 h-9 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-3 text-xs text-gray-800 shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90">
+                                                            <template x-for="template in emailTemplates" :key="template.id">
+                                                                <option :value="template.id" x-text="template.template_name"></option>
+                                                            </template>
+                                                        </select>
+                                                    </template>
+                                                    <p x-show="!emailTemplates.length" class="text-xs text-error-500">
+                                                        No email templates are available — create one before notifying this approver.
+                                                    </p>
+                                                    <p x-show="emailTemplates.length && selectedTemplateId" class="mt-1.5 text-xs text-gray-400">
+                                                        Will notify using: <span class="font-medium text-gray-700 dark:text-gray-300" x-text="templateNameFor(selectedTemplateId)"></span>
+                                                    </p>
+                                                </div>
+                                            </div>
                                         </template>
                                     </div>
                                 </div>
@@ -274,30 +343,66 @@
                                                 <p class="text-xs text-gray-400">Last reminder sent: <span x-text="step.reminderSentAt"></span></p>
                                             </template>
                                             <template x-if="step.canRemind">
-                                                <form method="POST" :action="step.remindUrl" x-data="{ confirmed: false }"
-                                                    @submit="if (!confirmed) {
-                                                        $event.preventDefault();
-                                                        Swal.fire({
-                                                            title: 'Send reminder to ' + step.approverName + '?',
-                                                            icon: 'question',
-                                                            showCancelButton: true,
-                                                            confirmButtonText: 'Send Reminder',
-                                                            confirmButtonColor: '#145a3a',
-                                                            cancelButtonColor: '#6b7280',
-                                                            reverseButtons: true
-                                                        }).then((result) => {
-                                                            if (result.isConfirmed) {
-                                                                confirmed = true;
-                                                                $el.requestSubmit();
-                                                            }
-                                                        });
-                                                    }">
-                                                    <input type="hidden" name="_token" :value="csrfToken" />
-                                                    <button type="submit" :disabled="confirmed"
-                                                        class="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
-                                                        Notify Approver
-                                                    </button>
-                                                </form>
+                                                <div x-data="{ confirmed: false, showEmailPicker: false, selectedTemplateId: defaultTemplateIdFor(step) }">
+                                                    <div class="flex items-center gap-2">
+                                                        <form method="POST" :action="step.remindUrl"
+                                                            @submit="if (!confirmed) {
+                                                                $event.preventDefault();
+                                                                Swal.fire({
+                                                                    title: 'Send reminder to ' + step.approverName + '?',
+                                                                    html: 'Using template: <b>' + (templateNameFor(selectedTemplateId) || 'none') + '</b>',
+                                                                    icon: 'question',
+                                                                    showCancelButton: true,
+                                                                    confirmButtonText: 'Send Reminder',
+                                                                    confirmButtonColor: '#145a3a',
+                                                                    cancelButtonColor: '#6b7280',
+                                                                    reverseButtons: true
+                                                                }).then((result) => {
+                                                                    if (result.isConfirmed) {
+                                                                        confirmed = true;
+                                                                        $el.requestSubmit();
+                                                                    }
+                                                                });
+                                                            }">
+                                                            <input type="hidden" name="_token" :value="csrfToken" />
+                                                            <input type="hidden" name="email_template_id" :value="selectedTemplateId" />
+                                                            <button type="submit" :disabled="confirmed || !emailTemplates.length"
+                                                                class="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
+                                                                Notify Approver
+                                                            </button>
+                                                        </form>
+                                                        <button type="button" title="Choose Email Template" @click="showEmailPicker = !showEmailPicker"
+                                                            class="rounded-lg border border-gray-300 p-1.5 text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
+                                                            <svg width="14" height="14" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                                <path d="M2.25 5.25C2.25 4.42157 2.92157 3.75 3.75 3.75H14.25C15.0784 3.75 15.75 4.42157 15.75 5.25V12.75C15.75 13.5784 15.0784 14.25 14.25 14.25H3.75C2.92157 14.25 2.25 13.5784 2.25 12.75V5.25Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+                                                                <path d="M2.75 5L9 9.75L15.25 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                                                            </svg>
+                                                        </button>
+                                                    </div>
+                                                    <div x-show="showEmailPicker" x-cloak class="mt-2 rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900"
+                                                        x-transition:enter="transition ease-out duration-200"
+                                                        x-transition:enter-start="opacity-0 -translate-y-1"
+                                                        x-transition:enter-end="opacity-100 translate-y-0"
+                                                        x-transition:leave="transition ease-in duration-150"
+                                                        x-transition:leave-start="opacity-100 translate-y-0"
+                                                        x-transition:leave-end="opacity-0 -translate-y-1">
+                                                        <label class="mb-1.5 block text-xs font-medium text-gray-500 dark:text-gray-400">Select Email Template</label>
+                                                        <template x-if="emailTemplates.length">
+                                                            <select x-model="selectedTemplateId"
+                                                                class="dark:bg-dark-900 h-9 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-3 text-xs text-gray-800 shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90">
+                                                                <template x-for="template in emailTemplates" :key="template.id">
+                                                                    <option :value="template.id" x-text="template.template_name"></option>
+                                                                </template>
+                                                            </select>
+                                                        </template>
+                                                        <p x-show="!emailTemplates.length" class="text-xs text-error-500">
+                                                            No email templates are available — create one before notifying this approver.
+                                                        </p>
+                                                        <p x-show="emailTemplates.length && selectedTemplateId" class="mt-1.5 text-xs text-gray-400">
+                                                            Will notify using: <span class="font-medium text-gray-700 dark:text-gray-300" x-text="templateNameFor(selectedTemplateId)"></span>
+                                                        </p>
+                                                    </div>
+                                                </div>
                                             </template>
                                         </div>
                                     </div>

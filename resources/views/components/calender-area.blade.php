@@ -9,6 +9,8 @@
         </div>
     </div>
 
-    <!-- Offboardee Status Modal -->
-    <x-offboarding.status-timeline-modal />
+    <!-- Offboardee Status Modal — the Offboarding Status tab (per-checklist
+         approval cards) is hidden here; the Calendar page only needs the
+         chronological Timeline view. -->
+    <x-offboarding.status-timeline-modal :hide-status-tab="true" />
 </div>

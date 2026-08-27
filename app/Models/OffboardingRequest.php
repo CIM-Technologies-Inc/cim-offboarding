@@ -25,6 +25,9 @@ class OffboardingRequest extends Model
         'last_working_day',
         'approval_mode',
         'email_template_id',
+        'approver_notification_template_id',
+        'offboardee_notification_template_id',
+        'general_signatory_notification_template_id',
         'status',
         'remarks',
         'completed_at',
@@ -72,9 +75,50 @@ class OffboardingRequest extends Model
         return $this->belongsTo(EmailTemplate::class);
     }
 
+    /**
+     * Per-request overrides for the 3 fixed-name email templates that fire
+     * automatically at request-creation time — see
+     * `ChecklistApprovalNotifier::notifyDepartmentHeadsOfNewRequest()` /
+     * `notifyOffboardee()` / `notifyGeneralSignatories()`, each of which
+     * prefers its matching relation here over its own fixed-name lookup
+     * when set. A frozen snapshot, captured once on the New Offboarding
+     * Request form and never re-resolved afterward — deliberately no
+     * `is_active` gating on these relations anywhere they're read, so a
+     * later change to (or deactivation of) the pointed-at template never
+     * affects an already-created request.
+     */
+    public function approverNotificationTemplate(): BelongsTo
+    {
+        return $this->belongsTo(EmailTemplate::class, 'approver_notification_template_id');
+    }
+
+    public function offboardeeNotificationTemplate(): BelongsTo
+    {
+        return $this->belongsTo(EmailTemplate::class, 'offboardee_notification_template_id');
+    }
+
+    public function generalSignatoryNotificationTemplate(): BelongsTo
+    {
+        return $this->belongsTo(EmailTemplate::class, 'general_signatory_notification_template_id');
+    }
+
     public function checklistTemplates(): BelongsToMany
     {
         return $this->belongsToMany(ChecklistTemplate::class, 'checklist_assignments')->withTimestamps();
+    }
+
+    /**
+     * Every active General Signatory snapshotted onto this request at
+     * submission time (see `ChecklistApprovalNotifier::notifyGeneralSignatories()`).
+     * Frozen the same way `checklistTemplates()` is — a General Signatory
+     * added, edited, or deactivated later never changes who already appears
+     * on an existing request's Clearance Form. Completely independent of
+     * the checklist/approval workflow: a General Signatory here never has a
+     * matching `OffboardingRequestApprover` row.
+     */
+    public function generalSignatories(): BelongsToMany
+    {
+        return $this->belongsToMany(GeneralSignatory::class, 'offboarding_request_general_signatories')->withTimestamps();
     }
 
     public function activities(): HasMany
@@ -85,6 +129,22 @@ class OffboardingRequest extends Model
     public function approvers(): HasMany
     {
         return $this->hasMany(OffboardingRequestApprover::class)->orderBy('assigned_at');
+    }
+
+    /**
+     * Per-request approval state for each attached General Signatory — the
+     * General Signatory equivalent of `approvers()`. Backed by the very same
+     * `offboarding_request_general_signatories` row `generalSignatories()`
+     * above already reads (that relation stays a plain `belongsToMany`
+     * snapshot for Clearance Form display; this one exposes the same row's
+     * approval-state columns as its own model, for the Approvals page and
+     * Submit action). Independent of `approvers()`/`OffboardingRequestApprover`
+     * — a General Signatory's approval here never affects, and is never
+     * affected by, the checklist workflow's own completion gate.
+     */
+    public function generalSignatoryApprovals(): HasMany
+    {
+        return $this->hasMany(OffboardingRequestGeneralSignatory::class)->orderBy('created_at');
     }
 
     public function followUps(): HasMany
@@ -318,6 +378,8 @@ class OffboardingRequest extends Model
      */
     public function approverActivityTimeline(): array
     {
+        $this->loadMissing('generalSignatoryApprovals.generalSignatory.clearanceSignatory');
+
         $remindersByAssignment = $this->activities->where('action', 'reminder_sent')->groupBy('offboarding_request_approver_id');
         $delegationEventsByAssignment = $this->activities
             ->whereIn('action', ['checklist_assigned', 'checklist_delegate_completed', 'checklist_item_cleared_by_other', 'checklist_item_held', 'checklist_ready_for_approval'])
@@ -420,6 +482,25 @@ class OffboardingRequest extends Model
             array_push($steps, ...$buildRichStep($assignment));
         }
 
+        // General Signatories are Checklist Clearance Signatories too — each
+        // one attached to this request gets its own rich card here, the
+        // same shape a department approver's does, sourced from the very
+        // same `OffboardingRequestGeneralSignatory` row the Approvals page's
+        // Submit action and the Clearance Form both read/write.
+        //
+        // Deliberately NOT filtered on `GeneralSignatory.is_active` — that
+        // flag only decided who got attached to this request at CREATION
+        // time (a frozen snapshot, see `ChecklistApprovalNotifier::notifyGeneralSignatories()`
+        // and `ClearanceFormController::buildData()`'s matching comment);
+        // re-checking it live here would let deactivating a General
+        // Signatory make them retroactively vanish from an
+        // already-created request's Offboarding Status/Timeline, exactly
+        // the inconsistency the Clearance Form is deliberately guarded
+        // against too.
+        foreach ($this->generalSignatoryApprovals as $generalSignatoryApproval) {
+            $steps[] = $this->buildGeneralSignatoryRichStep($generalSignatoryApproval);
+        }
+
         $completedActivity = $milestones->get('completed');
 
         $steps[] = $completedActivity
@@ -436,5 +517,46 @@ class OffboardingRequest extends Model
             ];
 
         return $steps;
+    }
+
+    /**
+     * A General Signatory's rich step for `approverActivityTimeline()` —
+     * the same shape `buildRichStep()` produces for a department approver
+     * (`department`/`approverName`/`status`/timestamps), minus the fields
+     * that only apply to checklist-item-based approval (`checklistItems`
+     * stays empty, `usesPerItemApprovers` false, no due date/overdue
+     * concept, no delegation, no reminder — General Signatories have none
+     * of those). `status` is only ever 'pending' or 'approved' (see
+     * `OffboardingRequestGeneralSignatory`), so this never needs the
+     * 'declined'/'viewed' branches the department version does.
+     */
+    private function buildGeneralSignatoryRichStep(OffboardingRequestGeneralSignatory $generalSignatoryApproval): array
+    {
+        $clearanceSignatory = $generalSignatoryApproval->generalSignatory->clearanceSignatory;
+
+        return [
+            'rich' => true,
+            'department' => $clearanceSignatory?->department ?? 'General Signatory',
+            'approverName' => $clearanceSignatory?->name,
+            'status' => $generalSignatoryApproval->status,
+            'assignedAt' => $generalSignatoryApproval->created_at?->format('M d, Y g:i A'),
+            'firstViewedAt' => $generalSignatoryApproval->first_viewed_at?->format('M d, Y g:i A'),
+            'approvedAt' => $generalSignatoryApproval->approved_at?->format('M d, Y g:i A'),
+            'declinedAt' => null,
+            'declineReason' => null,
+            'reminderSentAt' => null,
+            'canRemind' => false,
+            'remindUrl' => null,
+            'done' => $generalSignatoryApproval->status === 'approved',
+            'cancelled' => false,
+            'delegatedTo' => null,
+            'delegatedToCode' => null,
+            'delegationStatus' => null,
+            'delegateCompletedAt' => null,
+            'dueAt' => null,
+            'isOverdue' => false,
+            'usesPerItemApprovers' => false,
+            'checklistItems' => [],
+        ];
     }
 }

@@ -24,29 +24,42 @@ class SendScheduledEmailTemplates extends Command
      *
      * @var string
      */
-    protected $description = 'Send every active, scheduled Email and Notification template whose "N days before/after Last Working Day" date has arrived, for every still-active offboarding request.';
+    protected $description = 'Send every active, scheduled Email and Notification template that is due — either a "N days before/after Last Working Day" one-time trigger, or a recurring "every N days from request creation" schedule — for every still-active offboarding request.';
 
     /**
-     * For each scheduled template, finds every pending/in_progress request
-     * that hasn't received it yet and whose computed send date (Last
-     * Working Day +/- schedule_days) is today or has already passed, and
-     * sends it. The `whereDoesntHave` guard plus the unique DB constraint on
-     * `email_template_scheduled_sends` (email_template_id, offboarding_request_id)
-     * ensure a re-run — or a run after the exact due day was missed — never
-     * sends the same template twice for the same request.
+     * Two independent schedule types, each handled by its own method below:
+     * 'one_time' (`processOneTimeTemplate()` — the original, unchanged
+     * before/after-Last-Working-Day trigger, fires at most once ever per
+     * (template, request)) and 'recurring'
+     * (`processRecurringTemplate()` — fires every `schedule_interval_days`
+     * days counted from the request's own `created_at`, until its Last
+     * Working Day is reached). A template that's missing the columns its
+     * own `schedule_type` needs (e.g. `schedule_interval_days` still null
+     * on a 'recurring' template someone half-configured) is simply skipped
+     * by the query below rather than erroring.
      */
     public function handle(): int
     {
         $templates = EmailTemplate::where('is_active', true)
             ->where('is_scheduled', true)
-            ->whereNotNull('schedule_timing')
-            ->whereNotNull('schedule_days')
+            ->where(function ($query) {
+                $query->where(function ($q) {
+                    $q->where('schedule_type', 'one_time')
+                        ->whereNotNull('schedule_timing')
+                        ->whereNotNull('schedule_days');
+                })->orWhere(function ($q) {
+                    $q->where('schedule_type', 'recurring')
+                        ->whereNotNull('schedule_interval_days');
+                });
+            })
             ->get();
 
         $sent = 0;
 
         foreach ($templates as $template) {
-            $sent += $this->processTemplate($template);
+            $sent += $template->schedule_type === 'recurring'
+                ? $this->processRecurringTemplate($template)
+                : $this->processOneTimeTemplate($template);
         }
 
         $this->info("Sent {$sent} scheduled email(s).");
@@ -54,7 +67,16 @@ class SendScheduledEmailTemplates extends Command
         return self::SUCCESS;
     }
 
-    private function processTemplate(EmailTemplate $template): int
+    /**
+     * The original, unchanged one-time trigger: finds every pending/
+     * in_progress request that hasn't received this template yet (ever —
+     * `whereDoesntHave` with no date bound) and whose computed send date
+     * (Last Working Day +/- schedule_days) is today or has already passed,
+     * and sends it. This existence check — not the (now relaxed, see the
+     * `allow_repeat_sends_...` migration) DB uniqueness — is what keeps a
+     * one-time template from ever firing twice for the same request.
+     */
+    private function processOneTimeTemplate(EmailTemplate $template): int
     {
         $requests = OffboardingRequest::query()
             ->whereIn('status', ['pending', 'in_progress'])
@@ -71,6 +93,52 @@ class SendScheduledEmailTemplates extends Command
                 : $request->last_working_day->copy()->addDays($template->schedule_days);
 
             if ($scheduledDate->isFuture()) {
+                continue;
+            }
+
+            $this->sendForRequest($template, $request);
+            $sent++;
+        }
+
+        return $sent;
+    }
+
+    /**
+     * The recurring trigger: every still-active request due today gets
+     * sent once — "due" meaning the whole number of days elapsed since the
+     * request's own `created_at` (not Last Working Day) is a positive
+     * multiple of `schedule_interval_days`, e.g. day 5, 10, 15, ... for an
+     * interval of 5. A request whose Last Working Day has already arrived
+     * (`<=` today) is excluded entirely, so nothing further is ever sent
+     * for it once offboarding reaches that day — matching "stop once the
+     * current date reaches the Last Working Day" exactly, not "the day
+     * after". `whereDoesntHave(...whereDate('sent_at', today))` is the
+     * per-day duplicate guard this mode needs in place of the one-time
+     * mode's DB uniqueness (dropped so this table can hold more than one
+     * row per (template, request) pair) — it makes a same-day re-run of
+     * this command (e.g. the scheduler firing twice) a safe no-op instead
+     * of a double-send.
+     */
+    private function processRecurringTemplate(EmailTemplate $template): int
+    {
+        $today = now()->startOfDay();
+
+        $requests = OffboardingRequest::query()
+            ->whereIn('status', ['pending', 'in_progress'])
+            ->whereNotNull('last_working_day')
+            ->where('last_working_day', '>', $today)
+            ->whereDoesntHave('scheduledEmailSends', function ($q) use ($template, $today) {
+                $q->where('email_template_id', $template->id)->whereDate('sent_at', $today);
+            })
+            ->with(['employee', 'approvers.employee'])
+            ->get();
+
+        $sent = 0;
+
+        foreach ($requests as $request) {
+            $daysSinceCreation = $request->created_at->copy()->startOfDay()->diffInDays($today);
+
+            if ($daysSinceCreation <= 0 || $daysSinceCreation % $template->schedule_interval_days !== 0) {
                 continue;
             }
 

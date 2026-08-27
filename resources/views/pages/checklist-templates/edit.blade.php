@@ -3,7 +3,7 @@
 @section('content')
     <x-common.page-breadcrumb pageTitle="Edit Checklist Template" />
 
-    <div x-data="checklistBuilder(@js(old('title', $template->title)), @js(old('department_head_id', (string) ($template->department_head_id ?? ''))), @js((bool) old('is_immediate_head_checklist', $template->is_immediate_head_checklist)), @js(old('department', $template->department ?? '')), @js(old('due_in_days', (string) ($template->due_in_days ?? ''))), @js(old('items', $template->items->map(fn ($item) => ['id' => $item->id, 'title' => $item->title, 'signatory_id' => (string) $item->signatory_id, 'notify_enabled' => $item->notify_enabled, 'email_template_id' => (string) ($item->email_template_id ?? ''), 'notify_timing' => $item->notify_timing, 'notify_days' => (string) ($item->notify_days ?? '')])->values())), @js($employees->map(fn ($employee) => ['id' => (string) $employee->id, 'name' => $employee->name, 'department' => $employee->department])), @js($employeeGroups), @js($errors->any() ? $errors->first() : null))"
+    <div x-data="checklistBuilder(@js(old('title', $template->title)), @js(old('employee_group_id', (string) ($template->employee_group_id ?? ''))), @js((bool) old('is_immediate_head_checklist', $template->is_immediate_head_checklist)), @js(old('department', $template->department ?? '')), @js(old('due_in_days', (string) ($template->due_in_days ?? ''))), @js(old('items', $template->items->map(fn ($item) => ['id' => $item->id, 'title' => $item->title, 'signatory_id' => (string) $item->signatory_id, 'notify_enabled' => $item->notify_enabled, 'email_template_id' => (string) ($item->email_template_id ?? ''), 'notify_timing' => $item->notify_timing, 'notify_days' => (string) ($item->notify_days ?? '')])->values())), @js($employees->map(fn ($employee) => ['id' => (string) $employee->id, 'name' => $employee->name, 'department' => $employee->department])), @js($employeeGroups), @js($errors->any() ? $errors->first() : null))"
         class="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-white/[0.03] lg:p-6">
         <form method="POST" action="{{ route('checklist-templates.update', $template) }}" class="flex flex-col">
             @csrf
@@ -20,7 +20,7 @@
             <div class="mt-5">
                 <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
                     <input type="checkbox" name="is_immediate_head_checklist" value="1" x-model="isImmediateHead"
-                        @change="if (isImmediateHead) departmentHeadId = ''"
+                        @change="if (isImmediateHead) employeeGroupId = ''"
                         class="h-4 w-4 accent-brand-500" />
                     Immediate Head
                 </label>
@@ -33,13 +33,13 @@
                 <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
                     Clearance Signatory
                 </label>
-                <select name="department_head_id" x-model="departmentHeadId" :disabled="isImmediateHead"
-                    @change="onDepartmentHeadChange()"
+                <select name="employee_group_id" x-model="employeeGroupId" :disabled="isImmediateHead"
+                    @change="onGroupChange()"
                     :class="isImmediateHead ? 'cursor-not-allowed bg-gray-100 text-gray-400 dark:bg-gray-800 dark:text-gray-500' : 'bg-transparent text-gray-800 dark:text-white/90'"
                     class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-none px-4 py-2.5 text-sm shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:focus:border-brand-800">
                     <option value="">None</option>
-                    @foreach ($departmentHeads as $head)
-                        <option value="{{ $head->id }}">{{ $head->name }} ({{ $head->designation }}, {{ $head->department }})</option>
+                    @foreach ($departmentHeadGroups as $group)
+                        <option value="{{ $group->id }}">{{ $group->name }} — {{ $group->groupHead?->name }} ({{ $group->groupHead?->designation }}, {{ $group->groupHead?->department }})</option>
                     @endforeach
                 </select>
                 <p class="mt-1.5 text-xs text-gray-400" x-show="!isImmediateHead">
@@ -222,10 +222,10 @@
     </div>
 
     <script>
-        function checklistBuilder(initialTitle, initialDepartmentHeadId, initialIsImmediateHead, initialDepartment, initialDueInDays, initialItems, employees, employeeGroups, flashError = null) {
+        function checklistBuilder(initialTitle, initialEmployeeGroupId, initialIsImmediateHead, initialDepartment, initialDueInDays, initialItems, employees, employeeGroups, flashError = null) {
             return {
                 title: initialTitle,
-                departmentHeadId: initialDepartmentHeadId,
+                employeeGroupId: initialEmployeeGroupId,
                 isImmediateHead: initialIsImmediateHead,
                 department: initialDepartment,
                 dueInDays: initialDueInDays,
@@ -262,11 +262,17 @@
                     const employee = this.employees.find((e) => e.id === String(id));
                     return employee ? employee.name : '';
                 },
+                // Matched by the group's own id — never by its Group Head's
+                // employee id alone, which two different groups can share
+                // (e.g. "Admin and Operations Group" and "Human Resources
+                // Group" both headed by the same employee). This is what
+                // makes such groups independently selectable/identifiable
+                // instead of collapsing into one ambiguous option.
                 currentGroup() {
-                    if (!this.departmentHeadId) {
+                    if (!this.employeeGroupId) {
                         return null;
                     }
-                    return this.employeeGroups.find((g) => String(g.headId) === String(this.departmentHeadId)) || null;
+                    return this.employeeGroups.find((g) => String(g.id) === String(this.employeeGroupId)) || null;
                 },
                 currentGroupName() {
                     return this.currentGroup()?.name || '';
@@ -285,7 +291,7 @@
                     }
                     const memberIds = group.employeeIds
                         .map((id) => String(id))
-                        .filter((id) => id !== String(this.departmentHeadId));
+                        .filter((id) => id !== String(group.headId));
                     return this.employees.filter((e) => memberIds.includes(e.id));
                 },
                 filteredEmployees(query) {
@@ -307,7 +313,7 @@
                 // cleared immediately so the UI never keeps showing a
                 // now-invalid assignee (the server independently enforces
                 // this too on save via `sanitizeSignatoryId()`).
-                onDepartmentHeadChange() {
+                onGroupChange() {
                     const eligibleIds = this.eligibleEmployees().map((e) => e.id);
                     this.items.forEach((item) => {
                         if (item.signatory_id && !eligibleIds.includes(String(item.signatory_id))) {

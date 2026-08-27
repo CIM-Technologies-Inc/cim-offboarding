@@ -3,9 +3,13 @@
 namespace App\Http\Controllers;
 
 use App\Models\ChecklistTemplate;
+use App\Models\Employee;
+use App\Models\GeneralSignatory;
 use App\Models\OffboardingRequest;
+use App\Models\OffboardingRequestApprover;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Response;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\View\View;
 
@@ -55,7 +59,7 @@ class ClearanceFormController extends Controller
      */
     private function buildData(OffboardingRequest $offboardingRequest): array
     {
-        $offboardingRequest->loadMissing(['employee', 'immediateHead.user', 'checklistTemplates', 'approvers.employee.user', 'approvers.itemProgress']);
+        $offboardingRequest->loadMissing(['employee', 'immediateHead.user', 'checklistTemplates', 'approvers.employee.user', 'approvers.itemProgress', 'approvers.checklistTemplate', 'generalSignatories.clearanceSignatory.user', 'generalSignatoryApprovals']);
 
         // Logged once (guarded below) so the employee's own timeline can
         // show when their clearance form was first generated — every later
@@ -71,16 +75,40 @@ class ClearanceFormController extends Controller
         $employee = $offboardingRequest->employee;
         $immediateHead = $offboardingRequest->immediateHead;
 
-        // Not tied to the checklist approval workflow — the Immediate Head has
-        // no "approved" state to gate on, so their signature (if they've
-        // uploaded one to their account) shows unconditionally, unlike the
-        // checklist rows below.
+        // The Immediate Head has no checklist/approval step of their own by
+        // default, so ordinarily their signature (if they've uploaded one to
+        // their account) shows unconditionally, with no date/remarks — see
+        // the fallback branches in the three helpers below. BUT when this
+        // same person is ALSO the assigned Checklist Clearance Signatory of
+        // a regular department checklist on this request (matched purely by
+        // employee — e.g. the Information Services department head also
+        // happens to be this offboardee's Immediate Head), that department
+        // row's real `OffboardingRequestApprover` state is the only
+        // authoritative record of whether they've actually cleared this
+        // request. Showing this row's signature unconditionally while that
+        // department row still says "In Progress" would show two
+        // conflicting accounts of the very same person's clearance — so in
+        // that case this row is synchronized to mirror that real state
+        // instead, both ways: since both rows are re-derived fresh from the
+        // same `OffboardingRequestApprover` record(s) on every call, an
+        // approval recorded via either the Immediate Head's or that
+        // department's own combined Approvals-page card (they're already
+        // merged into one Submit action there — see
+        // `ApprovalController::groupIntoCombinedApprovals()`) is reflected
+        // identically here the next time this form is generated.
+        $immediateHeadSyncedApprovers = $immediateHead
+            ? $offboardingRequest->approvers->filter(
+                fn (OffboardingRequestApprover $approver) => $approver->employee_id === $immediateHead->id
+                    && ! $approver->checklistTemplate?->is_immediate_head_checklist
+            )
+            : collect();
+
         $immediateHeadRow = $immediateHead ? [
             'designation' => 'Immediate Head',
             'signatory' => $immediateHead->name,
-            'signatureDataUri' => $this->signatureDataUri($immediateHead->user?->signature_path),
-            'date' => null,
-            'remarks' => '',
+            'signatureDataUri' => $this->immediateHeadSignatureDataUri($immediateHead, $immediateHeadSyncedApprovers),
+            'date' => $this->immediateHeadApprovedDate($immediateHeadSyncedApprovers),
+            'remarks' => $this->immediateHeadRemarks($immediateHeadSyncedApprovers),
         ] : null;
 
         $rows = $offboardingRequest->checklistTemplates
@@ -108,6 +136,47 @@ class ClearanceFormController extends Controller
             })
             ->values();
 
+        // A General Signatory IS a Checklist Clearance Signatory — its
+        // signature/date/remarks are sourced from the same
+        // `OffboardingRequestGeneralSignatory` approval record the
+        // Approvals page's Submit action and the Offboarding
+        // Status/Timeline both read/write (`generalSignatoryApprovals`,
+        // matched here by `general_signatory_id`), never fabricated or left
+        // permanently blank — the same "signature only appears once
+        // genuinely approved" rule the department rows above follow.
+        //
+        // Deliberately NOT re-filtered on `GeneralSignatory.is_active` here:
+        // whether a General Signatory was active is only relevant at the
+        // moment `ChecklistApprovalNotifier::notifyGeneralSignatories()`
+        // decided who to attach to this specific request (a one-time,
+        // creation-time snapshot into `offboarding_request_general_signatories`
+        // — see that method and `OffboardingRequest::generalSignatories()`'s
+        // own docblock). Re-checking the LIVE `is_active` value here would
+        // let toggling a General Signatory's status on/off retroactively
+        // add or remove them from an already-created request's Clearance
+        // Form, which is exactly the frozen-snapshot guarantee every other
+        // part of this feature (the Approvals page, the approval record
+        // itself) already relies on.
+        $generalSignatoryApprovalsById = $offboardingRequest->generalSignatoryApprovals->keyBy('general_signatory_id');
+
+        $generalSignatoryRows = $offboardingRequest->generalSignatories
+            ->map(function (GeneralSignatory $generalSignatory) use ($generalSignatoryApprovalsById) {
+                $clearanceSignatory = $generalSignatory->clearanceSignatory;
+                $approval = $generalSignatoryApprovalsById->get($generalSignatory->id);
+                $isApproved = $approval?->status === 'approved';
+
+                return [
+                    'department' => $clearanceSignatory?->department ?? '—',
+                    'signatory' => $clearanceSignatory?->name ?? '—',
+                    'signatureDataUri' => $isApproved ? $this->signatureDataUri($clearanceSignatory?->user?->signature_path) : null,
+                    'date' => $isApproved ? $approval?->approved_at?->format('M d, Y') : null,
+                    'remarks' => $approval?->clearanceStatusLabel() ?? 'Pending',
+                ];
+            })
+            ->values();
+
+        $rows = $rows->concat($generalSignatoryRows);
+
         return [
             'offboardingRequest' => $offboardingRequest,
             'employeeName' => $employee->name,
@@ -119,6 +188,73 @@ class ClearanceFormController extends Controller
             'immediateHeadRow' => $immediateHeadRow,
             'rows' => $rows,
         ];
+    }
+
+    /**
+     * The Immediate Head's signature on the Clearance Form — unconditional
+     * (if uploaded) when they hold no other synced Checklist Clearance
+     * Signatory role on this request, otherwise gated on every synced
+     * department checklist actually being approved, exactly like a normal
+     * checklist row's own signature is gated on `$approver->status ===
+     * 'approved'`. Requiring EVERY synced row to be approved (not just one)
+     * matters only if this person happens to be the signatory of more than
+     * one department checklist here — an edge case, but one where showing a
+     * "cleared" signature while a second department is still pending would
+     * be exactly the same kind of conflicting/misleading record this
+     * synchronization exists to prevent.
+     *
+     * @param  Collection<int, OffboardingRequestApprover>  $syncedApprovers
+     */
+    private function immediateHeadSignatureDataUri(Employee $immediateHead, Collection $syncedApprovers): ?string
+    {
+        if ($syncedApprovers->isEmpty()) {
+            return $this->signatureDataUri($immediateHead->user?->signature_path);
+        }
+
+        if (! $syncedApprovers->every(fn (OffboardingRequestApprover $approver) => $approver->status === 'approved')) {
+            return null;
+        }
+
+        return $this->signatureDataUri($immediateHead->user?->signature_path);
+    }
+
+    /**
+     * @param  Collection<int, OffboardingRequestApprover>  $syncedApprovers
+     */
+    private function immediateHeadApprovedDate(Collection $syncedApprovers): ?string
+    {
+        if ($syncedApprovers->isEmpty() || ! $syncedApprovers->every(fn (OffboardingRequestApprover $approver) => $approver->status === 'approved')) {
+            return null;
+        }
+
+        $latestApprovedAt = $syncedApprovers
+            ->pluck('approved_at')
+            ->filter()
+            ->sortByDesc(fn ($approvedAt) => $approvedAt->timestamp)
+            ->first();
+
+        return $latestApprovedAt?->format('M d, Y');
+    }
+
+    /**
+     * With no synced department role, the Immediate Head row has no
+     * checklist status of its own to report (matching today's original,
+     * always-blank remarks). With one, its remarks mirror that department's
+     * own `clearanceStatusLabel()` — the same label that row itself shows —
+     * so the two entries can never disagree in wording either.
+     *
+     * @param  Collection<int, OffboardingRequestApprover>  $syncedApprovers
+     */
+    private function immediateHeadRemarks(Collection $syncedApprovers): string
+    {
+        if ($syncedApprovers->isEmpty()) {
+            return '';
+        }
+
+        return $syncedApprovers
+            ->map(fn (OffboardingRequestApprover $approver) => $approver->clearanceStatusLabel())
+            ->unique()
+            ->implode(', ');
     }
 
     /**

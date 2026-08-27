@@ -91,13 +91,49 @@ class OffboardingRequestApprover extends Model
     }
 
     /**
-     * Rows this user may see/act on: every row for an admin, otherwise only
+     * Bumps this assignment from 'pending' to 'viewed' the moment ANY task
+     * assignee genuinely acts on it — checks/completes an item, or places
+     * one on Hold — not just when the primary approver visits their own
+     * queue (see `ApprovalController::index()`'s own "viewing counts as
+     * viewed" side effect, which already does this for that specific
+     * trigger). 'viewed' is already this app's existing "In Progress"
+     * indicator everywhere it's displayed (the Offboarding Status/Timeline
+     * badges, `clearanceStatusLabel()`), so bumping the SAME column here —
+     * rather than inventing a parallel "in progress" flag — keeps every one
+     * of those displays automatically consistent with no further changes.
+     * A no-op once the assignment is already 'viewed' or beyond
+     * ('approved'/'declined'), so this is always safe to call
+     * unconditionally after any item action.
+     */
+    public function markInProgressIfPending(): void
+    {
+        if ($this->status === 'pending') {
+            $this->update(['status' => 'viewed']);
+        }
+    }
+
+    /**
+     * Rows this user may see/act on: every row for an admin, otherwise
      * rows where they're the primary approver, the delegate, an item
-     * signatory, or hold an active per-item override — the exact predicate
-     * `ApprovalController::index()` used to have inlined, now shared with
-     * the grouped save-progress endpoint so a delegate/item-signatory who
-     * only has rights on SOME of a combined group's checklists can never
-     * touch the rest of that group through it.
+     * signatory, hold an active per-item override, OR are a flagged Task
+     * Assignee (`Employee.is_task_assignee`) of the SAME Employee Master
+     * group this checklist template's own Clearance Signatory heads
+     * (`checklistTemplate.employee_group_id`) — this last clause is what
+     * lets an employee who was only ever marked "Task Assignee" on the
+     * Employee Master page (never picked for a specific task item) still
+     * see and act on the request, without that flag alone ever having
+     * triggered the "Offboarding Checklist Assigned to You" email (that's
+     * a completely separate, unrelated code path in
+     * `ChecklistApprovalNotifier` — this clause only grants visibility/
+     * action rights, never sends anything). The Clearance Signatory/
+     * Department Head themselves are excluded from qualifying via this
+     * clause — they already match via `employee_id` above regardless.
+     *
+     * This exact predicate `ApprovalController::index()` used to have
+     * inlined, now shared with the grouped save-progress endpoint so a
+     * delegate/item-signatory/group-task-assignee who only has rights on
+     * SOME of a combined group's checklists can never touch the rest of
+     * that group through it.
      */
     public function scopeVisibleTo(Builder $query, User $user): Builder
     {
@@ -111,10 +147,18 @@ class OffboardingRequestApprover extends Model
             return $query->whereRaw('1 = 0');
         }
 
-        return $query->where(fn (Builder $q) => $q->where('employee_id', $employee->id)
-            ->orWhere('delegated_employee_id', $employee->id)
-            ->orWhereHas('checklistTemplate.items', fn ($qi) => $qi->where('signatory_id', $employee->id))
-            ->orWhereHas('itemAssignments', fn ($qi) => $qi->where('assigned_employee_id', $employee->id)->where('status', 'active')));
+        return $query->where(function (Builder $q) use ($employee) {
+            $q->where('employee_id', $employee->id)
+                ->orWhere('delegated_employee_id', $employee->id)
+                ->orWhereHas('checklistTemplate.items', fn ($qi) => $qi->where('signatory_id', $employee->id))
+                ->orWhereHas('itemAssignments', fn ($qi) => $qi->where('assigned_employee_id', $employee->id)->where('status', 'active'));
+
+            if ($employee->is_task_assignee && $employee->employee_group_id) {
+                $q->orWhereHas('checklistTemplate', fn ($qt) => $qt
+                    ->where('employee_group_id', $employee->employee_group_id)
+                    ->where(fn ($qh) => $qh->whereNull('department_head_id')->orWhere('department_head_id', '!=', $employee->id)));
+            }
+        });
     }
 
     public function department(): ?string
@@ -158,6 +202,59 @@ class OffboardingRequestApprover extends Model
 
             return $effectiveSignatory !== null && $effectiveSignatory->id !== $this->employee_id;
         });
+    }
+
+    /**
+     * True while this checklist is still a single, undifferentiated block
+     * under its own primary approver — no item anywhere on it has any real
+     * distinct signatory yet (`usesPerItemApprovers() === false`) — and the
+     * assignment itself hasn't already been actioned. This is exactly the
+     * "IT Checklist vs. Department Head Checklist" distinction the bulk
+     * "Assign Checklist" modal draws: a checklist that already has real
+     * per-item ownership is "spoken for" and must never be reopened for
+     * bulk (re)assignment, while one that's never had any distinct
+     * signatory is fair game. Once even one item gets a real assignee (via
+     * bulk assignment, "Check This List", or otherwise), this flips to
+     * `false` on its own — no separate bookkeeping needed.
+     */
+    public function isEligibleForPoolAssignment(): bool
+    {
+        return in_array($this->status, ['pending', 'viewed'], true)
+            && ! $this->usesPerItemApprovers();
+    }
+
+    /**
+     * The employee ids the bulk "Assign Checklist" modal may assign onto
+     * this assignment — every Employee Master group THIS assignment's own owner
+     * (`employee_id`, the current Clearance Signatory/Immediate Head) is
+     * the Group Head of, flagged `is_task_assignee`, excluding themselves.
+     * Anchored on the person, not the checklist template's own
+     * `employee_group_id` — a combined card's several checklists (e.g. a
+     * Clearance Signatory checklist alongside that same person's own
+     * Immediate Head checklist, which typically has no group configured at
+     * all) are all owned by the same employee, so this naturally offers the
+     * identical, correctly scoped pool for every one of them. No headed
+     * group at all means no eligible pool, never a company-wide fallback —
+     * see `ApprovalController::eligibleAssigneesForPool()`, which shapes
+     * this same id list for display, and `ChecklistDelegationController::assignPool()`,
+     * which re-derives it server-side to validate the submitted selection.
+     *
+     * @return array<int, int>
+     */
+    public function eligiblePoolAssigneeIds(): array
+    {
+        $headedGroupIds = EmployeeGroup::where('group_head_employee_id', $this->employee_id)->pluck('id');
+
+        if ($headedGroupIds->isEmpty()) {
+            return [];
+        }
+
+        return Employee::whereIn('employee_group_id', $headedGroupIds)
+            ->where('is_task_assignee', true)
+            ->where('id', '!=', $this->employee_id)
+            ->where('status', 'active')
+            ->pluck('id')
+            ->all();
     }
 
     /**

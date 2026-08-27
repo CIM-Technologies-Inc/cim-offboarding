@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\EmailTemplate;
 use App\Models\Employee;
 use Illuminate\Http\Request;
 use Illuminate\View\View;
@@ -86,7 +87,15 @@ class OffboardeeController extends Controller
 
         $employeesNotOffboarded = Employee::where('status', 'active')
             ->orderBy('name')
-            ->get(['id', 'name', 'employee_code', 'department']);
+            ->get(['id', 'name', 'employee_code', 'department', 'sup_one']);
+
+        // For the New Offboarding Request modal's per-request email
+        // template overrides — every function's Select is populated from
+        // this same active list, matching the `is_active` scope every
+        // fixed-name lookup in `ChecklistApprovalNotifier` already uses.
+        $activeEmailTemplates = EmailTemplate::where('is_active', true)
+            ->orderBy('template_name')
+            ->get(['id', 'template_name']);
 
         return view('pages.offboardees.index', [
             'title' => 'Offboardees',
@@ -96,6 +105,7 @@ class OffboardeeController extends Controller
             'departments' => $departments,
             'deepLinkOffboardee' => $deepLinkOffboardee,
             'employeesNotOffboarded' => $employeesNotOffboarded,
+            'activeEmailTemplates' => $activeEmailTemplates,
         ]);
     }
 }

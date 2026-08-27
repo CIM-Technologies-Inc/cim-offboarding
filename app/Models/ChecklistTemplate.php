@@ -13,6 +13,7 @@ class ChecklistTemplate extends Model
     protected $fillable = [
         'title',
         'department_head_id',
+        'employee_group_id',
         'is_immediate_head_checklist',
         'department',
         'is_final_pay_checklist',
@@ -44,6 +45,18 @@ class ChecklistTemplate extends Model
     public function departmentHead(): BelongsTo
     {
         return $this->belongsTo(Employee::class, 'department_head_id');
+    }
+
+    /**
+     * The specific Employee Master group selected as this checklist's
+     * Clearance Signatory — distinct from `department_head_id` (still that
+     * group's Group Head employee, unchanged for every downstream
+     * consumer), since two different groups can share the same Group Head
+     * and must remain independently selectable/identifiable.
+     */
+    public function employeeGroup(): BelongsTo
+    {
+        return $this->belongsTo(EmployeeGroup::class);
     }
 
     public function offboardingRequests(): BelongsToMany

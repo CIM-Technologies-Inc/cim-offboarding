@@ -74,9 +74,22 @@ class ChecklistItemProgress extends Model
         $existing = $assignment->itemProgress()->get()->keyBy('checklist_item_id');
 
         foreach ($items as $item) {
+            $current = $existing->get($item['checklist_item_id']);
+
+            // There is no "uncheck" action anywhere in the app — once an item
+            // is checked, its checkbox and remark field are both disabled in
+            // the UI. A submission that omits this item's `is_checked` field
+            // (e.g. a DIFFERENT item's "Done" button resubmitted the whole
+            // form, and this one's now-disabled checkbox was excluded from
+            // that browser form data entirely) must never be read as an
+            // explicit uncheck and wipe out completion that was already
+            // persisted — so an already-checked item is always left alone.
+            if ((bool) $current?->is_checked) {
+                continue;
+            }
+
             $isChecked = (bool) ($item['is_checked'] ?? false);
             $remark = $item['remark'] ?? null;
-            $current = $existing->get($item['checklist_item_id']);
 
             if ($current
                 && (bool) $current->is_checked === $isChecked

@@ -44,11 +44,13 @@ class OffboardingActivity extends Model
             'approved' => $this->user
                 ? "Cleared by {$actor}{$suffix}"
                 : 'All checklist items completed — auto-approved',
+            'general_signatory_approved' => "Cleared by General Signatory: {$actor}{$suffix}",
             'declined' => "Declined by {$actor}{$suffix}",
             'all_checklists_approved' => 'All Offboarding Checklists Cleared',
             'final_pay_notified' => 'Final Pay Checklist Notification Sent',
             'reminder_sent' => "Reminder Sent by {$actor}",
             'checklist_assigned' => "Checklist Assigned by {$actor}{$suffix}",
+            'checklist_pool_assigned' => "Checklist Pool Opened by {$actor}{$suffix}",
             'checklist_item_reassigned' => "Checklist Item Reassigned by {$actor}{$suffix}",
             'checklist_item_auto_assigned' => 'Checklist Items Auto-Assigned to Group Members',
             'checklist_delegate_completed' => "Checklist Completed by {$actor}{$suffix} (Delegated Approver)",

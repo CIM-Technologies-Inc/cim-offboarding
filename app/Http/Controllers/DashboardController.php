@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\EmailTemplate;
 use App\Models\Employee;
 use App\Models\OffboardingRequest;
 use Illuminate\Support\Carbon;
@@ -46,7 +47,15 @@ class DashboardController extends Controller
 
         $employeesNotOffboarded = Employee::where('status', 'active')
             ->orderBy('name')
-            ->get(['id', 'name', 'employee_code', 'department']);
+            ->get(['id', 'name', 'employee_code', 'department', 'sup_one']);
+
+        // For the New Offboarding Request modal's per-request email
+        // template overrides — every function's Select is populated from
+        // this same active list, matching the `is_active` scope every
+        // fixed-name lookup in `ChecklistApprovalNotifier` already uses.
+        $activeEmailTemplates = EmailTemplate::where('is_active', true)
+            ->orderBy('template_name')
+            ->get(['id', 'template_name']);
 
         $recentRequests = OffboardingRequest::with('employee', 'approvers')
             ->latest()
@@ -77,6 +86,7 @@ class DashboardController extends Controller
             'departments' => $departments,
             'recentRequests' => $recentRequests,
             'employeesNotOffboarded' => $employeesNotOffboarded,
+            'activeEmailTemplates' => $activeEmailTemplates,
         ]);
     }
 

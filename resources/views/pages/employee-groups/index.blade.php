@@ -257,7 +257,24 @@
 
         <!-- CREATE / EDIT GROUP MODAL -->
         <x-ui.modal x-data="{ open: false }" @open-group-modal.window="open = true" :isOpen="false" class="max-w-[480px]">
-            <div class="no-scrollbar relative w-full max-w-[480px] overflow-y-auto rounded-3xl bg-white p-6 dark:bg-gray-900 lg:p-8" x-cloak>
+            {{-- Deliberately NO `max-h-*`/`overflow-y-auto` here: the Group
+                 Head dropdown below is `position: absolute` inside a
+                 `position: relative` ancestor a couple levels down — any
+                 `overflow: auto/hidden` on an element between it and the
+                 viewport clips it to that element's own box the moment the
+                 box's height is capped, regardless of z-index (a previous
+                 attempt at "flexible height" via `max-h-[85vh]` here caused
+                 exactly that: the dropdown got cut off, reachable only by
+                 scrolling a cramped inner box). Left at its natural height
+                 instead, this box simply grows to fit whatever's open
+                 (dropdown included, since it doesn't affect flow height) —
+                 the most flexible option there is — and the dropdown's own
+                 `max-h-56 overflow-y-auto` already caps/scrolls a long
+                 employee list on its own. `x-ui.modal`'s outer wrapper
+                 already scrolls the whole viewport in the rare case the
+                 modal itself is taller than the screen, so nothing further
+                 is needed here for that either. --}}
+            <div class="relative w-full max-w-[480px] rounded-3xl bg-white p-6 dark:bg-gray-900 lg:p-8" x-cloak>
                 <h4 class="mb-5 text-xl font-semibold text-gray-800 dark:text-white/90" x-text="editingGroup ? 'Edit Group' : 'Create Group'"></h4>
 
                 <form method="POST" :action="editingGroup ? `/employee-groups/${editingGroup.id}` : '/employee-groups'" x-data="{ processing: false }" @submit="processing = true">
@@ -274,7 +291,23 @@
                             class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
                     </div>
 
-                    <div class="relative mt-5" @click.away="groupHeadDropdownOpen = false">
+                    {{-- Plain `@click.away` doesn't work here: `x-ui.modal`'s
+                         own content wrapper calls `@click.stop` on every
+                         click (so clicking inside the modal never bubbles up
+                         and closes it via the backdrop), which silently
+                         swallows the bubble `.away` depends on before it
+                         ever reaches `document` — so clicking anywhere else
+                         in this modal (the Group Name field, the Active
+                         checkbox, empty space) never closed this dropdown.
+                         A `.window.capture` listener runs BEFORE the click
+                         reaches its target — and before any bubble-phase
+                         `stopPropagation()` can run — so it reliably fires
+                         for every outside click, including ones elsewhere in
+                         this same modal, while a click on the select field
+                         or its own dropdown rows (inside `$refs.groupHeadSelect`)
+                         is correctly ignored. --}}
+                    <div class="relative mt-5" x-ref="groupHeadSelect"
+                        @click.window.capture="groupHeadDropdownOpen && $refs.groupHeadSelect && ! $refs.groupHeadSelect.contains($event.target) && (groupHeadDropdownOpen = false)">
                         <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
                             Group Head / Department Head
                         </label>

@@ -74,10 +74,12 @@ class EmailTemplateController extends Controller
     }
 
     /**
-     * Discards a submitted timing/day count whenever scheduling is off, so
-     * unchecking "Schedule Before/After Last Working Day" on an update
-     * always clears any previously configured schedule rather than leaving
-     * stale values behind.
+     * Discards whichever schedule fields don't apply, so stale values from
+     * an earlier configuration never linger. Unchecking "Schedule
+     * Email/Notification" clears every schedule field. Otherwise, only the
+     * fields for the currently selected `schedule_type` are kept — a
+     * template switched from "One-time" to "Recurring" (or back) never
+     * keeps the other mode's now-irrelevant timing/day values.
      *
      * @param  array<string, mixed>  $validated
      * @return array<string, mixed>
@@ -85,8 +87,19 @@ class EmailTemplateController extends Controller
     private function normalizeSchedule(array $validated): array
     {
         if (empty($validated['is_scheduled'])) {
+            $validated['schedule_type'] = null;
             $validated['schedule_timing'] = null;
             $validated['schedule_days'] = null;
+            $validated['schedule_interval_days'] = null;
+
+            return $validated;
+        }
+
+        if ($validated['schedule_type'] === 'recurring') {
+            $validated['schedule_timing'] = null;
+            $validated['schedule_days'] = null;
+        } else {
+            $validated['schedule_interval_days'] = null;
         }
 
         return $validated;

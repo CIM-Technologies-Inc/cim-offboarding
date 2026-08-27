@@ -22,6 +22,8 @@ use App\Http\Controllers\EmployeeDashboardController;
 use App\Http\Controllers\EmployeeFollowUpController;
 use App\Http\Controllers\RoleController;
 use App\Http\Controllers\UserController;
+use App\Http\Controllers\GeneralSignatoryController;
+use App\Http\Controllers\GeneralSignatoryApprovalController;
 
 // authentication pages
 Route::get('/signin', [AuthController::class, 'create'])->name('login');
@@ -44,6 +46,14 @@ Route::post('/reset-password/{id}/{token}', [ForgotPasswordController::class, 'r
 // — performs the actual approval.
 Route::get('/approval/{id}/{token}', [ApprovalController::class, 'showEmailApproval'])->name('approval.show');
 Route::post('/approval/{id}/{token}', [ApprovalController::class, 'confirmEmailApproval'])->name('approval.confirm');
+
+// Same public, unauthenticated "Approve" link pattern as above, for the
+// General Signatory Offboarding Notification email — see
+// GeneralSignatoryApprovalController's docblock. Deliberately its own
+// controller/token model/routes, entirely independent of the checklist
+// Clearance Signatory pair above.
+Route::get('/general-signatory-approval/{id}/{token}', [GeneralSignatoryApprovalController::class, 'showEmailApproval'])->name('general-signatory-approval.show');
+Route::post('/general-signatory-approval/{id}/{token}', [GeneralSignatoryApprovalController::class, 'confirmEmailApproval'])->name('general-signatory-approval.confirm');
 
 Route::middleware(['auth', 'password.changed'])->group(function () {
 
@@ -97,12 +107,17 @@ Route::middleware('permission:approvals.view')->group(function () {
     // one per checklist template — see ApprovalController::index()'s grouping.
     Route::post('/approvals/group/{offboardingRequest}/{employee}/save-progress', [ChecklistDelegationController::class, 'saveProgressGroup'])->name('approvals.group.save-progress');
     Route::post('/approvals/group/{offboardingRequest}/{employee}/assign', [ChecklistDelegationController::class, 'assignGroup'])->name('approvals.group.assign');
+    Route::post('/approvals/group/{offboardingRequest}/{employee}/assign-pool', [ChecklistDelegationController::class, 'assignPool'])->name('approvals.group.assign-pool');
 });
 
 Route::middleware('permission:approvals.approve')->group(function () {
     Route::post('/approvals/{offboardingRequestApprover}/approve', [ApprovalController::class, 'approve'])->name('approvals.approve');
     Route::post('/approvals/{offboardingRequestApprover}/decline', [ApprovalController::class, 'decline'])->name('approvals.decline');
     Route::post('/approvals/group/{offboardingRequest}/{employee}/approve', [ApprovalController::class, 'approveGroup'])->name('approvals.group.approve');
+
+    // General Signatory in-app Submit — same permission gate as the
+    // checklist approve actions above, independent controller/model.
+    Route::post('/general-signatory-approvals/{generalSignatoryApproval}/approve', [GeneralSignatoryApprovalController::class, 'approve'])->name('general-signatory-approvals.approve');
 });
 
 // pages restricted to the employee role — the offboardee's own self-service
@@ -142,6 +157,12 @@ Route::middleware('permission:offboarding-requests.create')->group(function () {
 Route::middleware('permission:offboarding-checklists.create')->group(function () {
     Route::get('/offboarding-checklists/create', [ChecklistTemplateController::class, 'create'])->name('checklist-templates.create');
     Route::post('/offboarding-checklists', [ChecklistTemplateController::class, 'store'])->name('checklist-templates.store');
+    // General Signatory — a standalone Clearance Signatory + Task List
+    // record, deliberately independent of the checklist workflow above
+    // (never attaches to an offboarding request). Lives on the same
+    // "Offboarding Checklist" page, so it reuses this page's own
+    // permissions rather than a new taxonomy.
+    Route::post('/general-signatories', [GeneralSignatoryController::class, 'store'])->name('general-signatories.store');
 });
 Route::middleware('permission:offboarding-checklists.view')->group(function () {
     Route::get('/offboarding-checklists', [ChecklistTemplateController::class, 'index'])->name('checklist-templates.index');
@@ -151,9 +172,12 @@ Route::middleware('permission:offboarding-checklists.view')->group(function () {
 Route::middleware('permission:offboarding-checklists.edit')->group(function () {
     Route::put('/offboarding-checklists/{checklistTemplate}', [ChecklistTemplateController::class, 'update'])->name('checklist-templates.update');
     Route::patch('/offboarding-checklists/{checklistTemplate}/toggle-status', [ChecklistTemplateController::class, 'toggleStatus'])->name('checklist-templates.toggle-status');
+    Route::put('/general-signatories/{generalSignatory}', [GeneralSignatoryController::class, 'update'])->name('general-signatories.update');
+    Route::patch('/general-signatories/{generalSignatory}/toggle-status', [GeneralSignatoryController::class, 'toggleStatus'])->name('general-signatories.toggle-status');
 });
 Route::middleware('permission:offboarding-checklists.delete')->group(function () {
     Route::delete('/offboarding-checklists/{checklistTemplate}', [ChecklistTemplateController::class, 'destroy'])->name('checklist-templates.destroy');
+    Route::delete('/general-signatories/{generalSignatory}', [GeneralSignatoryController::class, 'destroy'])->name('general-signatories.destroy');
 });
 
 // onboarding checklist templates

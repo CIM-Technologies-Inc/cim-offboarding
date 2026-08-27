@@ -5,10 +5,12 @@ namespace App\Http\Controllers;
 use App\Mail\ChecklistSignatoryAnnouncementMail;
 use App\Models\ChecklistApprovalToken;
 use App\Models\ChecklistItemProgress;
+use App\Models\ChecklistTemplate;
 use App\Models\EmailTemplate;
 use App\Models\Employee;
 use App\Models\OffboardingRequest;
 use App\Models\OffboardingRequestApprover;
+use App\Models\OffboardingRequestGeneralSignatory;
 use App\Models\User;
 use App\Notifications\OffboardingApprovalUpdated;
 use App\Services\ChecklistApprovalNotifier;
@@ -22,6 +24,7 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Notification;
+use Illuminate\Validation\Rule;
 use Illuminate\View\View;
 
 class ApprovalController extends Controller
@@ -84,18 +87,45 @@ class ApprovalController extends Controller
                 $progressByItemId = $assignment->itemProgress->keyBy('checklist_item_id');
 
                 // Genuinely tasked with this checklist — the real Department
-                // Head, the delegate, or the signatory of at least one item —
-                // as distinct from `isPrimaryApprover`, which is also true for
-                // ANY admin merely browsing/monitoring. Drives whether action
-                // buttons like Save Progress show up for someone who isn't
-                // actually a participant in this specific checklist.
+                // Head, the delegate, the signatory of at least one item, or
+                // a flagged Task Assignee of this checklist's own Employee
+                // Master group (see `OffboardingRequestApprover::scopeVisibleTo()`'s
+                // matching clause) — as distinct from `isPrimaryApprover`,
+                // which is also true for ANY admin merely browsing/monitoring.
+                $isGroupTaskAssignee = $employee
+                    && $employee->is_task_assignee
+                    && $employee->employee_group_id !== null
+                    && $template?->employee_group_id === $employee->employee_group_id
+                    && $template?->department_head_id !== $employee->id;
+
                 $isAssignedApprover = $isDepartmentHead
                     || $isDelegate
+                    || $isGroupTaskAssignee
                     || ($employee && $template?->items->contains(fn ($item) => $assignment->effectiveSignatoryFor($item)?->id === $employee->id));
 
                 $isReadyForApproval = $usesPerItemApprovers
                     && $assignment->allItemsCompleted()
                     && in_array($assignment->status, ['pending', 'viewed'], true);
+
+                // The pool offered in the "Employee / Approver" (whole-
+                // checklist delegate) and "Assign To" (per-item reassign)
+                // pickers — restricted to employees under this checklist's
+                // own Clearance Signatory (its Employee Master group),
+                // never the full active-employee roster. See
+                // `eligibleAssigneesFor()`'s own docblock for the fallback
+                // when this checklist has no group at all.
+                $rowAssignableEmployees = $this->eligibleAssigneesFor($template);
+                // Whether the list above is a REAL group restriction, as
+                // opposed to the "no group configured" unrestricted
+                // fallback — consulted by `groupIntoCombinedApprovals()` so
+                // a combined card that merges a real, grouped checklist
+                // with a groupless one (e.g. the same person is both the
+                // Information Services Clearance Signatory AND this
+                // request's Immediate Head) restricts the whole card's
+                // delegate picker to the real group, instead of the
+                // groupless checklist's unrestricted fallback silently
+                // widening it back out to every active employee.
+                $rowHasGroupRestriction = $template && $template->employee_group_id !== null;
 
                 return [
                     // Grouping key — every checklist the same approver is
@@ -103,6 +133,7 @@ class ApprovalController extends Controller
                     // combined into one card below (see `groupIntoCombinedApprovals()`).
                     'offboardingRequestId' => $request->id,
                     'approverEmployeeId' => $assignment->employee_id,
+                    'assignmentId' => $assignment->id,
                     // Internal-only, consulted only while aggregating a
                     // group's `displayStatus` — never copied into a card's
                     // final output.
@@ -122,8 +153,29 @@ class ApprovalController extends Controller
                     'lastWorkingDay' => $request->last_working_day->format('M d, Y'),
                     'approvalMode' => $request->approval_mode === 'sync' ? 'Sync' : 'Async',
                     'checklistTemplates' => $template ? [$template->title] : [],
+                    'assignableEmployees' => $rowAssignableEmployees,
+                    'hasGroupRestriction' => $rowHasGroupRestriction,
+                    // One option for the bulk "Assign Checklist" modal's
+                    // checklist-selection list — carries the employee pool
+                    // eligible for THIS SPECIFIC assignment's own owner (the
+                    // current Clearance Signatory/Immediate Head), via
+                    // `eligibleAssigneesForPool()` below, so the modal can
+                    // narrow its employee multi-select to the union of only
+                    // the checklists actually checked, rather than every
+                    // checklist in the combined card at once. `eligible`
+                    // flips to false the moment any item on this checklist
+                    // gets a real assignee (via this same bulk action or
+                    // "Check This List"), so there's never a meaningful
+                    // "who's currently assigned" list to show alongside an
+                    // eligible option — by definition, nobody is yet.
+                    'poolOption' => $template ? [
+                        'templateId' => $template->id,
+                        'title' => $template->title,
+                        'eligible' => $assignment->isEligibleForPoolAssignment(),
+                        'assignableEmployees' => $this->eligibleAssigneesForPool($assignment),
+                    ] : null,
                     'checklistItems' => $template
-                        ? $template->items->map(function ($item) use ($assignment, $template, $progressByItemId, $isPrimaryApprover, $isDelegate, $employee, $usesPerItemApprovers, $mustBeCheckedForSubmit) {
+                        ? $template->items->map(function ($item) use ($assignment, $template, $progressByItemId, $isPrimaryApprover, $isDelegate, $employee, $usesPerItemApprovers, $mustBeCheckedForSubmit, $rowAssignableEmployees) {
                             $progress = $progressByItemId->get($item->id);
                             $isChecked = (bool) ($progress?->is_checked ?? false);
                             $onHold = $progress?->status === 'hold' && ! $isChecked;
@@ -203,6 +255,12 @@ class ApprovalController extends Controller
                                 // voluntarily accepts this item as their own,
                                 // without checking/completing it.
                                 'takeOverUrl' => route('approvals.items.take-over', [$assignment->id, $item->id]),
+                                // For the "Assign To" picker opened from
+                                // this specific item — restricted to this
+                                // item's own checklist's Clearance
+                                // Signatory group, same pool as the row's
+                                // own `assignableEmployees` above.
+                                'assignableEmployees' => $rowAssignableEmployees,
                             ];
                         })->values()->all()
                         : [],
@@ -235,13 +293,90 @@ class ApprovalController extends Controller
                 ];
             });
 
-        $approvals = $this->groupIntoCombinedApprovals($rows);
+        $approvals = $this->groupIntoCombinedApprovals($rows)
+            ->concat($this->buildGeneralSignatoryApprovals($user, $reasonLabels));
 
         return view('pages.approvals.index', [
             'title' => 'Approvals',
             'approvals' => $approvals,
             'employees' => Employee::where('status', 'active')->orderBy('name')->get(['id', 'name', 'employee_code', 'department']),
         ]);
+    }
+
+    /**
+     * General Signatory cards for the Approvals page — built and shaped
+     * independently of `groupIntoCombinedApprovals()` above (which is
+     * checklist-specific: template titles, per-item approvers, delegation),
+     * since a General Signatory has none of that. Each card still carries
+     * every field `pages.approvals.index`'s Blade already reads off a
+     * checklist card (`checklistTemplates`, `delegations`, `dueAt`, etc.,
+     * all empty/null here) so the shared card markup renders unchanged,
+     * plus a `kind` discriminator the view uses to hide checklist-only
+     * actions (Assign To) and open the General Signatory modal instead of
+     * the checklist one.
+     *
+     * @param  array<string, string>  $reasonLabels
+     * @return \Illuminate\Support\Collection<int, array<string, mixed>>
+     */
+    private function buildGeneralSignatoryApprovals(User $user, array $reasonLabels)
+    {
+        return OffboardingRequestGeneralSignatory::query()
+            ->where('status', 'pending')
+            ->whereHas('offboardingRequest', fn ($q) => $q->where('status', 'pending'))
+            ->visibleTo($user)
+            ->with(['offboardingRequest.employee', 'generalSignatory.clearanceSignatory', 'generalSignatory.tasks.signatory'])
+            ->get()
+            ->filter(fn (OffboardingRequestGeneralSignatory $assignment) => $assignment->offboardingRequest?->employee)
+            ->map(function (OffboardingRequestGeneralSignatory $assignment) use ($reasonLabels) {
+                $request = $assignment->offboardingRequest;
+                $generalSignatory = $assignment->generalSignatory;
+
+                return [
+                    'id' => 'general-signatory-' . $assignment->id,
+                    'kind' => 'general_signatory',
+                    'offboardingRequestId' => $request->id,
+                    'name' => $request->employee->name,
+                    'employeeCode' => $request->employee->employee_code,
+                    'department' => $request->employee->department,
+                    'designation' => $request->employee->designation,
+                    'status' => $request->status,
+                    'displayStatus' => 'pending',
+                    'reason' => $reasonLabels[$request->reason] ?? ucfirst($request->reason),
+                    'resignationType' => $request->resignation_type,
+                    'noticeDate' => $request->notice_date?->format('M d, Y'),
+                    'lastWorkingDay' => $request->last_working_day->format('M d, Y'),
+                    'approvalMode' => $request->approval_mode === 'sync' ? 'Sync' : 'Async',
+                    'checklistTemplates' => [],
+                    'checklistItems' => [],
+                    'isPrimaryApprover' => true,
+                    'isAssignedApprover' => true,
+                    'isDelegate' => false,
+                    'usesPerItemApprovers' => false,
+                    'isImmediateHeadChecklist' => false,
+                    'allItemsCompleted' => true,
+                    'dueAt' => null,
+                    'isOverdue' => false,
+                    'assignedByName' => null,
+                    'assignedByCode' => null,
+                    'delegations' => [],
+                    'checklistPoolOptions' => [],
+                    'showAssignChecklistPool' => false,
+                    'generalSignatoryName' => $generalSignatory->clearanceSignatory?->name,
+                    'generalSignatoryTasks' => $generalSignatory->tasks
+                        ->map(fn ($task) => [
+                            'title' => $task->title,
+                            'assigneeName' => $task->signatory?->name,
+                        ])
+                        ->values()
+                        ->all(),
+                    'submitUrl' => route('general-signatory-approvals.approve', $assignment->id),
+                    'timeline' => collect($request->timeline())
+                        ->reject(fn ($step) => $step['label'] === 'Offboarding In Progress')
+                        ->values()
+                        ->all(),
+                ];
+            })
+            ->values();
     }
 
     /**
@@ -280,6 +415,28 @@ class ApprovalController extends Controller
                     'approvalMode' => $first['approvalMode'],
                     'checklistTemplates' => $group->pluck('checklistTemplates')->flatten()->values()->all(),
                     'checklistItems' => $group->pluck('checklistItems')->flatten(1)->values()->all(),
+                    // The "Employee / Approver" picker for the whole-card
+                    // "Assign To" (delegate every checklist in this card at
+                    // once) — the union of each member checklist's own
+                    // Clearance-Signatory-group pool, deduped by employee
+                    // id. In the common case a card has exactly one
+                    // checklist, so this is just that checklist's own pool.
+                    //
+                    // A real group restriction always wins over a groupless
+                    // checklist's unrestricted fallback: if ANY checklist in
+                    // this card has an actual Clearance-Signatory group,
+                    // only THOSE checklists' member lists are unioned — a
+                    // co-merged groupless checklist (e.g. this same person
+                    // is also the request's Immediate Head) never widens the
+                    // picker back out to every active employee. Only when
+                    // NO checklist in the whole card has any group at all
+                    // does the true "everyone" fallback apply.
+                    'assignableEmployees' => (function () use ($group) {
+                        $restricted = $group->filter(fn (array $row) => $row['hasGroupRestriction']);
+                        $source = $restricted->isNotEmpty() ? $restricted : $group;
+
+                        return $source->pluck('assignableEmployees')->flatten(1)->unique('id')->values()->all();
+                    })(),
                     'isPrimaryApprover' => $first['isPrimaryApprover'],
                     'isAssignedApprover' => $group->contains('isAssignedApprover', true),
                     'isDelegate' => $group->contains('isDelegate', true),
@@ -291,13 +448,94 @@ class ApprovalController extends Controller
                     'assignedByName' => $first['assignedByName'],
                     'assignedByCode' => $first['assignedByCode'],
                     'delegations' => $group->pluck('delegation')->filter()->values()->all(),
+                    // Bulk "Assign Checklist" — one option per checklist
+                    // template in this card, each carrying its own
+                    // eligibility and group-restricted employee pool (see
+                    // the row-level `poolOption` above). Only rendered when
+                    // `showAssignChecklistPool` below is true.
+                    'checklistPoolOptions' => $group->pluck('poolOption')->filter()->unique('templateId')->values()->all(),
+                    // "Only when relevant": the bulk modal only makes sense
+                    // once this card actually combines more than one
+                    // distinct checklist template — a single-checklist card
+                    // has nothing else to bulk-open, so no button renders.
+                    'showAssignChecklistPool' => $first['isPrimaryApprover']
+                        && $group->pluck('checklistTemplates')->flatten()->unique()->count() > 1,
                     'approveUrl' => route('approvals.group.approve', ['offboardingRequest' => $first['offboardingRequestId'], 'employee' => $first['approverEmployeeId']]),
                     'assignUrl' => route('approvals.group.assign', ['offboardingRequest' => $first['offboardingRequestId'], 'employee' => $first['approverEmployeeId']]),
+                    'assignPoolUrl' => route('approvals.group.assign-pool', ['offboardingRequest' => $first['offboardingRequestId'], 'employee' => $first['approverEmployeeId']]),
                     'saveProgressUrl' => route('approvals.group.save-progress', ['offboardingRequest' => $first['offboardingRequestId'], 'employee' => $first['approverEmployeeId']]),
                     'timeline' => $first['timeline'],
                 ];
             })
             ->values();
+    }
+
+    /**
+     * The pool offered in the "Employee / Approver" (whole-checklist
+     * delegate) and "Assign To" (per-item reassign) pickers on the
+     * Approvals page — restricted to employees under this checklist's own
+     * Clearance Signatory, i.e. members of the same Employee Master group
+     * this checklist's `employee_group_id` points to, flagged
+     * `is_task_assignee`, excluding the Clearance Signatory/Department
+     * Head themselves — the exact same eligibility rule
+     * `ChecklistTemplateController::eligibleSignatoryIds()` already
+     * enforces server-side for the Task Assignee picker on the checklist
+     * template's own create/edit form, applied here to these two
+     * delegation pickers instead.
+     *
+     * Falls back to every active employee (today's original, unrestricted
+     * behavior) when this checklist has no group at all — an Immediate
+     * Head checklist, or an older checklist with no Clearance Signatory
+     * group configured — since there's no "employees under that Clearance
+     * Signatory" set to filter to in that case.
+     *
+     * @return array<int, array{id: string, name: string, code: string, department: ?string}>
+     */
+    private function eligibleAssigneesFor(?ChecklistTemplate $template): array
+    {
+        $query = ($template && $template->employee_group_id)
+            ? Employee::where('employee_group_id', $template->employee_group_id)
+                ->where('is_task_assignee', true)
+                ->where('id', '!=', $template->department_head_id)
+            : Employee::query();
+
+        return $query->where('status', 'active')
+            ->orderBy('name')
+            ->get(['id', 'name', 'employee_code', 'department'])
+            ->map(fn (Employee $employee) => [
+                'id' => (string) $employee->id,
+                'name' => $employee->name,
+                'code' => $employee->employee_code,
+                'department' => $employee->department,
+            ])
+            ->values()
+            ->all();
+    }
+
+    /**
+     * The employee pool offered by the bulk "Assign Checklist" modal for
+     * one specific assignment — unlike `eligibleAssigneesFor()` above
+     * (restricted to the CHECKLIST TEMPLATE's own `employee_group_id`, with
+     * a company-wide fallback when a template has none), this shapes
+     * `OffboardingRequestApprover::eligiblePoolAssigneeIds()` for display —
+     * see that method's docblock for why it's anchored on the assignment's
+     * own owner rather than the template.
+     *
+     * @return array<int, array{id: string, name: string, code: string, department: ?string}>
+     */
+    private function eligibleAssigneesForPool(OffboardingRequestApprover $assignment): array
+    {
+        return Employee::whereIn('id', $assignment->eligiblePoolAssigneeIds())
+            ->orderBy('name')
+            ->get(['id', 'name', 'employee_code', 'department'])
+            ->map(fn (Employee $employee) => [
+                'id' => (string) $employee->id,
+                'name' => $employee->name,
+                'code' => $employee->employee_code,
+                'department' => $employee->department,
+            ])
+            ->values()
+            ->all();
     }
 
     /**
@@ -719,7 +957,7 @@ class ApprovalController extends Controller
      * activity — who sent it and who it went to — not just the inline
      * `reminder_sent_at` timestamp on the assignment.
      */
-    public function remind(OffboardingRequestApprover $offboardingRequestApprover): RedirectResponse
+    public function remind(Request $request, OffboardingRequestApprover $offboardingRequestApprover): RedirectResponse
     {
         abort_unless(auth()->user()->isAdmin(), 403);
 
@@ -729,16 +967,31 @@ class ApprovalController extends Controller
             'This approver has already acted — no reminder needed.'
         );
 
+        // Optional per-click override from the Offboarding Status/Timeline
+        // "Select Email Template" picker — applies ONLY to this one send,
+        // never persisted anywhere and never touching the global default.
+        // Left unset (the normal case — the admin didn't open the picker,
+        // or left it on the pre-selected default), this falls back to
+        // today's exact original behavior: resolving by fixed name below.
+        // Scoped to `is_active` templates only, same as every other
+        // template lookup in this app — an inactive template was never a
+        // pickable option in the UI to begin with.
+        $validated = $request->validate([
+            'email_template_id' => ['nullable', Rule::exists('email_templates', 'id')->where('is_active', true)],
+        ]);
+
         $offboardingRequest = $offboardingRequestApprover->offboardingRequest;
         $offboardee = $offboardingRequest->employee;
         $approverEmployee = $offboardingRequestApprover->employee;
         $isOverdue = $offboardingRequestApprover->isOverdue();
         $templateName = $isOverdue ? self::OVERDUE_TEMPLATE : self::REMINDER_TEMPLATE;
 
-        $emailTemplate = EmailTemplate::where('is_active', true)
-            ->where('template_name', $templateName)
-            ->latest('updated_at')
-            ->first();
+        $emailTemplate = ! empty($validated['email_template_id'])
+            ? EmailTemplate::find($validated['email_template_id'])
+            : EmailTemplate::where('is_active', true)
+                ->where('template_name', $templateName)
+                ->latest('updated_at')
+                ->first();
 
         if (! $emailTemplate) {
             return back()->with('error', 'No "' . $templateName . '" email template found. Please create one first.');

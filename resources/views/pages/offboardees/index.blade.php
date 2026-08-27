@@ -4,7 +4,7 @@
     <x-common.page-breadcrumb pageTitle="Offboardees" />
 
     <div class="mb-4 flex items-center justify-end md:mb-6">
-        <x-offboarding.new-request-modal :employees="$employeesNotOffboarded" />
+        <x-offboarding.new-request-modal :employees="$employeesNotOffboarded" :email-templates="$activeEmailTemplates" />
     </div>
 
     <div x-data="{
@@ -208,6 +208,6 @@
         @endif
 
         <!-- Offboardee Status Modal -->
-        <x-offboarding.status-timeline-modal :initial="$deepLinkOffboardee" />
+        <x-offboarding.status-timeline-modal :initial="$deepLinkOffboardee" :email-templates="$activeEmailTemplates" />
     </div>
 @endsection

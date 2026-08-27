@@ -2,7 +2,7 @@
 
 @section('content')
   <div x-data="flashToast(@js(session('success')))" class="mb-4 flex items-center justify-end md:mb-6">
-    <x-offboarding.new-request-modal :employees="$employeesNotOffboarded" />
+    <x-offboarding.new-request-modal :employees="$employeesNotOffboarded" :email-templates="$activeEmailTemplates" />
   </div>
 
   <div class="grid grid-cols-12 gap-4 md:gap-6">

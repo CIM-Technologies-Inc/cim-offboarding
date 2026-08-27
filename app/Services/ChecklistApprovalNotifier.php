@@ -13,8 +13,12 @@ use App\Models\ChecklistTemplate;
 use App\Models\EmailTemplate;
 use App\Models\Employee;
 use App\Models\EmployeeGroup;
+use App\Models\GeneralSignatory;
+use App\Models\GeneralSignatoryApprovalToken;
+use App\Models\GeneralSignatoryTask;
 use App\Models\OffboardingRequest;
 use App\Models\OffboardingRequestApprover;
+use App\Models\OffboardingRequestGeneralSignatory;
 use App\Models\User;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Hash;
@@ -47,6 +51,22 @@ class ChecklistApprovalNotifier
      * creator — see `notifyFollowUp()`.
      */
     private const FOLLOW_UP_TEMPLATE = 'Employee Offboarding Follow-Up Notification';
+
+    /**
+     * Fixed-name email template for the "you're a Clearance Signatory on
+     * this offboarding request" notice sent to each General Signatory —
+     * see `notifyGeneralSignatories()`. Deliberately its own dedicated
+     * template rather than reusing "Offboarding Checklist Assigned to You"
+     * (that one is a hardcoded Mailable tied to checklist-item semantics —
+     * assigned items, due dates — none of which apply to a General
+     * Signatory, who has no checklist). A General Signatory IS still a
+     * Clearance Signatory/Approver though: this template's rendered body
+     * includes a one-click "{{approve_button}}" (see
+     * `buildApproveButtonHtml()`) that clears their assignment the same way
+     * Submit on the Approvals page does — see
+     * `GeneralSignatoryApprovalController`.
+     */
+    private const GENERAL_SIGNATORY_NOTIFICATION_TEMPLATE = 'General Signatory Offboarding Notification';
 
     /**
      * Attaches the given checklist templates to the request, creates one
@@ -203,7 +223,13 @@ class ChecklistApprovalNotifier
      */
     public function notifyDepartmentHeadsOfNewRequest(OffboardingRequest $offboardingRequest, Collection $templates): void
     {
-        $emailTemplate = EmailTemplate::where('is_active', true)
+        // Prefers the admin's per-request override (picked on the New
+        // Offboarding Request modal), captured once at creation and never
+        // re-checked for `is_active` afterward — a frozen snapshot, exactly
+        // like the General Signatory assignment on this same request. Falls
+        // back to today's live-default lookup only when no override was
+        // stored (the normal "admin left it as default" case).
+        $emailTemplate = $offboardingRequest->approverNotificationTemplate ?? EmailTemplate::where('is_active', true)
             ->where('template_name', self::REQUEST_NOTIFICATION_TEMPLATE)
             ->latest('updated_at')
             ->first();
@@ -295,7 +321,9 @@ class ChecklistApprovalNotifier
             return;
         }
 
-        $emailTemplate = EmailTemplate::where('is_active', true)
+        // Same override-first, frozen-snapshot precedence as
+        // `notifyDepartmentHeadsOfNewRequest()` above.
+        $emailTemplate = $offboardingRequest->offboardeeNotificationTemplate ?? EmailTemplate::where('is_active', true)
             ->where('template_name', self::OFFBOARDEE_NOTIFICATION_TEMPLATE)
             ->latest('updated_at')
             ->first();
@@ -369,6 +397,187 @@ class ChecklistApprovalNotifier
             .'<th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:left;background:#f3f4f6;">Assigned Signatory</th>'
             .'<th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:left;background:#f3f4f6;">Due Date</th>'
             .'<th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:left;background:#f3f4f6;">Status</th>'
+            .'</tr>'
+            .$rows
+            .'</table>';
+    }
+
+    /**
+     * Notifies every currently-active General Signatory that this
+     * offboarding request now exists, and snapshots them onto the request
+     * (via `generalSignatories()`) so they appear on its Clearance Form as
+     * an additional, checklist-independent signatory — see
+     * `GeneralSignatory`'s own docblock for why this feature deliberately
+     * never touches `ChecklistTemplate`/`OffboardingRequestApprover` at
+     * all: no checklist is ever created just to carry a General Signatory.
+     * Frozen at snapshot time exactly like `checklistTemplates()` is for
+     * regular checklists, so a General Signatory added, edited, or
+     * deactivated later never changes who already appears on an existing
+     * request's Clearance Form — and the pivot row's mere existence is
+     * what guards against ever double-attaching or double-notifying the
+     * same General Signatory for the same request, even if this method
+     * somehow ran twice.
+     *
+     * For each newly-snapshotted General Signatory: ensures they have a
+     * login account — Approver role only if they're a registered Employee
+     * Master Group Head with at least one active member, Employee role
+     * otherwise (see `User::findOrCreateGeneralSignatory()`); an
+     * already-existing account's role is never touched either way — then
+     * emails them the fixed-name "General Signatory Offboarding
+     * Notification" with the offboardee's details and — only when
+     * configured — their own Task List. Account creation and the
+     * Clearance Form snapshot both happen regardless of whether the email
+     * template is configured or the recipient has a usable email address;
+     * only the email send itself is skipped in that case.
+     */
+    public function notifyGeneralSignatories(OffboardingRequest $offboardingRequest): void
+    {
+        $alreadyAttachedIds = $offboardingRequest->generalSignatories()->pluck('general_signatories.id');
+
+        $generalSignatories = GeneralSignatory::where('is_active', true)
+            ->whereNotIn('id', $alreadyAttachedIds)
+            ->with(['clearanceSignatory', 'tasks.signatory'])
+            ->get();
+
+        if ($generalSignatories->isEmpty()) {
+            return;
+        }
+
+        $offboardingRequest->generalSignatories()->syncWithoutDetaching($generalSignatories->pluck('id'));
+
+        // Same override-first, frozen-snapshot precedence as
+        // `notifyDepartmentHeadsOfNewRequest()` above.
+        $emailTemplate = $offboardingRequest->generalSignatoryNotificationTemplate ?? EmailTemplate::where('is_active', true)
+            ->where('template_name', self::GENERAL_SIGNATORY_NOTIFICATION_TEMPLATE)
+            ->latest('updated_at')
+            ->first();
+
+        if (! $emailTemplate) {
+            Log::warning('No "' . self::GENERAL_SIGNATORY_NOTIFICATION_TEMPLATE . '" email template found — General Signatories were not emailed.', [
+                'offboarding_request_id' => $offboardingRequest->id,
+            ]);
+        }
+
+        $offboardee = $offboardingRequest->employee;
+
+        foreach ($generalSignatories as $generalSignatory) {
+            $clearanceSignatory = $generalSignatory->clearanceSignatory;
+
+            if (! $clearanceSignatory) {
+                continue;
+            }
+
+            $hasActiveGroupMembers = EmployeeGroup::where('group_head_employee_id', $clearanceSignatory->id)
+                ->whereHas('employees', fn ($q) => $q->where('status', 'active'))
+                ->exists();
+
+            User::findOrCreateGeneralSignatory($clearanceSignatory, $hasActiveGroupMembers);
+
+            if (! $emailTemplate || ! $clearanceSignatory->email || ! filter_var($clearanceSignatory->email, FILTER_VALIDATE_EMAIL)) {
+                continue;
+            }
+
+            // The per-request approval-state row `syncWithoutDetaching()`
+            // above just attached — the same row the Approvals page's
+            // Submit button and `GeneralSignatoryApprovalController` both
+            // act on. Only a still-pending assignment gets an Approve
+            // button; one already cleared (e.g. this notification is being
+            // re-sent) gets none, so the email never offers a dead action.
+            $assignment = OffboardingRequestGeneralSignatory::where('offboarding_request_id', $offboardingRequest->id)
+                ->where('general_signatory_id', $generalSignatory->id)
+                ->first();
+
+            [$subject, $body] = $emailTemplate->render(
+                approverName: $clearanceSignatory->name,
+                offboardeeName: $offboardee->name,
+                employeeNumber: $offboardee->employee_code,
+                department: $offboardee->department,
+                position: $offboardee->designation,
+                dateHired: $offboardee->date_of_joining?->format('M d, Y'),
+                separationDate: $offboardingRequest->last_working_day?->format('M d, Y'),
+                requestDate: $offboardingRequest->created_at->format('M d, Y'),
+                generalSignatoryTasks: $this->buildGeneralSignatoryTasksHtml($generalSignatory),
+                approveButton: $assignment && $assignment->status === 'pending'
+                    ? $this->buildApproveButtonHtml($this->createGeneralSignatoryApprovalUrl($assignment))
+                    : '',
+            );
+
+            try {
+                Mail::to($clearanceSignatory->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+            } catch (\Throwable $e) {
+                Log::error('Failed to send General Signatory offboarding notification email.', [
+                    'offboarding_request_id' => $offboardingRequest->id,
+                    'general_signatory_id' => $generalSignatory->id,
+                    'recipient' => $clearanceSignatory->email,
+                    'exception' => $e->getMessage(),
+                ]);
+            }
+        }
+    }
+
+    /**
+     * Generates the one-click "Approve" link for a General Signatory's
+     * pending assignment and returns its full URL — the General Signatory
+     * equivalent of `notifyDepartmentHeadReady()`'s
+     * `ChecklistApprovalToken` generation below, using the same hashed-
+     * token-plus-expiry convention (`GeneralSignatoryApprovalToken` mirrors
+     * `ChecklistApprovalToken` exactly) and the same
+     * `APPROVAL_TOKEN_LIFETIME_DAYS` lifetime.
+     */
+    private function createGeneralSignatoryApprovalUrl(OffboardingRequestGeneralSignatory $assignment): string
+    {
+        $rawToken = Str::random(64);
+
+        $approvalToken = GeneralSignatoryApprovalToken::create([
+            'offboarding_request_general_signatory_id' => $assignment->id,
+            'token' => Hash::make($rawToken),
+            'expires_at' => now()->addDays(self::APPROVAL_TOKEN_LIFETIME_DAYS),
+        ]);
+
+        return route('general-signatory-approval.show', ['id' => $approvalToken->id, 'token' => $rawToken]);
+    }
+
+    /**
+     * Pre-renders the "{{approve_button}}" placeholder as a single styled
+     * `<a>` tag, matching `checklist-ready-for-approval.blade.php`'s
+     * Approve button styling — the same "pre-render raw HTML for an
+     * unescaped placeholder" pattern `buildGeneralSignatoryTasksHtml()`
+     * below already uses for that token.
+     */
+    private function buildApproveButtonHtml(string $url): string
+    {
+        return '<p style="margin:24px 0 0;">'
+            .'<a href="'.e($url).'" style="display:inline-block;background-color:#145a3a;color:#ffffff;text-decoration:none;padding:12px 24px;border-radius:8px;font-weight:bold;">'
+            .'Approve'
+            .'</a>'
+            .'</p>';
+    }
+
+    /**
+     * Pre-renders the "{{general_signatory_tasks}}" placeholder as a full
+     * HTML section (heading + table), or an empty string when this General
+     * Signatory has no tasks configured at all — so a template referencing
+     * this token never shows a dangling "Task List" heading with nothing
+     * under it, per spec.
+     */
+    private function buildGeneralSignatoryTasksHtml(GeneralSignatory $generalSignatory): string
+    {
+        if ($generalSignatory->tasks->isEmpty()) {
+            return '';
+        }
+
+        $rows = $generalSignatory->tasks->map(function (GeneralSignatoryTask $task) {
+            return '<tr>'
+                .'<td style="padding:6px 10px;border:1px solid #e5e7eb;">'.e($task->title).'</td>'
+                .'<td style="padding:6px 10px;border:1px solid #e5e7eb;">'.e($task->signatory?->name ?? 'Unassigned').'</td>'
+                .'</tr>';
+        })->implode('');
+
+        return '<p style="margin:16px 0 8px;font-weight:bold;">Task List</p>'
+            .'<table style="width:100%;border-collapse:collapse;font-size:13px;">'
+            .'<tr>'
+            .'<th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:left;background:#f3f4f6;">Task Title</th>'
+            .'<th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:left;background:#f3f4f6;">Task Assignee</th>'
             .'</tr>'
             .$rows
             .'</table>';
@@ -521,11 +730,8 @@ class ChecklistApprovalNotifier
     {
         $offboardee = $offboardingRequest->employee;
 
-        /** @var array<int, array{employee: Employee, items: array<int, array{checklistTitle: string, itemTitle: string, dueAt: ?string}>, hasExplicitAssignment: bool}> $byApprover */
+        /** @var array<int, array{employee: Employee, items: array<int, array{checklistTitle: string, itemTitle: string, dueAt: ?string}>}> $byApprover */
         $byApprover = [];
-
-        /** @var array<int, array{checklistTitle: string, itemTitle: string, dueAt: ?string}> $allActiveItems */
-        $allActiveItems = [];
 
         foreach ($templates as $template) {
             $dueAt = $template->due_in_days ? now()->addDays($template->due_in_days)->format('M d, Y') : null;
@@ -533,12 +739,17 @@ class ChecklistApprovalNotifier
 
             foreach ($template->items as $item) {
                 /** @var ChecklistItem $item */
-                $allActiveItems[] = [
-                    'checklistTitle' => $template->title,
-                    'itemTitle' => $item->title,
-                    'dueAt' => $dueAt,
-                ];
 
+                // `effectiveSignatoryFor()` only ever resolves to someone
+                // EXPLICITLY configured as this item's Task Assignee (on the
+                // template, or via a per-request override) —
+                // `snapshotItemSignatories()` never fills in an unassigned
+                // item with a group member, so there is no "fallback
+                // participant" case to account for here: every recipient
+                // found below was genuinely, explicitly assigned to at
+                // least this one item. Being a member of the Clearance
+                // Signatory's Employee Master group is never enough on its
+                // own to reach this branch.
                 $signatory = $assignment ? $assignment->effectiveSignatoryFor($item) : $item->signatory;
 
                 if (! $signatory || $signatory->id === $assignment?->employee_id) {
@@ -551,13 +762,6 @@ class ChecklistApprovalNotifier
                     'itemTitle' => $item->title,
                     'dueAt' => $dueAt,
                 ];
-                // An item with no configured `signatory_id` on the template
-                // itself only ever reaches here via `snapshotItemSignatories()`'s
-                // fallback assignment — tracking whether this recipient has
-                // AT LEAST ONE genuinely explicit item (as opposed to being
-                // purely a fallback participant) decides which item list
-                // their email shows, below.
-                $byApprover[$signatory->id]['hasExplicitAssignment'] = ($byApprover[$signatory->id]['hasExplicitAssignment'] ?? false) || $item->signatory_id !== null;
             }
         }
 
@@ -568,12 +772,9 @@ class ChecklistApprovalNotifier
                 continue;
             }
 
-            // A recipient whose only involvement is via the fallback
-            // mechanism (no item anywhere in this batch was specifically
-            // assigned to them) sees every active checklist item instead of
-            // just their own subset, for situational awareness — replacing
-            // rather than appending, so nothing is ever duplicated.
-            $items = $entry['hasExplicitAssignment'] ? $entry['items'] : $allActiveItems;
+            // Only this recipient's own explicitly assigned items — never
+            // the whole checklist, and never another employee's items.
+            $items = $entry['items'];
 
             $existingUser = User::firstWhere('username', $employee->employee_code);
             $user = $existingUser ?? User::findOrCreateApprover($employee);
@@ -757,22 +958,26 @@ class ChecklistApprovalNotifier
      * an item's signatory, or reassigns the Department Head): every item
      * gets its own `ChecklistItemAssignment` snapshot row up front, so
      * `effectiveSignatoryFor()` always finds an explicit per-request record
-     * instead of falling back to a live read of `$item->signatory`. Three
+     * instead of falling back to a live read of `$item->signatory`. Two
      * cases per item:
      *
      *   1. The item already has its own configured `signatory_id` on the
      *      template — snapshot that exact employee.
-     *   2. The item has no signatory, but the Department Head is a
-     *      registered Employee Master Group Head with active members —
-     *      round-robin the item across that group (unchanged from before;
-     *      this is the only case that also logs an activity, since it's the
-     *      only genuinely automatic *decision* being made here — case 1 is
-     *      just recording the admin's own existing choice).
-     *   3. Neither applies — snapshot an explicit "no signatory" row
-     *      (`assigned_employee_id` null). This still locks the item in:
+     *   2. The item has no signatory — snapshot an explicit "no signatory"
+     *      row (`assigned_employee_id` null). This still locks the item in:
      *      without it, an admin adding a signatory to this item later would
      *      silently start applying to this already-created request too,
      *      the exact thing this method exists to prevent.
+     *
+     * Deliberately does NOT fall back to round-robin-distributing an
+     * unassigned item across the Department Head's Employee Master group —
+     * being a member of that group (or of the Clearance Signatory's group)
+     * must never, by itself, make someone a Task Assignee. An item with no
+     * explicit Task Assignee simply has none; only the Clearance
+     * Signatory/Department Head is responsible for it, exactly as if no
+     * group existed at all. This is what `notifyItemApprovers()` downstream
+     * relies on to only email someone genuinely, explicitly assigned to at
+     * least one item — see its own docblock.
      *
      * Never touches an item that already has an active per-request
      * override (relevant if this template is re-attached, e.g. the Final
@@ -802,31 +1007,6 @@ class ChecklistApprovalNotifier
 
         $explicitItems = $itemsNeedingSnapshot->filter(fn (ChecklistItem $item) => $item->signatory_id !== null);
         $unassignedItems = $itemsNeedingSnapshot->reject(fn (ChecklistItem $item) => $item->signatory_id !== null)->values();
-
-        $groupMembers = collect();
-
-        // Employee Master groups are a Department Head concept — an
-        // Immediate Head checklist (department_head_id null) never has a
-        // group of its own, so its unassigned items always snapshot as
-        // "no signatory" below, same as a normal checklist with no
-        // matching group.
-        if ($unassignedItems->isNotEmpty() && $template->department_head_id) {
-            $group = EmployeeGroup::where('group_head_employee_id', $template->department_head_id)->first();
-
-            if ($group) {
-                // Only members flagged `is_task_assignee` on the Employee
-                // Master page are eligible, and the Group Head/Clearance
-                // Signatory is always excluded — same rule already enforced
-                // for the manual Task Assignee picker, see
-                // `ChecklistTemplateController::eligibleSignatoryIds()`.
-                $groupMembers = $group->employees()
-                    ->where('status', 'active')
-                    ->where('is_task_assignee', true)
-                    ->where('id', '!=', $template->department_head_id)
-                    ->orderBy('employee_code')
-                    ->get();
-            }
-        }
 
         $assignedTo = [];
         $newlyCreatedAccountEmployeeIds = [];
@@ -861,18 +1041,13 @@ class ChecklistApprovalNotifier
             $snapshot($item, $item->signatory);
         }
 
-        $autoAssignedGroupMembers = [];
-
-        foreach ($unassignedItems as $index => $item) {
-            if ($groupMembers->isEmpty()) {
-                $snapshot($item, null);
-
-                continue;
-            }
-
-            $member = $groupMembers[$index % $groupMembers->count()];
-            $snapshot($item, $member);
-            $autoAssignedGroupMembers[$member->id] ??= $member;
+        // No fallback distribution across the Department Head's group — an
+        // item with no explicit Task Assignee simply gets an explicit
+        // "no signatory" snapshot row (`assigned_employee_id` null), same
+        // as `$snapshot()`'s behavior always was for the "no group" case.
+        // See this method's own docblock for why.
+        foreach ($unassignedItems as $item) {
+            $snapshot($item, null);
         }
 
         // Bust the `itemAssignments` relation cache populated by the
@@ -882,20 +1057,6 @@ class ChecklistApprovalNotifier
         // this refresh it would silently keep seeing the stale, pre-create
         // snapshot and never notify anyone.
         $assignment->load('itemAssignments.assignedEmployee');
-
-        if (! empty($autoAssignedGroupMembers)) {
-            $assignment->offboardingRequest->activities()->create([
-                'offboarding_request_approver_id' => $assignment->id,
-                'action' => 'checklist_item_auto_assigned',
-                'status' => $assignment->offboardingRequest->status,
-                'comment' => sprintf(
-                    '"%s" items automatically assigned to %s\'s group members: %s.',
-                    $template->title,
-                    $template->departmentHead?->name ?? 'the Department Head',
-                    collect($autoAssignedGroupMembers)->map(fn (Employee $e) => "{$e->employee_code} - {$e->name}")->implode(', ')
-                ),
-            ]);
-        }
 
         return $newlyCreatedAccountEmployeeIds;
     }

@@ -4,26 +4,102 @@
         remarks: {},
         holdProcessing: {},
         takeOverProcessing: {},
+        doneProcessing: {},
         setSelected(detail) {
             const checked = {};
             const remarks = {};
             const takeOverProcessing = {};
+            const doneProcessing = {};
             (detail.checklistItems || []).forEach((item) => {
                 checked[item.id] = !!item.checked;
                 remarks[item.id] = item.remark || '';
                 takeOverProcessing[item.id] = false;
+                doneProcessing[item.id] = false;
             });
             // Populate reactive state BEFORE assigning `selected` — that
             // assignment is what triggers the x-if/x-for to render, so
-            // every item's `checked`/`remarks`/`takeOverProcessing` entry
-            // must already exist by then for bindings (like the Hold and
-            // Check This List buttons' :disabled) that key off them to
-            // track correctly from their very first evaluation.
+            // every item's `checked`/`remarks`/`takeOverProcessing`/
+            // `doneProcessing` entry must already exist by then for
+            // bindings (like the Hold and Check This List buttons'
+            // :disabled) that key off them to track correctly from their
+            // very first evaluation.
             this.checked = checked;
             this.remarks = remarks;
             this.holdProcessing = {};
             this.takeOverProcessing = takeOverProcessing;
+            this.doneProcessing = doneProcessing;
             this.selected = detail;
+        },
+        // Submits the Done click via `fetch()` instead of a real form
+        // navigation, so completing one item never closes/reloads this
+        // dialog — the assignee can keep processing other items in the
+        // same session. Sends ONLY this one item's own checklist_item_id/
+        // is_checked/remark — never `new FormData(form)` — to the same
+        // `saveProgressUrl` this card's Save Progress/Submit buttons post
+        // to; the server tells apart this request from a real form
+        // submission purely by the `Accept: application/json` header,
+        // returning a JSON patch instead of its usual redirect. A whole-
+        // form payload would also re-include every OTHER item's hidden
+        // `checklist_item_id` field while silently omitting their
+        // `is_checked` value the moment a prior Done click disables their
+        // now-completed checkbox — indistinguishable server-side from an
+        // explicit uncheck, and exactly what caused already-completed
+        // items to revert to unchecked after a page refresh. Only THIS
+        // item's own button disables while its request is in flight —
+        // every other item, and the whole-form Save Progress/Submit
+        // buttons, stay fully usable.
+        submitDone(item) {
+            if (this.doneProcessing[item.id]) {
+                return;
+            }
+
+            this.doneProcessing[item.id] = true;
+
+            const formData = new FormData();
+            formData.append(`items[${item.id}][checklist_item_id]`, item.id);
+            formData.append(`items[${item.id}][is_checked]`, '1');
+            formData.append(`items[${item.id}][remark]`, this.remarks[item.id] || '');
+
+            fetch(this.selected.saveProgressUrl, {
+                method: 'POST',
+                headers: {
+                    'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                    'Accept': 'application/json',
+                },
+                body: formData,
+            }).then(async (res) => {
+                if (!res.ok) {
+                    throw new Error('request failed');
+                }
+
+                const data = await res.json();
+
+                (data.items || []).forEach((patch) => {
+                    const target = (this.selected.checklistItems || []).find((i) => i.id === patch.id);
+
+                    if (target) {
+                        Object.assign(target, patch);
+                        this.checked[target.id] = true;
+                    }
+                });
+
+                this.selected.allItemsCompleted = (this.selected.checklistItems || []).every((i) => this.checked[i.id]);
+                this.doneProcessing[item.id] = false;
+
+                window.Swal?.fire({
+                    toast: true,
+                    position: 'bottom-end',
+                    icon: 'success',
+                    title: data.message || 'Task list successfully checked.',
+                    showConfirmButton: false,
+                    timer: 2000,
+                    timerProgressBar: true,
+                    customClass: { container: 'app-toast' },
+                });
+            }).catch(() => {
+                this.doneProcessing[item.id] = false;
+                Swal.fire({ icon: 'error', title: 'Failed to save task completion', confirmButtonColor: '#145a3a' });
+            });
         },
         // True when the current viewer is literally the named signatory for
         // this item on a per-item-approver checklist — they get a Done
@@ -39,6 +115,13 @@
         canHold(item) {
             return !!(this.remarks[item.id] || '').trim() && !this.holdProcessing[item.id];
         },
+        // Submits via `fetch()` with a JSON `Accept` header (same convention
+        // as `submitDone()` above) so a successful Hold patches just this
+        // item's own state in place instead of `window.location.reload()`'ing
+        // — the dialog stays open and every other item stays exactly as it
+        // was, ready to keep working on. All existing validation (remark
+        // required client-side here, re-validated server-side) and the
+        // confirmation dialog are unchanged.
         holdItem(item) {
             const remark = (this.remarks[item.id] || '').trim();
             if (!remark || this.holdProcessing[item.id]) {
@@ -63,15 +146,34 @@
                 formData.append('remark', remark);
                 fetch(item.holdUrl, {
                     method: 'POST',
-                    headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content },
+                    headers: {
+                        'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                        'Accept': 'application/json',
+                    },
                     body: formData,
-                }).then((res) => {
-                    if (res.ok || res.redirected) {
-                        window.location.reload();
-                    } else {
-                        this.holdProcessing[item.id] = false;
-                        Swal.fire({ icon: 'error', title: 'Failed to place item on Hold', confirmButtonColor: '#145a3a' });
+                }).then(async (res) => {
+                    if (!res.ok) {
+                        throw new Error('request failed');
                     }
+
+                    const data = await res.json();
+                    // Deliberately patches only onHold/heldBy*/heldAt — never
+                    // `editable`/`checked` — the item must stay fully
+                    // available to check/clear later, exactly as it was
+                    // before Hold.
+                    Object.assign(item, data.item);
+                    this.holdProcessing[item.id] = false;
+
+                    window.Swal?.fire({
+                        toast: true,
+                        position: 'bottom-end',
+                        icon: 'success',
+                        title: data.message || 'Task list successfully placed on hold.',
+                        showConfirmButton: false,
+                        timer: 2000,
+                        timerProgressBar: true,
+                        customClass: { container: 'app-toast' },
+                    });
                 }).catch(() => {
                     this.holdProcessing[item.id] = false;
                     Swal.fire({ icon: 'error', title: 'Failed to place item on Hold', confirmButtonColor: '#145a3a' });
@@ -82,12 +184,12 @@
         // approver — it must never check/complete it or submit the form, and
         // it must never reload the page (that would close this very modal).
         // The server responds with the item's new editable/canTakeOver state
-        // plus the assignment's usesPerItemApprovers/allItemsCompleted flags;
-        // patching those into `selected` in place is what makes Hold/Done
-        // unlock immediately — Alpine's reactivity re-renders every binding
-        // that reads them without any navigation at all. The item itself
-        // stays unchecked; only Hold/Done (clicked separately, afterward)
-        // ever changes that.
+        // plus the assignment's usesPerItemApprovers/mustBeCheckedForSubmit/
+        // allItemsCompleted flags; patching those into `selected` in place
+        // is what makes Hold/Done unlock immediately — Alpine's reactivity
+        // re-renders every binding that reads them without any navigation
+        // at all. The item itself stays unchecked; only Hold/Done (clicked
+        // separately, afterward) ever changes that.
         takeOverItem(item) {
             if (this.takeOverProcessing[item.id]) {
                 return;
@@ -107,6 +209,27 @@
                 Object.assign(item, data.item);
                 this.selected.usesPerItemApprovers = data.usesPerItemApprovers;
                 this.selected.allItemsCompleted = data.allItemsCompleted;
+                // `usesPerItemApprovers`/`mustBeCheckedForSubmit` are per-
+                // ASSIGNMENT flags (this item's own originating checklist,
+                // not the whole combined card — see the matching comment on
+                // the initial `checklistItems` payload), copied onto every
+                // one of that assignment's items at page load. Before this
+                // item had ever been taken over, its whole assignment may
+                // have had no distinct signatory anywhere yet, so every item
+                // on it — including this one — started out with these flags
+                // false. `isDoneFlowItem()` reads `item.usesPerItemApprovers`
+                // to decide whether to show Done at all, so leaving only
+                // `selected`'s (card-wide) copy updated would take over the
+                // item successfully yet never reveal its Done button. Patch
+                // every sibling item on this SAME assignment so the freshly
+                // (re)computed values are reflected immediately, exactly as
+                // a page reload would show.
+                (this.selected.checklistItems || []).forEach((sibling) => {
+                    if (sibling.assignmentId === item.assignmentId) {
+                        sibling.usesPerItemApprovers = data.usesPerItemApprovers;
+                        sibling.mustBeCheckedForSubmit = data.mustBeCheckedForSubmit;
+                    }
+                });
                 this.takeOverProcessing[item.id] = false;
             }).catch(() => {
                 this.takeOverProcessing[item.id] = false;
@@ -146,9 +269,16 @@
         },
     }" @open-checklist-modal.window="setSelected($event.detail)">
     <x-ui.modal x-data="{ open: false }" @open-checklist-modal.window="open = true" :isOpen="false" class="w-full sm:max-w-[50vw]">
-        <div class="no-scrollbar relative w-full overflow-y-auto rounded-3xl bg-white p-6 dark:bg-gray-900 lg:p-8" x-show="selected" x-cloak>
+        <!-- Flexible height: compact for a short checklist, growing up to
+             85% of the viewport for a long one, at which point only the
+             item list below scrolls internally — the header above and the
+             action buttons below always stay in view. Mirrors the same
+             pinned-header/scrollable-middle/pinned-footer pattern already
+             used by the Offboarding Status/Timeline modal. -->
+        <div class="relative flex max-h-[85vh] w-full flex-col rounded-3xl bg-white dark:bg-gray-900" x-show="selected" x-cloak>
             <template x-if="selected">
-                <div>
+                <div class="flex min-h-0 flex-1 flex-col">
+                <div class="shrink-0 p-6 pb-0 lg:p-8 lg:pb-0">
                     <h4 class="text-xl font-semibold text-gray-800 dark:text-white/90" x-text="selected.name"></h4>
 
                     <template x-if="!selected.isPrimaryApprover">
@@ -217,11 +347,13 @@
                             <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Select All</span>
                         </label>
                     </template>
+                </div>
 
-                    <form method="POST" :action="selected.saveProgressUrl"
-                        id="checklistProgressForm" x-data="{ processing: false }" @submit="processing = true">
+                <form method="POST" :action="selected.saveProgressUrl"
+                    id="checklistProgressForm" x-data="{ processing: false }" @submit="processing = true"
+                    class="flex min-h-0 flex-1 flex-col">
                         @csrf
-                        <div class="max-h-80 space-y-3 overflow-y-auto pr-1">
+                        <div class="custom-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto px-6 pb-2 lg:px-8">
                             <template x-if="!selected.checklistItems || selected.checklistItems.length === 0">
                                 <p class="rounded-lg bg-gray-50 px-4 py-3 text-sm text-gray-500 dark:bg-white/[0.03] dark:text-gray-400">
                                     No checklist items are assigned to this request.
@@ -266,9 +398,9 @@
                                                 Hold
                                             </button>
                                             <template x-if="isDoneFlowItem(item)">
-                                                <button type="button" @click="processing = true; $nextTick(() => $el.closest('form').requestSubmit());"
-                                                    :disabled="!checked[item.id] || processing"
-                                                    :class="(!checked[item.id] || processing) ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#0f4630]'"
+                                                <button type="button" @click="submitDone(item)"
+                                                    :disabled="!checked[item.id] || doneProcessing[item.id]"
+                                                    :class="(!checked[item.id] || doneProcessing[item.id]) ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#0f4630]'"
                                                     class="rounded-lg bg-[#145a3a] px-3 py-1.5 text-xs font-medium text-white">
                                                     Done
                                                 </button>
@@ -284,6 +416,7 @@
                                                         currentApproverName: item.approverName,
                                                         currentApproverCode: item.approverCode,
                                                         assignItemUrl: item.assignItemUrl,
+                                                        assignableEmployees: item.assignableEmployees,
                                                     })"
                                                     class="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
                                                     Assign To
@@ -320,7 +453,7 @@
                             </template>
                         </div>
 
-                        <div class="mt-6 flex items-center justify-end gap-3">
+                        <div class="shrink-0 flex items-center justify-end gap-3 border-t border-gray-100 p-6 pt-4 dark:border-gray-800 lg:px-8 lg:pb-8">
                             <button @click="open = false" type="button"
                                 class="flex justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03]">
                                 Close

@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Employee;
 use App\Models\EmployeeGroup;
+use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -40,6 +41,8 @@ class EmployeeGroupController extends Controller
             'created_by' => $request->user()->id,
         ]);
 
+        $this->ensureGroupHeadHasAccount($validated['group_head_employee_id'] ?? null);
+
         return back()->with('success', 'Group created.');
     }
 
@@ -60,7 +63,33 @@ class EmployeeGroupController extends Controller
             'is_active' => $request->boolean('is_active'),
         ]);
 
+        $this->ensureGroupHeadHasAccount($validated['group_head_employee_id'] ?? null);
+
         return back()->with('success', 'Group updated.');
+    }
+
+    /**
+     * Mirrors the exact same account-provisioning convention already used
+     * everywhere else in this app that hands someone new responsibility —
+     * checklist delegation, item reassignment, task-assignee notifications
+     * (`User::findOrCreateApprover()`): looked up by the employee's own
+     * unique `employee_code` (never by name/email, which can collide or
+     * change), a matching account is left completely untouched — same
+     * password, same role, no re-creation — and only a genuinely new
+     * account gets created, with the app's standard Approver role (the same
+     * role/permission set configured on the Users page, via Spatie's
+     * `assignRole()` — never a separate or hardcoded role just for Group
+     * Heads). Selecting the SAME employee as head of several groups over
+     * time, or re-saving a group without changing its head, both resolve to
+     * this same existing account every time — never a duplicate.
+     */
+    private function ensureGroupHeadHasAccount(?int $groupHeadEmployeeId): void
+    {
+        if ($groupHeadEmployeeId === null) {
+            return;
+        }
+
+        User::findOrCreateApprover(Employee::findOrFail($groupHeadEmployeeId));
     }
 
     /**

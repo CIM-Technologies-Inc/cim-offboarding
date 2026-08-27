@@ -20,8 +20,28 @@ class StoreEmailTemplateRequest extends FormRequest
             'html_content' => ['nullable', 'string'],
             'is_default_announcement' => ['boolean'],
             'is_scheduled' => ['boolean'],
-            'schedule_timing' => ['nullable', 'required_if:is_scheduled,1', Rule::in(['before', 'after'])],
-            'schedule_days' => ['nullable', 'required_if:is_scheduled,1', 'integer', 'min:1'],
+            'schedule_type' => [
+                'nullable',
+                Rule::requiredIf(fn () => $this->boolean('is_scheduled')),
+                Rule::in(['one_time', 'recurring']),
+            ],
+            'schedule_timing' => [
+                'nullable',
+                Rule::requiredIf(fn () => $this->boolean('is_scheduled') && $this->input('schedule_type') === 'one_time'),
+                Rule::in(['before', 'after']),
+            ],
+            'schedule_days' => [
+                'nullable',
+                Rule::requiredIf(fn () => $this->boolean('is_scheduled') && $this->input('schedule_type') === 'one_time'),
+                'integer',
+                'min:1',
+            ],
+            'schedule_interval_days' => [
+                'nullable',
+                Rule::requiredIf(fn () => $this->boolean('is_scheduled') && $this->input('schedule_type') === 'recurring'),
+                'integer',
+                'min:1',
+            ],
         ];
     }
 
