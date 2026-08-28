@@ -776,13 +776,13 @@ class ChecklistApprovalNotifier
             // the whole checklist, and never another employee's items.
             $items = $entry['items'];
 
-            $existingUser = User::firstWhere('username', $employee->employee_code);
+            $existingUser = User::firstWhere('username', $employee->employee_code_digits);
             $user = $existingUser ?? User::findOrCreateApprover($employee);
             $isNewAccount = $existingUser === null || in_array($employee->id, $newlyCreatedAccountEmployeeIds, true);
 
             $credentials = $isNewAccount ? [
-                'username' => $employee->employee_code,
-                'password' => $employee->employee_code,
+                'username' => $employee->employee_code_digits,
+                'password' => $employee->employee_code_digits,
             ] : null;
 
             if (! $employee->email || ! filter_var($employee->email, FILTER_VALIDATE_EMAIL)) {
@@ -1016,7 +1016,7 @@ class ChecklistApprovalNotifier
 
             if ($signatoryEmployee) {
                 if (! isset($assignedTo[$signatoryEmployee->id])) {
-                    $existingUser = User::firstWhere('username', $signatoryEmployee->employee_code);
+                    $existingUser = User::firstWhere('username', $signatoryEmployee->employee_code_digits);
 
                     if (! $existingUser) {
                         $newlyCreatedAccountEmployeeIds[] = $signatoryEmployee->id;

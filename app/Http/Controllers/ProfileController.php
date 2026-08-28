@@ -76,4 +76,43 @@ class ProfileController extends Controller
 
         return back()->with('success', 'E-signature removed.');
     }
+
+    /**
+     * Uploads (or replaces) the user's profile photo — same convention as
+     * `updateSignature()` above: the old file is deleted only once the new
+     * one is safely stored, so a failed upload never leaves the user
+     * without their previous photo.
+     */
+    public function updateProfilePhoto(Request $request): RedirectResponse
+    {
+        $user = $request->user();
+
+        $validated = $request->validate([
+            'profile_photo' => ['required', 'image', 'mimes:png,jpg,jpeg', 'max:2048'],
+        ]);
+
+        $path = $validated['profile_photo']->store('profile-photos', 'public');
+
+        $previousPath = $user->profile_photo_path;
+
+        $user->update(['profile_photo_path' => $path]);
+
+        if ($previousPath) {
+            Storage::disk('public')->delete($previousPath);
+        }
+
+        return back()->with('success', 'Profile photo updated.');
+    }
+
+    public function removeProfilePhoto(Request $request): RedirectResponse
+    {
+        $user = $request->user();
+
+        if ($user->profile_photo_path) {
+            Storage::disk('public')->delete($user->profile_photo_path);
+            $user->update(['profile_photo_path' => null]);
+        }
+
+        return back()->with('success', 'Profile photo removed.');
+    }
 }

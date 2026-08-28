@@ -72,6 +72,8 @@ Route::patch('/profile/personal-info', [ProfileController::class, 'updatePersona
 Route::patch('/profile/address', [ProfileController::class, 'updateAddress'])->name('profile.address.update');
 Route::post('/profile/signature', [ProfileController::class, 'updateSignature'])->name('profile.signature.update');
 Route::delete('/profile/signature', [ProfileController::class, 'removeSignature'])->name('profile.signature.destroy');
+Route::post('/profile/photo', [ProfileController::class, 'updateProfilePhoto'])->name('profile.photo.update');
+Route::delete('/profile/photo', [ProfileController::class, 'removeProfilePhoto'])->name('profile.photo.destroy');
 
 // notifications
 Route::post('/notifications/{notification}/read', [NotificationController::class, 'read'])->name('notifications.read');

@@ -61,9 +61,9 @@
                 @if ($unreadCount > 0)
                     <form method="POST" action="{{ route('notifications.read-all') }}">
                         @csrf
-                        <button type="submit" class="text-xs font-medium text-[#145a3a] hover:text-[#0f4630] dark:text-[#3aa876]">
+                        <!-- <button type="submit" class="text-xs font-medium text-[#145a3a] hover:text-[#0f4630] dark:text-[#3aa876]">
                             Mark all
-                        </button>
+                        </button> -->
                     </form>
                 @endif
 

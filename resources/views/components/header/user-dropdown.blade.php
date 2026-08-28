@@ -14,7 +14,7 @@
         type="button"
     >
         <span class="mr-3 overflow-hidden rounded-full h-11 w-11">
-            <img src="/images/user/owner.png" alt="User" />
+            <img src="{{ auth()->user()->profilePhotoUrl() }}" alt="{{ auth()->user()->name }}" class="h-full w-full object-cover" />
         </span>
 
        <span class="block mr-1 font-medium text-theme-sm">{{ Str::before(auth()->user()->name, ' ') }}</span>

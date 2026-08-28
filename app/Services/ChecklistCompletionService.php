@@ -95,7 +95,16 @@ class ChecklistCompletionService
      * offboarding process is complete. Guarded the same way as the regular
      * -> final-pay trigger: locked inside a transaction so two final-pay
      * approvers finishing at nearly the same moment can never both mark the
-     * request completed / create duplicate completion records.
+     * request completed / create duplicate completion records. Also flips
+     * the offboardee's own Employee Master record to `offboarded` (from
+     * `offboarding`) — the same terminal state the `employees.status`
+     * column has always defined but nothing previously ever set — so the
+     * Dashboard's "Total Employees" count (which excludes only this
+     * terminal status, not `offboarding`) drops the moment the process is
+     * genuinely finished, not while it's still in progress. This never
+     * touches the Offboardee page's own records: `OffboardeeController::index()`
+     * matches `offboarding` OR `offboarded` explicitly, so a completed
+     * offboardee keeps showing there with its full history intact.
      */
     public function checkFinalPayCompletion(OffboardingRequest $offboardingRequest): void
     {
@@ -120,6 +129,7 @@ class ChecklistCompletionService
             }
 
             $locked->update(['status' => 'completed', 'completed_at' => now()]);
+            $locked->employee()->update(['status' => 'offboarded']);
 
             $locked->activities()->create([
                 'action' => 'completed',

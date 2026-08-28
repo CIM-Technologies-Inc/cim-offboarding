@@ -30,6 +30,7 @@ class User extends Authenticatable
         'department',
         'address',
         'signature_path',
+        'profile_photo_path',
         'must_change_password',
     ];
 
@@ -61,11 +62,14 @@ class User extends Authenticatable
 
     /**
      * The employee record this account belongs to, matched by the
-     * convention that `username` equals the employee's `employee_code`.
+     * convention that `username` equals `employee_code_digits` — the
+     * employee's own `employee_code` with its "EMP" prefix stripped (see
+     * `Employee::stripEmpPrefix()`/`booted()`) — never `employee_code`
+     * directly, since usernames no longer include that prefix.
      */
     public function employee(): HasOne
     {
-        return $this->hasOne(Employee::class, 'employee_code', 'username');
+        return $this->hasOne(Employee::class, 'employee_code_digits', 'username');
     }
 
     /**
@@ -80,12 +84,27 @@ class User extends Authenticatable
     }
 
     /**
+     * Unlike `signatureUrl()`, this always returns a usable URL — falling
+     * back to the app's existing default avatar image (the same one every
+     * user's avatar showed before this feature existed) when no photo has
+     * been uploaded — so every call site (header dropdown, profile card,
+     * anywhere else an avatar is shown) can use this directly without its
+     * own null-check/placeholder logic.
+     */
+    public function profilePhotoUrl(): string
+    {
+        return $this->profile_photo_path ? '/storage/'.$this->profile_photo_path : '/images/user/owner.png';
+    }
+
+    /**
      * Finds the existing approver account for this employee, or creates one
-     * using the established convention: username = password = employee_code.
-     * Never promotes/downgrades an existing account's role. A freshly
-     * created account is flagged `must_change_password` immediately (not
-     * left to be detected only on their first login) since password ===
-     * username is true by construction here.
+     * using the established convention: username = password =
+     * `employee_code_digits` (the employee number with its "EMP" prefix
+     * stripped — see `Employee::stripEmpPrefix()`). Never promotes/downgrades
+     * an existing account's role. A freshly created account is flagged
+     * `must_change_password` immediately (not left to be detected only on
+     * their first login) since password === username is true by
+     * construction here.
      *
      * Sets BOTH the legacy `role` column and the Spatie role — deliberately
      * dual-written (not a one-time migration cutover) so the plain column
@@ -95,7 +114,7 @@ class User extends Authenticatable
      */
     public static function findOrCreateApprover(Employee $employee): self
     {
-        $user = static::firstWhere('username', $employee->employee_code);
+        $user = static::firstWhere('username', $employee->employee_code_digits);
 
         if ($user) {
             return $user;
@@ -103,8 +122,8 @@ class User extends Authenticatable
 
         $user = static::create([
             'name' => $employee->name,
-            'username' => $employee->employee_code,
-            'password' => $employee->employee_code,
+            'username' => $employee->employee_code_digits,
+            'password' => $employee->employee_code_digits,
             'role' => self::ROLE_APPROVER,
             'email' => $employee->email,
             'must_change_password' => true,
@@ -118,17 +137,18 @@ class User extends Authenticatable
     /**
      * Finds the existing account for this employee, or creates one with the
      * Employee role using the same established convention as
-     * `findOrCreateApprover()` above (username = password = employee_code,
-     * flagged `must_change_password` immediately). Never promotes/downgrades
-     * an existing account's role — an employee who already has an account
-     * (e.g. as someone else's approver) keeps that role rather than being
-     * switched to Employee, same rule `findOrCreateApprover()` already
-     * follows. Dual-writes the legacy `role` column and the Spatie role —
-     * see `findOrCreateApprover()`'s docblock for why.
+     * `findOrCreateApprover()` above (username = password =
+     * `employee_code_digits`, flagged `must_change_password` immediately).
+     * Never promotes/downgrades an existing account's role — an employee
+     * who already has an account (e.g. as someone else's approver) keeps
+     * that role rather than being switched to Employee, same rule
+     * `findOrCreateApprover()` already follows. Dual-writes the legacy
+     * `role` column and the Spatie role — see `findOrCreateApprover()`'s
+     * docblock for why.
      */
     public static function findOrCreateEmployee(Employee $employee): self
     {
-        $user = static::firstWhere('username', $employee->employee_code);
+        $user = static::firstWhere('username', $employee->employee_code_digits);
 
         if ($user) {
             return $user;
@@ -136,8 +156,8 @@ class User extends Authenticatable
 
         $user = static::create([
             'name' => $employee->name,
-            'username' => $employee->employee_code,
-            'password' => $employee->employee_code,
+            'username' => $employee->employee_code_digits,
+            'password' => $employee->employee_code_digits,
             'role' => self::ROLE_EMPLOYEE,
             'email' => $employee->email,
             'must_change_password' => true,
@@ -152,7 +172,7 @@ class User extends Authenticatable
      * Finds the existing account for this General Signatory (Clearance
      * Signatory), or creates one using the same established convention as
      * `findOrCreateApprover()`/`findOrCreateEmployee()` above (username =
-     * password = employee_code, flagged `must_change_password`
+     * password = `employee_code_digits`, flagged `must_change_password`
      * immediately). Never promotes/downgrades an existing account's role —
      * a General Signatory who already has an account (e.g. as a department
      * head elsewhere, or already holding the Approver role) keeps whatever
@@ -169,7 +189,7 @@ class User extends Authenticatable
      */
     public static function findOrCreateGeneralSignatory(Employee $employee, bool $shouldBeApprover): self
     {
-        $user = static::firstWhere('username', $employee->employee_code);
+        $user = static::firstWhere('username', $employee->employee_code_digits);
 
         if ($user) {
             return $user;
@@ -179,8 +199,8 @@ class User extends Authenticatable
 
         $user = static::create([
             'name' => $employee->name,
-            'username' => $employee->employee_code,
-            'password' => $employee->employee_code,
+            'username' => $employee->employee_code_digits,
+            'password' => $employee->employee_code_digits,
             'role' => $role,
             'email' => $employee->email,
             'must_change_password' => true,

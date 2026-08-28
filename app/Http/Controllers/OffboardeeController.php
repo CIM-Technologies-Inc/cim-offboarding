@@ -21,8 +21,15 @@ class OffboardeeController extends Controller
 
         $openOffboardeeId = $request->query('offboardee') ? (int) $request->query('offboardee') : null;
 
+        // `offboarding` (still in progress) and `offboarded` (fully
+        // completed — see `ChecklistCompletionService::checkFinalPayCompletion()`)
+        // both belong here: this page is the permanent historical record of
+        // every offboarding case regardless of how far along or how long
+        // finished it is. Only a genuinely `active` employee (never
+        // started, or reverted after a cancelled/deleted request) is
+        // excluded.
         $employees = Employee::where(function ($query) {
-                $query->where('status', 'offboarding')
+                $query->whereIn('status', ['offboarding', 'offboarded'])
                     ->orWhereHas('latestOffboardingRequest', fn ($q) => $q->where('status', 'cancelled'));
             })
             ->with(['latestOffboardingRequest.checklistTemplates', 'latestOffboardingRequest.approvers.checklistTemplate', 'latestOffboardingRequest.approvers.employee', 'latestOffboardingRequest.immediateHead'])

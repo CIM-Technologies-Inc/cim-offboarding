@@ -70,7 +70,7 @@ class OffboardingRequestController extends Controller
         // `User::findOrCreateEmployee()`), so an employee who already has an
         // account (e.g. as someone else's approver) keeps that role and
         // simply never receives credentials in this email.
-        $existingEmployeeUser = User::firstWhere('username', $employee->employee_code);
+        $existingEmployeeUser = User::firstWhere('username', $employee->employee_code_digits);
         $employeeUser = $existingEmployeeUser ?? User::findOrCreateEmployee($employee);
         $isNewEmployeeAccount = $existingEmployeeUser === null;
 
@@ -78,7 +78,7 @@ class OffboardingRequestController extends Controller
         // Clearance Form, outside the checklist approval workflow — they
         // still need a login account to access whatever offboarding/
         // clearance functions they're granted, same convention as any other
-        // approver account (username/password = employee_code).
+        // approver account (username/password = employee_code_digits).
         if (! empty($validated['immediate_head_id'])) {
             User::findOrCreateApprover(Employee::findOrFail($validated['immediate_head_id']));
         }
@@ -147,7 +147,7 @@ class OffboardingRequestController extends Controller
             $offboardingRequest,
             $employeeUser,
             $isNewEmployeeAccount,
-            $isNewEmployeeAccount ? $offboardingRequest->employee->employee_code : null,
+            $isNewEmployeeAccount ? $offboardingRequest->employee->employee_code_digits : null,
         );
 
         // General Signatories are a completely independent, checklist-free

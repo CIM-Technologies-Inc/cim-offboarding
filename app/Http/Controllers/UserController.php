@@ -90,7 +90,7 @@ class UserController extends Controller
         // returns the account either way with no signal of which branch it
         // took. This flag is only used to decide which message/modal the
         // admin sees below — it never changes what account ends up existing.
-        $accountExisted = User::where('username', $employee->employee_code)->exists();
+        $accountExisted = User::where('username', $employee->employee_code_digits)->exists();
 
         $user = User::findOrCreateEmployee($employee);
         $user->syncRoles($roles);
@@ -108,13 +108,13 @@ class UserController extends Controller
             // The password is never read back off `$user` (it's hashed the
             // moment `findOrCreateEmployee()` saves it) — it's shown here
             // purely because `findOrCreateEmployee()`'s own convention
-            // guarantees it equals `employee_code`, which this response
-            // already has in plain text regardless of the account.
+            // guarantees it equals `employee_code_digits`, which this
+            // response already has in plain text regardless of the account.
             $redirect->with('newAccount', [
                 'name' => $employee->name,
                 'employeeCode' => $employee->employee_code,
                 'username' => $user->username,
-                'password' => $employee->employee_code,
+                'password' => $employee->employee_code_digits,
             ]);
         }
 

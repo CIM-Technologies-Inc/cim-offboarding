@@ -11,7 +11,13 @@ class DashboardController extends Controller
 {
     public function index()
     {
-        $totalEmployees = Employee::count();
+        // Excludes only employees who have fully completed offboarding
+        // (`status = 'offboarded'`, set once the whole process finishes —
+        // see `ChecklistCompletionService::checkFinalPayCompletion()`).
+        // An employee still mid-offboarding (`status = 'offboarding'`)
+        // keeps counting here — they're still on the books until the
+        // process is genuinely done, not merely started.
+        $totalEmployees = Employee::where('status', '!=', 'offboarded')->count();
         $activeEmployees = Employee::where('status', 'active')->count();
 
         $pendingCount = OffboardingRequest::displayPending()->count();

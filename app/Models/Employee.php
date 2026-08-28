@@ -42,6 +42,38 @@ class Employee extends Model
         ];
     }
 
+    /**
+     * Keeps `employee_code_digits` — the "EMP" prefix stripped off
+     * `employee_code` — automatically in sync on every save, so nothing
+     * else in the app ever has to remember to maintain it (or risk it
+     * drifting out of sync with `employee_code`). `employee_code` itself
+     * is never touched by this; it exists purely so the User<->Employee
+     * relationship below has a real, indexable column to join on now that
+     * login usernames no longer equal the employee number verbatim.
+     */
+    protected static function booted(): void
+    {
+        static::saving(function (Employee $employee) {
+            $employee->employee_code_digits = static::stripEmpPrefix($employee->employee_code);
+        });
+    }
+
+    /**
+     * Strips a leading "EMP" (case-insensitive) off an employee number —
+     * "EMP03050" -> "03050" — used for both `employee_code_digits` above
+     * and everywhere a login username/temporary password is derived from
+     * an employee number. Returns the value unchanged when it doesn't
+     * start with "EMP" at all, rather than mangling an unexpected format.
+     */
+    public static function stripEmpPrefix(?string $code): ?string
+    {
+        if ($code === null) {
+            return null;
+        }
+
+        return str_starts_with(strtoupper($code), 'EMP') ? substr($code, 3) : $code;
+    }
+
     public function offboardingRequests(): HasMany
     {
         return $this->hasMany(OffboardingRequest::class);
@@ -77,10 +109,13 @@ class Employee extends Model
 
     /**
      * The login account for this employee, matched by the convention that
-     * `username` equals this employee's `employee_code`.
+     * `username` equals `employee_code_digits` (the employee number with
+     * its "EMP" prefix stripped) — never `employee_code` directly, since
+     * usernames no longer include that prefix while the employee number
+     * itself must stay unchanged.
      */
     public function user(): HasOne
     {
-        return $this->hasOne(User::class, 'username', 'employee_code');
+        return $this->hasOne(User::class, 'username', 'employee_code_digits');
     }
 }

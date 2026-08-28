@@ -262,7 +262,7 @@ class ChecklistDelegationController extends Controller
                     $assignee = $assigneePool[$index % $assigneePool->count()];
 
                     $isFirstTimeThisRun = ! isset($assignedByEmployeeId[$assignee->id]);
-                    $existingUser = $isFirstTimeThisRun ? User::firstWhere('username', $assignee->employee_code) : null;
+                    $existingUser = $isFirstTimeThisRun ? User::firstWhere('username', $assignee->employee_code_digits) : null;
                     $assignedUser = User::findOrCreateApprover($assignee);
 
                     // Supersede any existing active override — always the
@@ -347,8 +347,8 @@ class ChecklistDelegationController extends Controller
                     assignedItems: $entry['items'],
                     approvalUrl: route('approvals.index'),
                     credentials: $entry['isNewAccount'] ? [
-                        'username' => $employee->employee_code,
-                        'password' => $employee->employee_code,
+                        'username' => $employee->employee_code_digits,
+                        'password' => $employee->employee_code_digits,
                     ] : null,
                 ));
             } catch (\Throwable $e) {
@@ -407,7 +407,7 @@ class ChecklistDelegationController extends Controller
         // Resolved BEFORE the transaction so the caller knows, once it
         // commits, whether a brand-new account was created — that decides
         // whether the notification email includes login credentials.
-        $existingUser = User::firstWhere('username', $newEmployee->employee_code);
+        $existingUser = User::firstWhere('username', $newEmployee->employee_code_digits);
 
         DB::transaction(function () use ($offboardingRequestApprover, $checklistItem, $newEmployee, $previousEmployee, $existingUser) {
             $offboardingRequestApprover->itemAssignments()
@@ -588,8 +588,8 @@ class ChecklistDelegationController extends Controller
                 ]],
                 approvalUrl: route('approvals.index'),
                 credentials: $isNewAccount ? [
-                    'username' => $newEmployee->employee_code,
-                    'password' => $newEmployee->employee_code,
+                    'username' => $newEmployee->employee_code_digits,
+                    'password' => $newEmployee->employee_code_digits,
                 ] : null,
             ));
         } catch (\Throwable $e) {
