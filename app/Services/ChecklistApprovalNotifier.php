@@ -126,7 +126,14 @@ class ChecklistApprovalNotifier
                 ? $offboardingRequest->immediate_head_id
                 : $template->department_head_id;
 
-            if (! $approverEmployeeId) {
+            // A "Use Task Assignee as Clearance Signatory" checklist has NO
+            // owner at all by design — its Task Assignees are themselves the
+            // signatories (see `ChecklistCompletionService::autoApproveIfHeadless()`,
+            // which auto-approves this row once every item is done, since
+            // there's nobody to click Submit). Every OTHER kind still skips
+            // creating a row entirely when it resolves to no owner — that
+            // behavior is unchanged.
+            if (! $approverEmployeeId && ! $template->use_task_assignee_as_signatory) {
                 continue;
             }
 
@@ -140,10 +147,17 @@ class ChecklistApprovalNotifier
                 ]
             );
 
-            $assignmentByDepartmentHead[$approverEmployeeId] ??= [
-                'template' => $template,
-                'assignment' => $assignment,
-            ];
+            // A headless (Task-Assignee-as-Signatory) template has no
+            // department head to key this by — it's never looked up below
+            // anyway, since `$departmentHeads` (built further down from each
+            // template's own `departmentHead`/`immediateHead` relation) never
+            // contains anyone for a template with no owner.
+            if ($approverEmployeeId) {
+                $assignmentByDepartmentHead[$approverEmployeeId] ??= [
+                    'template' => $template,
+                    'assignment' => $assignment,
+                ];
+            }
             $assignmentByTemplateId[$template->id] = $assignment;
 
             array_push($newlyCreatedAccountEmployeeIds, ...$this->snapshotItemSignatories($assignment, $template));
@@ -989,9 +1003,14 @@ class ChecklistApprovalNotifier
      */
     private function snapshotItemSignatories(OffboardingRequestApprover $assignment, ChecklistTemplate $template): array
     {
-        if (! $assignment->employee_id) {
-            return [];
-        }
+        // Historically a no-op guard: before "Use Task Assignee as
+        // Clearance Signatory" existed, `attachAndNotify()` never even
+        // created an assignment row (so never reached this method) when a
+        // template resolved to no owner — this check could never actually
+        // fire. It's now a real, valid case: a headless assignment
+        // (`employee_id === null`) is exactly the one this whole method
+        // exists for — its items' Task Assignees ARE the signatories, so
+        // snapshotting must run for it same as any other template.
 
         $assignment->loadMissing('itemAssignments');
         $alreadyOverriddenItemIds = $assignment->itemAssignments->where('status', 'active')->pluck('checklist_item_id');

@@ -20,48 +20,56 @@
                 @endif
             </div>
 
-            <div class="flex w-full shrink-0 flex-col gap-2 sm:flex-row lg:w-auto">
-                <button type="button" @click="$dispatch('open-signature-modal')"
-                    class="shadow-theme-xs flex w-full items-center justify-center gap-2 rounded-full border border-gray-300 bg-white px-4 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50 hover:text-gray-800 sm:w-auto dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03] dark:hover:text-gray-200">
-                    <svg class="fill-current" width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <path d="M9 3.75V14.25M3.75 9H14.25" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-                    </svg>
-                    {{ $user->signature_path ? 'Update Signature' : 'Upload E-Signature' }}
-                </button>
+            @can('user-profile.edit-signature')
+                <div class="flex w-full shrink-0 flex-col gap-2 sm:flex-row lg:w-auto">
+                    <button type="button" @click="$dispatch('open-signature-modal')"
+                        class="shadow-theme-xs flex w-full items-center justify-center gap-2 rounded-full border border-gray-300 bg-white px-4 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50 hover:text-gray-800 sm:w-auto dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03] dark:hover:text-gray-200">
+                        <svg class="fill-current" width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M9 3.75V14.25M3.75 9H14.25" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                        </svg>
+                        {{ $user->signature_path ? 'Update Signature' : 'Upload E-Signature' }}
+                    </button>
 
-                @if ($user->signature_path)
-                    <form method="POST" action="{{ route('profile.signature.destroy') }}" x-data="{ confirmed: false }"
-                        @submit="if (!confirmed) {
-                            $event.preventDefault();
-                            Swal.fire({
-                                title: 'Remove your e-signature?',
-                                text: 'You will need to upload a new one before it can be used again.',
-                                icon: 'warning',
-                                showCancelButton: true,
-                                confirmButtonText: 'Remove',
-                                cancelButtonText: 'Cancel',
-                                confirmButtonColor: '#dc2626',
-                                cancelButtonColor: '#6b7280',
-                                reverseButtons: true
-                            }).then((result) => {
-                                if (result.isConfirmed) {
-                                    confirmed = true;
-                                    $el.requestSubmit();
-                                }
-                            });
-                        }">
-                        @csrf
-                        @method('DELETE')
-                        <button type="submit"
-                            class="shadow-theme-xs flex w-full items-center justify-center gap-2 rounded-full border border-error-300 bg-white px-4 py-3 text-sm font-medium text-error-600 hover:bg-error-50 sm:w-auto dark:border-error-500/30 dark:bg-gray-800 dark:text-error-400 dark:hover:bg-error-500/10">
-                            Remove Signature
-                        </button>
-                    </form>
-                @endif
-            </div>
+                    @if ($user->signature_path)
+                        <form method="POST" action="{{ route('profile.signature.destroy') }}" x-data="{ confirmed: false }"
+                            @submit="if (!confirmed) {
+                                $event.preventDefault();
+                                Swal.fire({
+                                    title: 'Remove your e-signature?',
+                                    text: 'You will need to upload a new one before it can be used again.',
+                                    icon: 'warning',
+                                    showCancelButton: true,
+                                    confirmButtonText: 'Remove',
+                                    cancelButtonText: 'Cancel',
+                                    confirmButtonColor: '#dc2626',
+                                    cancelButtonColor: '#6b7280',
+                                    reverseButtons: true
+                                }).then((result) => {
+                                    if (result.isConfirmed) {
+                                        confirmed = true;
+                                        $el.requestSubmit();
+                                    }
+                                });
+                            }">
+                            @csrf
+                            @method('DELETE')
+                            <button type="submit"
+                                class="shadow-theme-xs flex w-full items-center justify-center gap-2 rounded-full border border-error-300 bg-white px-4 py-3 text-sm font-medium text-error-600 hover:bg-error-50 sm:w-auto dark:border-error-500/30 dark:bg-gray-800 dark:text-error-400 dark:hover:bg-error-500/10">
+                                Remove Signature
+                            </button>
+                        </form>
+                    @endif
+                </div>
+            @endcan
         </div>
     </div>
 
+    {{-- Gated the same as the trigger button above — without this, the
+         modal (and its underlying upload route, already independently
+         enforced server-side in `ProfileController`) would still sit
+         reachable in the DOM via a manually dispatched `open-signature-modal`
+         browser event even with the button itself hidden. --}}
+    @can('user-profile.edit-signature')
     <x-ui.modal @open-signature-modal.window="open = true" :isOpen="$errors->has('signature')" class="max-w-[560px]">
         <div class="no-scrollbar relative w-full max-w-[560px] overflow-y-auto rounded-3xl bg-white p-4 dark:bg-gray-900 lg:p-11">
             <div class="px-2 pr-14">
@@ -127,4 +135,5 @@
             </form>
         </div>
     </x-ui.modal>
+    @endcan
 </div>

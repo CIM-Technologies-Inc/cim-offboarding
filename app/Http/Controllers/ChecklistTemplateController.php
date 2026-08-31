@@ -50,12 +50,18 @@ class ChecklistTemplateController extends Controller
 
     public function store(Request $request): RedirectResponse
     {
-        $isImmediateHeadChecklist = $request->boolean('is_immediate_head_checklist');
+        $useTaskAssigneeAsSignatory = $request->boolean('use_task_assignee_as_signatory');
+        // Mutually exclusive with Immediate Head — a checklist can't both
+        // follow the offboardee's own Immediate Head AND have no head at
+        // all. The (disabled-in-the-UI, but still defended here) Immediate
+        // Head checkbox is ignored the moment this one is checked.
+        $isImmediateHeadChecklist = $request->boolean('is_immediate_head_checklist') && ! $useTaskAssigneeAsSignatory;
 
         $validated = $request->validate([
             'title' => ['required', 'string', 'max:255'],
             'employee_group_id' => ['nullable', 'exists:employee_groups,id'],
             'is_immediate_head_checklist' => ['nullable', 'boolean'],
+            'use_task_assignee_as_signatory' => ['nullable', 'boolean'],
             'department' => ['nullable', 'string', Rule::in($this->departmentOptions())],
             'is_final_pay_checklist' => ['nullable', 'boolean'],
             'due_in_days' => ['nullable', 'integer', 'min:0', 'max:3650'],
@@ -72,8 +78,13 @@ class ChecklistTemplateController extends Controller
         // Immediate Head is picked on each individual offboarding request
         // (see ChecklistApprovalNotifier::attachAndNotify()) — it never has
         // its own Department Head, regardless of what the (disabled-in-the-
-        // UI, but still defended here) field submitted.
-        $employeeGroupId = $isImmediateHeadChecklist ? null : ($validated['employee_group_id'] ?: null);
+        // UI, but still defended here) field submitted. Same for a
+        // Task-Assignee-as-Signatory checklist: it has no Clearance
+        // Signatory group at all — the individually assigned Task
+        // Assignees are themselves the signatories.
+        $employeeGroupId = ($isImmediateHeadChecklist || $useTaskAssigneeAsSignatory)
+            ? null
+            : ($validated['employee_group_id'] ?: null);
         // The submitted value is the specific GROUP the admin picked (never
         // trust a raw employee id from the client for this) — the actual
         // Department Head employee is derived from that group's own
@@ -81,14 +92,19 @@ class ChecklistTemplateController extends Controller
         // keeps its exact existing meaning for every downstream consumer.
         $departmentHeadId = $employeeGroupId ? EmployeeGroup::find($employeeGroupId)?->group_head_employee_id : null;
         $eligibleSignatoryIds = $this->eligibleSignatoryIds($employeeGroupId);
+        // A Task-Assignee-as-Signatory checklist also never has a
+        // Department Checklist restriction — see the form's own matching
+        // disabled-field treatment.
+        $department = $useTaskAssigneeAsSignatory ? null : ($validated['department'] ?? null);
 
-        DB::transaction(function () use ($validated, $request, $isImmediateHeadChecklist, $employeeGroupId, $departmentHeadId, $eligibleSignatoryIds) {
+        DB::transaction(function () use ($validated, $request, $isImmediateHeadChecklist, $useTaskAssigneeAsSignatory, $employeeGroupId, $departmentHeadId, $department, $eligibleSignatoryIds) {
             $template = ChecklistTemplate::create([
                 'title' => $validated['title'],
                 'employee_group_id' => $employeeGroupId,
                 'department_head_id' => $departmentHeadId,
                 'is_immediate_head_checklist' => $isImmediateHeadChecklist,
-                'department' => $validated['department'] ?? null,
+                'use_task_assignee_as_signatory' => $useTaskAssigneeAsSignatory,
+                'department' => $department,
                 'is_final_pay_checklist' => $request->boolean('is_final_pay_checklist'),
                 'due_in_days' => $validated['due_in_days'] ?: null,
                 'is_active' => true,
@@ -137,12 +153,14 @@ class ChecklistTemplateController extends Controller
 
     public function update(Request $request, ChecklistTemplate $checklistTemplate): RedirectResponse
     {
-        $isImmediateHeadChecklist = $request->boolean('is_immediate_head_checklist');
+        $useTaskAssigneeAsSignatory = $request->boolean('use_task_assignee_as_signatory');
+        $isImmediateHeadChecklist = $request->boolean('is_immediate_head_checklist') && ! $useTaskAssigneeAsSignatory;
 
         $validated = $request->validate([
             'title' => ['required', 'string', 'max:255'],
             'employee_group_id' => ['nullable', 'exists:employee_groups,id'],
             'is_immediate_head_checklist' => ['nullable', 'boolean'],
+            'use_task_assignee_as_signatory' => ['nullable', 'boolean'],
             'department' => ['nullable', 'string', Rule::in($this->departmentOptions($checklistTemplate->department))],
             'is_final_pay_checklist' => ['nullable', 'boolean'],
             'due_in_days' => ['nullable', 'integer', 'min:0', 'max:3650'],
@@ -156,17 +174,21 @@ class ChecklistTemplateController extends Controller
             'items.*.notify_days' => ['nullable', 'required_if:items.*.notify_enabled,1', 'integer', 'min:1'],
         ]);
 
-        $employeeGroupId = $isImmediateHeadChecklist ? null : ($validated['employee_group_id'] ?: null);
+        $employeeGroupId = ($isImmediateHeadChecklist || $useTaskAssigneeAsSignatory)
+            ? null
+            : ($validated['employee_group_id'] ?: null);
         $departmentHeadId = $employeeGroupId ? EmployeeGroup::find($employeeGroupId)?->group_head_employee_id : null;
         $eligibleSignatoryIds = $this->eligibleSignatoryIds($employeeGroupId);
+        $department = $useTaskAssigneeAsSignatory ? null : ($validated['department'] ?? null);
 
-        DB::transaction(function () use ($validated, $request, $checklistTemplate, $isImmediateHeadChecklist, $employeeGroupId, $departmentHeadId, $eligibleSignatoryIds) {
+        DB::transaction(function () use ($validated, $request, $checklistTemplate, $isImmediateHeadChecklist, $useTaskAssigneeAsSignatory, $employeeGroupId, $departmentHeadId, $department, $eligibleSignatoryIds) {
             $checklistTemplate->update([
                 'title' => $validated['title'],
                 'employee_group_id' => $employeeGroupId,
                 'department_head_id' => $departmentHeadId,
                 'is_immediate_head_checklist' => $isImmediateHeadChecklist,
-                'department' => $validated['department'] ?? null,
+                'use_task_assignee_as_signatory' => $useTaskAssigneeAsSignatory,
+                'department' => $department,
                 'is_final_pay_checklist' => $request->boolean('is_final_pay_checklist'),
                 'due_in_days' => $validated['due_in_days'] ?: null,
             ]);

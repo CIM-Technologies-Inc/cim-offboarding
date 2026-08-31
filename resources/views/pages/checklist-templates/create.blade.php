@@ -3,7 +3,7 @@
 @section('content')
     <x-common.page-breadcrumb pageTitle="New Checklist Template" />
 
-    <div x-data="checklistBuilder(@js(old('title', '')), @js(old('employee_group_id', '')), @js((bool) old('is_immediate_head_checklist', false)), @js(old('department', '')), @js(old('due_in_days', '')), @js(old('items', [['title' => '', 'signatory_id' => '']])), @js($employees->map(fn ($employee) => ['id' => (string) $employee->id, 'name' => $employee->name, 'department' => $employee->department])), @js($employeeGroups), @js($errors->any() ? $errors->first() : null))"
+    <div x-data="checklistBuilder(@js(old('title', '')), @js(old('employee_group_id', '')), @js((bool) old('is_immediate_head_checklist', false)), @js((bool) old('use_task_assignee_as_signatory', false)), @js(old('department', '')), @js(old('due_in_days', '')), @js(old('items', [['title' => '', 'signatory_id' => '']])), @js($employees->map(fn ($employee) => ['id' => (string) $employee->id, 'name' => $employee->name, 'department' => $employee->department])), @js($employeeGroups), @js($errors->any() ? $errors->first() : null))"
         class="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-white/[0.03] lg:p-6">
         <form method="POST" action="{{ route('checklist-templates.store') }}" class="flex flex-col">
             @csrf
@@ -17,11 +17,12 @@
             </div>
 
             <div class="mt-5">
-                <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
+                <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-400" :class="useTaskAssigneeAsSignatory ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'">
                     <input type="checkbox" name="is_immediate_head_checklist" value="1" x-model="isImmediateHead"
-                        @change="if (isImmediateHead) employeeGroupId = ''"
+                        :disabled="useTaskAssigneeAsSignatory"
+                        @change="if (isImmediateHead) { employeeGroupId = ''; useTaskAssigneeAsSignatory = false }"
                         class="h-4 w-4 accent-brand-500" />
-                    Immediate Head
+                    For Immediate Head
                 </label>
                 <p class="mt-1.5 text-xs text-gray-400">
                     Assigns this checklist exclusively to the Immediate Head selected on each individual offboarding request, instead of the Department Head below.
@@ -29,19 +30,31 @@
             </div>
 
             <div class="mt-5">
+                <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
+                    <input type="checkbox" name="use_task_assignee_as_signatory" value="1" x-model="useTaskAssigneeAsSignatory"
+                        @change="if (useTaskAssigneeAsSignatory) { employeeGroupId = ''; department = ''; isImmediateHead = false; onGroupChange() }"
+                        class="h-4 w-4 accent-brand-500" />
+                    Use Task Assignee as Clearance Signatory
+                </label>
+                <p class="mt-1.5 text-xs text-gray-400">
+                    No Clearance Signatory is needed — whichever employee is assigned as Task Assignee on each item below becomes that item's own clearance signatory.
+                </p>
+            </div>
+
+            <div class="mt-5">
                 <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
                     Clearance Signatory
                 </label>
-                <select name="employee_group_id" x-model="employeeGroupId" :disabled="isImmediateHead"
+                <select name="employee_group_id" x-model="employeeGroupId" :disabled="isImmediateHead || useTaskAssigneeAsSignatory"
                     @change="onGroupChange()"
-                    :class="isImmediateHead ? 'cursor-not-allowed bg-gray-100 text-gray-400 dark:bg-gray-800 dark:text-gray-500' : 'bg-transparent text-gray-800 dark:text-white/90'"
+                    :class="(isImmediateHead || useTaskAssigneeAsSignatory) ? 'cursor-not-allowed bg-gray-100 text-gray-400 dark:bg-gray-800 dark:text-gray-500' : 'bg-transparent text-gray-800 dark:text-white/90'"
                     class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-none px-4 py-2.5 text-sm shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:focus:border-brand-800">
                     <option value="">None</option>
                     @foreach ($departmentHeadGroups as $group)
                         <option value="{{ $group->id }}">{{ $group->name }} — {{ $group->groupHead?->name }} ({{ $group->groupHead?->designation }}, {{ $group->groupHead?->department }})</option>
                     @endforeach
                 </select>
-                <p class="mt-1.5 text-xs text-gray-400" x-show="!isImmediateHead">
+                <p class="mt-1.5 text-xs text-gray-400" x-show="!isImmediateHead && !useTaskAssigneeAsSignatory">
                     Clearance signatory has the authority over the whole checklist and is always the final approver. Each item below can have its own independent assignee.
                 </p>
                 <template x-if="currentGroupName()">
@@ -55,8 +68,9 @@
                 <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
                     Department Checklist
                 </label>
-                <select name="department" x-model="department"
-                    class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:focus:border-brand-800">
+                <select name="department" x-model="department" :disabled="useTaskAssigneeAsSignatory"
+                    :class="useTaskAssigneeAsSignatory ? 'cursor-not-allowed bg-gray-100 text-gray-400 dark:bg-gray-800 dark:text-gray-500' : 'bg-transparent text-gray-800 dark:text-white/90'"
+                    class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-none px-4 py-2.5 text-sm shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:focus:border-brand-800">
                     <option value="">None (applies to every department)</option>
                     @foreach ($departments as $dept)
                         <option value="{{ $dept }}">{{ $dept }}</option>
@@ -220,11 +234,12 @@
     </div>
 
     <script>
-        function checklistBuilder(initialTitle, initialEmployeeGroupId, initialIsImmediateHead, initialDepartment, initialDueInDays, initialItems, employees, employeeGroups, flashError = null) {
+        function checklistBuilder(initialTitle, initialEmployeeGroupId, initialIsImmediateHead, initialUseTaskAssigneeAsSignatory, initialDepartment, initialDueInDays, initialItems, employees, employeeGroups, flashError = null) {
             return {
                 title: initialTitle,
                 employeeGroupId: initialEmployeeGroupId,
                 isImmediateHead: initialIsImmediateHead,
+                useTaskAssigneeAsSignatory: initialUseTaskAssigneeAsSignatory,
                 department: initialDepartment,
                 dueInDays: initialDueInDays,
                 employees: employees,

@@ -97,6 +97,12 @@ Route::middleware('permission:calendar.view')->group(function () {
 Route::middleware('permission:approvals.view')->group(function () {
     Route::get('/approvals', [ApprovalController::class, 'index'])->name('approvals.index');
 
+    // per-approver display preference: whether multiple checklists for the
+    // same offboardee are combined into one card or shown separately — see
+    // ApprovalController::groupIntoCombinedApprovals(). Purely a view-layer
+    // toggle; never touches the underlying checklist assignments.
+    Route::patch('/approvals/display-preference', [ApprovalController::class, 'updateDisplayPreference'])->name('approvals.update-display-preference');
+
     // checklist delegation (assign to another approver)
     Route::post('/approvals/{offboardingRequestApprover}/assign', [ChecklistDelegationController::class, 'assign'])->name('approvals.assign');
     Route::post('/approvals/{offboardingRequestApprover}/save-progress', [ChecklistDelegationController::class, 'saveProgress'])->name('approvals.save-progress');

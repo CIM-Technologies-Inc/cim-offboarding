@@ -9,26 +9,57 @@ use Illuminate\Validation\Rule;
 
 class ProfileController extends Controller
 {
+    /**
+     * Field-level permission enforcement: the validation rules array is
+     * built up ONLY from the fields the current user actually holds
+     * permission to edit, so a field they lack permission for is never
+     * validated and never reaches `$validated` — `$user->update($validated)`
+     * physically cannot touch it, regardless of what a crafted request
+     * sends. This is the true authority boundary; the "User Profile"
+     * permissions' matching field disable/hide logic in
+     * `resources/views/components/profile/*` is a courtesy, not the
+     * enforcement itself. Fields the browser never submits (a genuinely
+     * disabled input) simply have no matching key in the request either
+     * way, so this naturally handles both cases identically.
+     */
     public function updatePersonalInfo(Request $request): RedirectResponse
     {
         $user = $request->user();
 
-        $validated = $request->validate([
-            'name' => ['required', 'string', 'max:255'],
-            'email' => ['required', 'email', 'max:255', Rule::unique('users', 'email')->ignore($user->id)],
-            'mobile_number' => ['nullable', 'string', 'max:30'],
-            'position' => ['nullable', 'string', 'max:255'],
-            'department' => ['nullable', 'string', 'max:255'],
-        ]);
+        $rules = [];
+
+        if ($user->can('user-profile.edit-personal-info')) {
+            $rules['name'] = ['required', 'string', 'max:255'];
+        }
+
+        if ($user->can('user-profile.edit-contact-info')) {
+            $rules['email'] = ['required', 'email', 'max:255', Rule::unique('users', 'email')->ignore($user->id)];
+            $rules['mobile_number'] = ['nullable', 'string', 'max:30'];
+        }
+
+        if ($user->can('user-profile.edit-employment-info')) {
+            $rules['position'] = ['nullable', 'string', 'max:255'];
+            $rules['department'] = ['nullable', 'string', 'max:255'];
+        }
+
+        abort_if(empty($rules), 403, 'You do not have permission to edit any of these fields.');
+
+        $validated = $request->validate($rules);
 
         $user->update($validated);
 
         return back()->with('success', 'Personal information updated.');
     }
 
+    /**
+     * Address is treated as "contact information" for permission purposes —
+     * same gate as the email/mobile fields above.
+     */
     public function updateAddress(Request $request): RedirectResponse
     {
         $user = $request->user();
+
+        abort_unless($user->can('user-profile.edit-contact-info'), 403);
 
         $validated = $request->validate([
             'address' => ['nullable', 'string', 'max:500'],
@@ -47,6 +78,8 @@ class ProfileController extends Controller
     public function updateSignature(Request $request): RedirectResponse
     {
         $user = $request->user();
+
+        abort_unless($user->can('user-profile.edit-signature'), 403);
 
         $validated = $request->validate([
             'signature' => ['required', 'image', 'mimes:png,jpg,jpeg', 'max:1900'],
@@ -69,6 +102,8 @@ class ProfileController extends Controller
     {
         $user = $request->user();
 
+        abort_unless($user->can('user-profile.edit-signature'), 403);
+
         if ($user->signature_path) {
             Storage::disk('public')->delete($user->signature_path);
             $user->update(['signature_path' => null]);
@@ -86,6 +121,8 @@ class ProfileController extends Controller
     public function updateProfilePhoto(Request $request): RedirectResponse
     {
         $user = $request->user();
+
+        abort_unless($user->can('user-profile.edit-photo'), 403);
 
         $validated = $request->validate([
             'profile_photo' => ['required', 'image', 'mimes:png,jpg,jpeg', 'max:2048'],
@@ -107,6 +144,8 @@ class ProfileController extends Controller
     public function removeProfilePhoto(Request $request): RedirectResponse
     {
         $user = $request->user();
+
+        abort_unless($user->can('user-profile.edit-photo'), 403);
 
         if ($user->profile_photo_path) {
             Storage::disk('public')->delete($user->profile_photo_path);

@@ -94,7 +94,7 @@ class OffboardeeController extends Controller
 
         $employeesNotOffboarded = Employee::where('status', 'active')
             ->orderBy('name')
-            ->get(['id', 'name', 'employee_code', 'department', 'sup_one']);
+            ->get(['id', 'name', 'employee_code', 'department', 'designation', 'sup_one']);
 
         // For the New Offboarding Request modal's per-request email
         // template overrides — every function's Select is populated from

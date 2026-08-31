@@ -401,7 +401,25 @@ class OffboardingRequest extends Model
                         default => 'pending',
                     };
 
-                    return ['title' => $item->title, 'status' => $status];
+                    // The actual moment the assignee acted, sourced straight
+                    // from `checked_at`/`held_at` — never displayed for
+                    // 'pending'/'in_progress'/'declined', and never
+                    // recomputed from anything else, so it always matches
+                    // whichever action ('completed' vs 'on_hold') the
+                    // status above resolved to. If a held item is later
+                    // completed, `is_checked` wins the `match` above and
+                    // this naturally switches to `checked_at`.
+                    $timestamp = match ($status) {
+                        'completed' => $progress?->checked_at,
+                        'on_hold' => $progress?->held_at,
+                        default => null,
+                    };
+
+                    return [
+                        'title' => $item->title,
+                        'status' => $status,
+                        'timestamp' => $timestamp?->format('F d, Y – g:i A'),
+                    ];
                 })
                 ->values()
                 ->all() ?? [];

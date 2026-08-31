@@ -140,6 +140,76 @@ class ChecklistCompletionService
     }
 
     /**
+     * A "Use Task Assignee as Clearance Signatory" checklist has no
+     * Department Head/Clearance Signatory at all — its individually
+     * assigned Task Assignees ARE the signatories, each responsible only
+     * for their own item(s). Nobody exists who could ever click Submit
+     * (`ApprovalController::approve()`/`approveGroup()` both authorize via
+     * `employee_id`, which is null here), so this is the only path that
+     * can ever move such a row to `'approved'`: called after every item
+     * check (`ChecklistDelegationController::saveProgress()`/
+     * `saveProgressGroup()`, in place of `checkGroupReadyForApproval()` —
+     * which requires a non-null `int $employeeId` and would throw for this
+     * row), it flips the assignment to `'approved'` the moment
+     * `allItemsCompleted()` becomes true, with `user_id = null` on the
+     * resulting activity — the exact case `OffboardingActivity::label()`'s
+     * `'All checklist items completed — auto-approved'` branch already
+     * expected. Feeds the SAME downstream pipeline a human Submit would
+     * (`checkRegularChecklistsCompletion()`/`checkFinalPayCompletion()`),
+     * so Final Pay attachment and the request's own completion tracking
+     * are unaffected by there being no primary approver here. Locked and
+     * idempotent the same way `checkFinalPayCompletion()` above is, so two
+     * Task Assignees finishing their last items at nearly the same moment
+     * can never both approve/notify twice.
+     */
+    public function autoApproveIfHeadless(OffboardingRequestApprover $assignment): void
+    {
+        if ($assignment->employee_id !== null) {
+            return;
+        }
+
+        DB::transaction(function () use ($assignment) {
+            $locked = OffboardingRequestApprover::whereKey($assignment->id)
+                ->whereIn('status', ['pending', 'viewed'])
+                ->lockForUpdate()
+                ->first();
+
+            if (! $locked) {
+                // Already approved by a concurrent request.
+                return;
+            }
+
+            // A forced `load()`, not `loadMissing()` — the caller's own
+            // `authorizeItemAction()` already cached this same relation
+            // (empty, pre-sync) earlier in this same request, so
+            // `allItemsCompleted()`'s own `loadMissing()` would silently
+            // keep serving that stale snapshot instead of the rows
+            // `ChecklistItemProgress::syncForAssignment()` just persisted
+            // moments ago — the exact same pitfall documented on
+            // `ChecklistDelegationController::checkedItemPatches()`.
+            $locked->load('checklistTemplate.items', 'itemProgress');
+
+            if (! $locked->allItemsCompleted()) {
+                return;
+            }
+
+            $locked->update(['status' => 'approved', 'approved_at' => now()]);
+
+            $locked->offboardingRequest->activities()->create([
+                'user_id' => null,
+                'offboarding_request_approver_id' => $locked->id,
+                'action' => 'approved',
+                'status' => $locked->offboardingRequest->status,
+                'comment' => 'All checklist items completed — auto-approved (Task Assignee signatories).',
+            ]);
+
+            $locked->checklistTemplate->is_final_pay_checklist
+                ? $this->checkFinalPayCompletion($locked->offboardingRequest)
+                : $this->checkRegularChecklistsCompletion($locked->offboardingRequest);
+        });
+    }
+
+    /**
      * The group equivalent of the old per-row "ready for approval" check:
      * once EVERY checklist this employee is the assigned approver for on
      * this request (i.e. the same combined group the Approvals page now

@@ -32,6 +32,7 @@ class User extends Authenticatable
         'signature_path',
         'profile_photo_path',
         'must_change_password',
+        'combine_assigned_checklists',
     ];
 
     public const ROLE_ADMIN = 'admin';
@@ -232,6 +233,7 @@ class User extends Authenticatable
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
             'must_change_password' => 'boolean',
+            'combine_assigned_checklists' => 'boolean',
         ];
     }
 

@@ -15,6 +15,7 @@ class ChecklistTemplate extends Model
         'department_head_id',
         'employee_group_id',
         'is_immediate_head_checklist',
+        'use_task_assignee_as_signatory',
         'department',
         'is_final_pay_checklist',
         'is_active',
@@ -28,6 +29,7 @@ class ChecklistTemplate extends Model
             'is_active' => 'boolean',
             'is_final_pay_checklist' => 'boolean',
             'is_immediate_head_checklist' => 'boolean',
+            'use_task_assignee_as_signatory' => 'boolean',
             'due_in_days' => 'integer',
         ];
     }

@@ -120,19 +120,31 @@ class ClearanceFormController extends Controller
             // confusing second row that looks like a duplicate of that
             // department's real row.
             ->reject(fn (ChecklistTemplate $template) => $template->is_immediate_head_checklist)
-            ->map(function (ChecklistTemplate $template) use ($offboardingRequest) {
+            ->flatMap(function (ChecklistTemplate $template) use ($offboardingRequest) {
                 $approver = $offboardingRequest->approvers->firstWhere('checklist_template_id', $template->id);
+
+                // "Use Task Assignee as Clearance Signatory": this checklist
+                // has no single owner at all — every distinct employee
+                // actually assigned to at least one item IS a signatory, each
+                // shown on their own row and responsible only for their own
+                // item(s). Deduped by employee id (never by name), so the
+                // same Task Assignee across several items appears exactly
+                // once, per spec.
+                if ($template->use_task_assignee_as_signatory) {
+                    return $this->taskAssigneeSignatoryRows($template, $approver);
+                }
+
                 $signatoryEmployee = $approver?->employee;
                 $signatureUser = $signatoryEmployee?->user;
                 $isApproved = $approver?->status === 'approved';
 
-                return [
+                return [[
                     'department' => $signatoryEmployee?->department ?? $template->department ?? '—',
                     'signatory' => $signatoryEmployee?->name ?? '—',
                     'signatureDataUri' => $isApproved ? $this->signatureDataUri($signatureUser?->signature_path) : null,
                     'date' => $isApproved ? $approver?->approved_at?->format('M d, Y') : null,
                     'remarks' => $approver?->clearanceStatusLabel() ?? 'Not Assigned',
-                ];
+                ]];
             })
             ->values();
 
@@ -255,6 +267,54 @@ class ClearanceFormController extends Controller
             ->map(fn (OffboardingRequestApprover $approver) => $approver->clearanceStatusLabel())
             ->unique()
             ->implode(', ');
+    }
+
+    /**
+     * One row per DISTINCT employee actually assigned to at least one item
+     * on a "Use Task Assignee as Clearance Signatory" checklist — never one
+     * row per item, and never one row for the whole checklist (there is no
+     * single owner to report on; `$approver?->employee` is always null for
+     * this checklist kind). Grouped by `effectiveSignatoryFor()` — the same
+     * per-request-override-aware resolution the rest of the app already
+     * uses (Approvals page, notifications) — so a Department Head's live
+     * item reassignment is reflected here identically. Items nobody was
+     * ever assigned (`effectiveSignatoryFor()` null) contribute no row.
+     * Each employee's own row reflects only THEIR OWN item(s): "Cleared"
+     * once every one of them is checked, "Pending" otherwise — never the
+     * whole checklist's aggregate state, since each Task Assignee is only
+     * responsible for their own work.
+     *
+     * @return array<int, array{department: string, signatory: string, signatureDataUri: ?string, date: ?string, remarks: string}>
+     */
+    private function taskAssigneeSignatoryRows(ChecklistTemplate $template, ?OffboardingRequestApprover $approver): array
+    {
+        if (! $approver) {
+            return [];
+        }
+
+        $itemsByEmployeeId = $template->items
+            ->groupBy(fn ($item) => $approver->effectiveSignatoryFor($item)?->id)
+            ->forget(null);
+
+        $checkedItemIds = $approver->itemProgress->where('is_checked', true)->pluck('checklist_item_id');
+
+        return $itemsByEmployeeId->map(function ($items, $employeeId) use ($approver, $checkedItemIds) {
+            $employee = Employee::find($employeeId);
+            $isFullyCleared = $items->every(fn ($item) => $checkedItemIds->contains($item->id));
+
+            $lastCheckedAt = $approver->itemProgress
+                ->whereIn('checklist_item_id', $items->pluck('id'))
+                ->where('is_checked', true)
+                ->max('checked_at');
+
+            return [
+                'department' => $employee?->department ?? '—',
+                'signatory' => $employee?->name ?? '—',
+                'signatureDataUri' => $isFullyCleared ? $this->signatureDataUri($employee?->user?->signature_path) : null,
+                'date' => $isFullyCleared && $lastCheckedAt ? $lastCheckedAt->format('M d, Y') : null,
+                'remarks' => $isFullyCleared ? 'Cleared' : 'Pending',
+            ];
+        })->values()->all();
     }
 
     /**

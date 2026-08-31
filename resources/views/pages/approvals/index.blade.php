@@ -14,9 +14,33 @@
     @endif
 
     <div>
-        <p class="mb-6 text-sm text-gray-500 dark:text-gray-400">
-            Review pending offboarding requests and approve or decline them.
-        </p>
+        <div class="mb-6 flex flex-wrap items-center justify-between gap-3">
+            <p class="text-sm text-gray-500 dark:text-gray-400">
+                Review pending offboarding requests and approve or decline them.
+            </p>
+
+            {{-- Purely a display preference for this approver's own queue —
+                 whether several checklists assigned to them for the same
+                 offboardee show as one combined card or as separate cards.
+                 Never changes the underlying checklist assignments or
+                 approval workflow, only how they're grouped here. --}}
+            <form method="POST" action="{{ route('approvals.update-display-preference') }}" class="flex items-center gap-2">
+                @csrf
+                @method('PATCH')
+                <span class="text-xs font-medium {{ $combineChecklists ? 'text-[#145a3a] dark:text-[#3aa876]' : 'text-gray-400' }}">
+                    Combined Checklist
+                </span>
+                <label class="relative inline-flex cursor-pointer items-center">
+                    <input type="checkbox" name="separate_checklists" value="1" class="peer sr-only"
+                        onchange="this.form.requestSubmit()" @checked(! $combineChecklists) />
+                    <div class="peer h-6 w-11 rounded-full bg-gray-200 transition-colors duration-200 peer-checked:bg-[#145a3a] peer-focus:outline-hidden after:absolute after:top-0.5 after:left-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:duration-200 after:content-[''] peer-checked:after:translate-x-5 dark:bg-gray-700">
+                    </div>
+                </label>
+                <!-- <span class="text-xs font-medium {{ ! $combineChecklists ? 'text-[#145a3a] dark:text-[#3aa876]' : 'text-gray-400' }}">
+                    Separate Checklist
+                </span> -->
+            </form>
+        </div>
 
         @php
             $statusBadges = [
@@ -125,8 +149,11 @@
                                 {{-- Hidden once this card combines more than one checklist —
                                      bulk "Assign Checklist" below takes over for that case,
                                      since whole-card delegation to a single person no longer
-                                     makes sense once several distinct checklists are involved. --}}
-                                @if ($approval['isPrimaryApprover'] && count($approval['checklistTemplates']) <= 1)
+                                     makes sense once several distinct checklists are involved.
+                                     Also hidden for a headless "Use Task Assignee as Clearance
+                                     Signatory" card (`assignUrl` null) — there's no owner to
+                                     delegate FROM on a checklist that's designed to have none. --}}
+                                @if ($approval['isPrimaryApprover'] && count($approval['checklistTemplates']) <= 1 && $approval['assignUrl'])
                                     <button type="button" title="Assign To" @click.stop="$dispatch('open-assign-modal', @js($approval))"
                                         class="flex items-center justify-center gap-1.5 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
                                         <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">

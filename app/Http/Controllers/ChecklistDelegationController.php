@@ -653,16 +653,25 @@ class ChecklistDelegationController extends Controller
             $offboardingRequestApprover->update(['delegation_status' => 'in_progress']);
         }
 
-        // No-op for legacy/non-per-item assignments, so this is always safe
-        // to call unconditionally. Notifies the Department Head once every
-        // checklist in this employee's whole group for this request is
-        // ready — not just this one — the Department Head still has to
-        // review and click Submit themselves; this does not approve
-        // anything.
-        app(ChecklistCompletionService::class)->checkGroupReadyForApproval(
-            $offboardingRequestApprover->offboardingRequest,
-            $offboardingRequestApprover->employee_id
-        );
+        // A "Use Task Assignee as Clearance Signatory" checklist has no
+        // Department Head at all (`employee_id` is null) — nobody exists to
+        // notify "ready for review", and `checkGroupReadyForApproval()`
+        // requires a real, non-null employee id (it would throw otherwise).
+        // It auto-approves instead, the moment every item is done.
+        if ($offboardingRequestApprover->employee_id !== null) {
+            // No-op for legacy/non-per-item assignments, so this is always
+            // safe to call unconditionally. Notifies the Department Head
+            // once every checklist in this employee's whole group for this
+            // request is ready — not just this one — the Department Head
+            // still has to review and click Submit themselves; this does
+            // not approve anything.
+            app(ChecklistCompletionService::class)->checkGroupReadyForApproval(
+                $offboardingRequestApprover->offboardingRequest,
+                $offboardingRequestApprover->employee_id
+            );
+        } else {
+            app(ChecklistCompletionService::class)->autoApproveIfHeadless($offboardingRequestApprover);
+        }
 
         return back()->with('success', 'Checklist progress saved.');
     }

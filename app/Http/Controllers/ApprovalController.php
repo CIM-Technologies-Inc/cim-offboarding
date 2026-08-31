@@ -134,6 +134,13 @@ class ApprovalController extends Controller
                     'offboardingRequestId' => $request->id,
                     'approverEmployeeId' => $assignment->employee_id,
                     'assignmentId' => $assignment->id,
+                    // Only actually consulted for the grouping-key fallback
+                    // below, when this row has no owning employee at all (a
+                    // "Use Task Assignee as Clearance Signatory" checklist) —
+                    // ensures each such template gets its own card instead of
+                    // several unrelated headless checklists silently merging
+                    // under one shared "no employee" key.
+                    'checklistTemplateId' => $template?->id,
                     // Internal-only, consulted only while aggregating a
                     // group's `displayStatus` — never copied into a card's
                     // final output.
@@ -293,14 +300,37 @@ class ApprovalController extends Controller
                 ];
             });
 
-        $approvals = $this->groupIntoCombinedApprovals($rows)
+        // Per-approver display preference — whether multiple checklists for
+        // the same offboardee are combined into one card or kept separate.
+        // Defaults to combined (today's original behavior) for every
+        // existing/new account; purely a view-layer choice, toggled below.
+        $combineChecklists = (bool) ($user->combine_assigned_checklists ?? true);
+
+        $approvals = $this->groupIntoCombinedApprovals($rows, $combineChecklists)
             ->concat($this->buildGeneralSignatoryApprovals($user, $reasonLabels));
 
         return view('pages.approvals.index', [
             'title' => 'Approvals',
             'approvals' => $approvals,
+            'combineChecklists' => $combineChecklists,
             'employees' => Employee::where('status', 'active')->orderBy('name')->get(['id', 'name', 'employee_code', 'department']),
         ]);
+    }
+
+    /**
+     * Flips the current user's own "Combine Checklist" / "Separate
+     * Checklist" display preference for the Approvals page — see
+     * `groupIntoCombinedApprovals()`. Affects only how that one user's own
+     * queue is grouped/rendered; never touches any `OffboardingRequestApprover`
+     * row, checklist template, or approval workflow.
+     */
+    public function updateDisplayPreference(Request $request): RedirectResponse
+    {
+        auth()->user()->update([
+            'combine_assigned_checklists' => ! $request->boolean('separate_checklists'),
+        ]);
+
+        return back();
     }
 
     /**
@@ -387,19 +417,60 @@ class ApprovalController extends Controller
      * checklist. A lone checklist simply becomes a "group of one", so
      * there's no special-cased single-vs-combined rendering path.
      *
+     * When `$combine` is false (the approver's own "Separate Checklist"
+     * display preference — see `updateDisplayPreference()`), every
+     * checklist gets its own card instead, keyed by its own assignment id
+     * rather than by employee — this is purely a different grouping key fed
+     * into the SAME generic per-group builder below, so every field a card
+     * carries (aggregated status, items, delegations, timeline, …) is
+     * computed identically either way, just over a group of size 1. The
+     * one place that genuinely needs to know which mode is active is the
+     * action-URL block: a real combined group's routes intentionally
+     * re-derive and act on the employee's ENTIRE pending set server-side
+     * (`approveGroup()`/`saveProgressGroup()`), which would silently sweep
+     * in the OTHER checklist(s) too if used for a card that's only
+     * DISPLAYING one of several — so separate mode always falls back to the
+     * single-assignment routes, exactly like a headless (no owning
+     * employee) card already does.
+     *
      * @param  \Illuminate\Support\Collection<int, array<string, mixed>>  $rows
      * @return \Illuminate\Support\Collection<int, array<string, mixed>>
      */
-    private function groupIntoCombinedApprovals($rows)
+    private function groupIntoCombinedApprovals($rows, bool $combine = true)
     {
         return $rows
-            ->groupBy(fn (array $row) => $row['offboardingRequestId'] . ':' . $row['approverEmployeeId'])
-            ->map(function ($group) {
+            // A "Use Task Assignee as Clearance Signatory" checklist has no
+            // owning employee (`approverEmployeeId` null) — falling back to
+            // the template id keeps each such headless checklist on its own
+            // card instead of merging unrelated ones under one shared
+            // "no employee" key. A headless template is therefore always a
+            // "group of one" by construction. In "Separate Checklist" mode,
+            // every row is its own group regardless of owner, keyed by its
+            // own assignment id.
+            ->groupBy(fn (array $row) => $combine
+                ? $row['offboardingRequestId'] . ':' . ($row['approverEmployeeId'] ?? 'template-' . $row['checklistTemplateId'])
+                : $row['offboardingRequestId'] . ':assignment-' . $row['assignmentId'])
+            ->map(function ($group) use ($combine) {
                 $first = $group->first();
                 $earliestDueAt = $group->pluck('dueAtRaw')->filter()->sort()->first();
 
+                // Whether this specific card is safe to act on via the
+                // "whole employee group" routes — only true for a genuine
+                // combined card with a real owning employee. Separate mode,
+                // and any headless card, always use the single-assignment
+                // routes instead (see this method's docblock above).
+                $useGroupRoutes = $combine && $first['approverEmployeeId'];
+
+                // Same null-safe fallback as the grouping key above, so two
+                // different headless checklists (or, in separate mode, any
+                // two checklists at all) on the same request never collide
+                // on the same card id (e.g. for Alpine's `:key`).
+                $cardOwnerKey = $combine
+                    ? ($first['approverEmployeeId'] ?? 'template-' . $first['checklistTemplateId'])
+                    : 'assignment-' . $first['assignmentId'];
+
                 return [
-                    'id' => $first['offboardingRequestId'] . '-' . $first['approverEmployeeId'],
+                    'id' => $first['offboardingRequestId'] . '-' . $cardOwnerKey,
                     'offboardingRequestId' => $first['offboardingRequestId'],
                     'approverEmployeeId' => $first['approverEmployeeId'],
                     'name' => $first['name'],
@@ -458,12 +529,37 @@ class ApprovalController extends Controller
                     // once this card actually combines more than one
                     // distinct checklist template — a single-checklist card
                     // has nothing else to bulk-open, so no button renders.
+                    // Naturally always false in "Separate Checklist" mode,
+                    // since every card there is a group of exactly one.
                     'showAssignChecklistPool' => $first['isPrimaryApprover']
                         && $group->pluck('checklistTemplates')->flatten()->unique()->count() > 1,
-                    'approveUrl' => route('approvals.group.approve', ['offboardingRequest' => $first['offboardingRequestId'], 'employee' => $first['approverEmployeeId']]),
-                    'assignUrl' => route('approvals.group.assign', ['offboardingRequest' => $first['offboardingRequestId'], 'employee' => $first['approverEmployeeId']]),
-                    'assignPoolUrl' => route('approvals.group.assign-pool', ['offboardingRequest' => $first['offboardingRequestId'], 'employee' => $first['approverEmployeeId']]),
-                    'saveProgressUrl' => route('approvals.group.save-progress', ['offboardingRequest' => $first['offboardingRequestId'], 'employee' => $first['approverEmployeeId']]),
+                    // A headless (Use Task Assignee as Clearance Signatory)
+                    // card, or any card while "Separate Checklist" mode is
+                    // on, has no safe "whole employee group" action to key
+                    // the `approvals.group.*` routes by — see
+                    // `$useGroupRoutes` above. `route()` also throws on a
+                    // null required parameter, which would break the WHOLE
+                    // page render for anyone viewing a headless card, not
+                    // just on click — so the null-employee case must always
+                    // fall back too, regardless of `$combine`. Save
+                    // Progress/Submit fall back to the single-row routes
+                    // keyed by this one assignment; whole-card delegate/
+                    // bulk-assign have no single-row equivalent for a
+                    // headless checklist (no owner to delegate FROM) and
+                    // stay null there, but DO have one for an ordinary
+                    // checklist shown separately (`approvals.assign`).
+                    'approveUrl' => $useGroupRoutes
+                        ? route('approvals.group.approve', ['offboardingRequest' => $first['offboardingRequestId'], 'employee' => $first['approverEmployeeId']])
+                        : route('approvals.approve', $first['assignmentId']),
+                    'assignUrl' => $useGroupRoutes
+                        ? route('approvals.group.assign', ['offboardingRequest' => $first['offboardingRequestId'], 'employee' => $first['approverEmployeeId']])
+                        : ($first['approverEmployeeId'] ? route('approvals.assign', $first['assignmentId']) : null),
+                    'assignPoolUrl' => $useGroupRoutes
+                        ? route('approvals.group.assign-pool', ['offboardingRequest' => $first['offboardingRequestId'], 'employee' => $first['approverEmployeeId']])
+                        : null,
+                    'saveProgressUrl' => $useGroupRoutes
+                        ? route('approvals.group.save-progress', ['offboardingRequest' => $first['offboardingRequestId'], 'employee' => $first['approverEmployeeId']])
+                        : route('approvals.save-progress', $first['assignmentId']),
                     'timeline' => $first['timeline'],
                 ];
             })

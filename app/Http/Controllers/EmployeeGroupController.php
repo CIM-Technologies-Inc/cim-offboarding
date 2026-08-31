@@ -36,21 +36,28 @@ class EmployeeGroupController extends Controller
             'group_head_employee_id' => ['nullable', 'exists:employees,id'],
         ]);
 
-        EmployeeGroup::create($validated + [
+        $group = EmployeeGroup::create($validated + [
             'is_active' => $request->boolean('is_active', true),
             'created_by' => $request->user()->id,
         ]);
 
-        $this->ensureGroupHeadHasAccount($validated['group_head_employee_id'] ?? null);
+        $groupHeadId = $validated['group_head_employee_id'] ?? null;
+
+        $this->ensureGroupHeadHasAccount($groupHeadId);
+        $this->syncDepartmentMembership($group, $groupHeadId, previousGroupHeadEmployeeId: null);
 
         return back()->with('success', 'Group created.');
     }
 
     /**
-     * Updates the group's own name/status and its current Group Head. This
-     * only ever changes which employee is registered as the head — it never
-     * touches any member employee's own record, so reassigning the head
-     * cannot accidentally alter who belongs to the group.
+     * Updates the group's own name/status and its current Group Head, and
+     * keeps membership in sync with whichever employee is registered as
+     * the head — see `syncDepartmentMembership()` for exactly what that
+     * means. Reassigning the head to someone in a DIFFERENT department can
+     * therefore change who belongs to this group; reassigning to someone
+     * in the SAME department, or just editing the name/status, only ever
+     * adds employees newly hired into that department since the last
+     * save — it never removes anyone in that case.
      */
     public function update(Request $request, EmployeeGroup $employeeGroup): RedirectResponse
     {
@@ -59,13 +66,69 @@ class EmployeeGroupController extends Controller
             'group_head_employee_id' => ['nullable', 'exists:employees,id'],
         ]);
 
+        $previousGroupHeadId = $employeeGroup->group_head_employee_id;
+
         $employeeGroup->update($validated + [
             'is_active' => $request->boolean('is_active'),
         ]);
 
-        $this->ensureGroupHeadHasAccount($validated['group_head_employee_id'] ?? null);
+        $groupHeadId = $validated['group_head_employee_id'] ?? null;
+
+        $this->ensureGroupHeadHasAccount($groupHeadId);
+        $this->syncDepartmentMembership($employeeGroup, $groupHeadId, $previousGroupHeadId);
 
         return back()->with('success', 'Group updated.');
+    }
+
+    /**
+     * Group membership is derived from the Group Head's own `department`
+     * (the free-text HR field on `employees`, not this group's own
+     * curated roster) — every employee who shares that department joins
+     * automatically, so an admin never has to add them one by one, and a
+     * later hire into that same department is picked up the next time
+     * this group is saved at all (create, edit, or just a name change),
+     * not only at the moment the group was first created.
+     *
+     * Adding is unconditional and safe to repeat: setting `employee_group_id`
+     * to this group's own id for an employee already in it is a no-op, and
+     * moving someone from a DIFFERENT group here is the intended behavior
+     * of "membership follows department" — an employee belongs to at most
+     * one group at a time, same invariant `addEmployee()` already enforces
+     * for a manual add.
+     *
+     * Removal only ever happens as a side effect of the Group Head
+     * changing to someone in a genuinely different department (never on a
+     * plain create, and never just from re-saving the same head) — anyone
+     * currently in this group who no longer matches the new department is
+     * detached (`employee_group_id` set to null), the exact same
+     * non-destructive mechanism `removeEmployee()` already uses; their
+     * Employee Master record, user account, role, and every other field
+     * are completely untouched.
+     */
+    private function syncDepartmentMembership(EmployeeGroup $group, ?int $groupHeadEmployeeId, ?int $previousGroupHeadEmployeeId): void
+    {
+        if ($groupHeadEmployeeId === null) {
+            return;
+        }
+
+        $groupHead = Employee::find($groupHeadEmployeeId);
+
+        if (! $groupHead || ! $groupHead->department) {
+            return;
+        }
+
+        Employee::where('department', $groupHead->department)
+            ->update(['employee_group_id' => $group->id]);
+
+        $departmentChanged = $previousGroupHeadEmployeeId !== null
+            && $previousGroupHeadEmployeeId !== $groupHeadEmployeeId
+            && Employee::find($previousGroupHeadEmployeeId)?->department !== $groupHead->department;
+
+        if ($departmentChanged) {
+            Employee::where('employee_group_id', $group->id)
+                ->where('department', '!=', $groupHead->department)
+                ->update(['employee_group_id' => null]);
+        }
     }
 
     /**

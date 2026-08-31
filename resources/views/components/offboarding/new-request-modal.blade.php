@@ -123,35 +123,84 @@
                             // so the user can still pick one manually, per spec.
                             setImmediateHeadFromEmployee(employeeId) {
                                 const matchedId = this.immediateHeadBySupOne[employeeId];
-                                const select = document.querySelector('select[name=immediate_head_id]');
-                                select.value = matchedId ? String(matchedId) : '';
-                                select.dispatchEvent(new Event('change'));
+                                // The Immediate Head field is its own isolated Alpine
+                                // island (searchable picker, not a plain <select>), so
+                                // it can't be reached via document/$refs from here —
+                                // dispatch a window event and let that component apply
+                                // it to its own state instead.
+                                window.dispatchEvent(new CustomEvent('immediate-head-auto-select', { detail: matchedId ?? null }));
                             },
                         }">
                         <div>
                             <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
                                 Employee <span class="text-error-500">*</span>
                             </label>
-                            <div x-data="{ isOptionSelected: false }" class="relative z-20 bg-transparent">
-                                <select name="employee_id" required
-                                    @change="isOptionSelected = true; setImmediateHeadFromEmployee($event.target.value)"
-                                    :class="isOptionSelected && 'text-gray-800 dark:text-white/90'"
-                                    class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 pr-11 text-sm text-gray-500 shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800">
-                                    <option value="" class="text-gray-700 dark:bg-gray-900 dark:text-gray-400">
-                                        Select an employee
-                                    </option>
-                                    @foreach ($employees as $employee)
-                                        <option value="{{ $employee->id }}" @selected(old('employee_id') == $employee->id)
-                                            class="text-gray-700 dark:bg-gray-900 dark:text-gray-400">
-                                            {{ $employee->name }} ({{ $employee->employee_code }}) &mdash; {{ $employee->department }}
-                                        </option>
-                                    @endforeach
-                                </select>
-                                <span class="pointer-events-none absolute top-1/2 right-4 z-30 -translate-y-1/2 text-gray-500 dark:text-gray-400">
-                                    <svg class="stroke-current" width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                        <path d="M4.79175 7.396L10.0001 12.6043L15.2084 7.396" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-                                    </svg>
-                                </span>
+                            @php
+                                $selectedEmployee = $employees->firstWhere('id', (int) old('employee_id'));
+                                $selectedEmployeeQuery = $selectedEmployee
+                                    ? $selectedEmployee->name . ' (' . $selectedEmployee->employee_code . ')'
+                                    : '';
+                                $selectedEmployeeIdOld = old('employee_id') ? (string) old('employee_id') : '';
+                            @endphp
+                            <div x-data="{
+                                    query: @js($selectedEmployeeQuery),
+                                    selectedEmployeeId: @js($selectedEmployeeIdOld),
+                                    dropdownOpen: false,
+                                    employees: @js($employees->map(fn ($employee) => [
+                                        'id' => (string) $employee->id,
+                                        'name' => $employee->name,
+                                        'code' => $employee->employee_code,
+                                        'department' => $employee->department,
+                                        'position' => $employee->designation,
+                                    ])),
+                                    filteredEmployees() {
+                                        const needle = this.query.toLowerCase();
+                                        if (!needle) {
+                                            return this.employees;
+                                        }
+                                        return this.employees.filter((e) =>
+                                            e.name.toLowerCase().includes(needle)
+                                            || e.code.toLowerCase().includes(needle)
+                                        );
+                                    },
+                                    selectEmployee(employee) {
+                                        this.selectedEmployeeId = employee.id;
+                                        this.query = `${employee.name} (${employee.code})`;
+                                        this.dropdownOpen = false;
+                                    },
+                                }" @click.away="dropdownOpen = false" class="relative">
+                                <input type="hidden" name="employee_id" :value="selectedEmployeeId" />
+                                <input type="text" x-model="query" autocomplete="off"
+                                    @focus="dropdownOpen = true"
+                                    @input="selectedEmployeeId = ''; dropdownOpen = true"
+                                    placeholder="Search employee name or employee number..."
+                                    :class="selectedEmployeeId ? 'text-gray-800 dark:text-white/90' : 'text-gray-500'"
+                                    class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
+
+                                {{-- The Employee select's own change previously drove the
+                                     Immediate Head auto-fill via `setImmediateHeadFromEmployee()`
+                                     (defined on the OUTER x-data above this one). Called here as
+                                     part of the SAME inline `@click` expression (not from inside
+                                     `selectEmployee()`'s own JS body) so Alpine resolves it by
+                                     walking up to that ancestor scope correctly — calling it from
+                                     inside a method body would instead resolve `this` to just this
+                                     component's own (child) scope, per the same quirk documented
+                                     on `setImmediateHeadFromEmployee()` itself. --}}
+                                <div x-show="dropdownOpen"
+                                    class="shadow-theme-lg absolute z-50 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
+                                    <template x-for="employee in filteredEmployees()" :key="employee.id">
+                                        <div @click="selectEmployee(employee); setImmediateHeadFromEmployee(employee.id)"
+                                            class="cursor-pointer border-b border-gray-100 px-4 py-2.5 text-sm last:border-b-0 hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-white/[0.03]">
+                                            <span class="block font-medium text-gray-800 dark:text-white/90"
+                                                x-text="`${employee.name} (${employee.code})`"></span>
+                                            <span class="block text-xs text-gray-400"
+                                                x-text="[employee.department, employee.position].filter(Boolean).join(' — ')"></span>
+                                        </div>
+                                    </template>
+                                    <div x-show="filteredEmployees().length === 0" class="px-4 py-2.5 text-sm text-gray-400">
+                                        No employees found
+                                    </div>
+                                </div>
                             </div>
                             @error('employee_id')
                                 <p class="mt-1.5 text-xs text-error-500">{{ $message }}</p>
@@ -162,25 +211,68 @@
                             <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
                                 Immediate Head
                             </label>
-                            <div x-data="{ isOptionSelected: {{ old('immediate_head_id') ? 'true' : 'false' }} }" class="relative z-20 bg-transparent">
-                                <select name="immediate_head_id" @change="isOptionSelected = true"
-                                    :class="isOptionSelected && 'text-gray-800 dark:text-white/90'"
-                                    class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 pr-11 text-sm text-gray-500 shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800">
-                                    <option value="" class="text-gray-700 dark:bg-gray-900 dark:text-gray-400">
-                                        Select an immediate head
-                                    </option>
-                                    @foreach ($employees as $employee)
-                                        <option value="{{ $employee->id }}" @selected(old('immediate_head_id') == $employee->id)
-                                            class="text-gray-700 dark:bg-gray-900 dark:text-gray-400">
-                                            {{ $employee->name }} ({{ $employee->employee_code }}) &mdash; {{ $employee->department }}
-                                        </option>
-                                    @endforeach
-                                </select>
-                                <span class="pointer-events-none absolute top-1/2 right-4 z-30 -translate-y-1/2 text-gray-500 dark:text-gray-400">
-                                    <svg class="stroke-current" width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                        <path d="M4.79175 7.396L10.0001 12.6043L15.2084 7.396" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-                                    </svg>
-                                </span>
+                            @php
+                                $selectedImmediateHead = $employees->firstWhere('id', (int) old('immediate_head_id'));
+                                $selectedImmediateHeadQuery = $selectedImmediateHead
+                                    ? $selectedImmediateHead->name . ' (' . $selectedImmediateHead->employee_code . ')'
+                                    : '';
+                                $selectedImmediateHeadIdOld = old('immediate_head_id') ? (string) old('immediate_head_id') : '';
+                            @endphp
+                            <div x-data="{
+                                    query: @js($selectedImmediateHeadQuery),
+                                    selectedEmployeeId: @js($selectedImmediateHeadIdOld),
+                                    dropdownOpen: false,
+                                    employees: @js($employees->map(fn ($employee) => [
+                                        'id' => (string) $employee->id,
+                                        'name' => $employee->name,
+                                        'code' => $employee->employee_code,
+                                        'department' => $employee->department,
+                                        'position' => $employee->designation,
+                                    ])),
+                                    filteredEmployees() {
+                                        const needle = this.query.toLowerCase();
+                                        if (!needle) {
+                                            return this.employees;
+                                        }
+                                        return this.employees.filter((e) =>
+                                            e.name.toLowerCase().includes(needle)
+                                            || e.code.toLowerCase().includes(needle)
+                                        );
+                                    },
+                                    selectEmployee(employee) {
+                                        this.selectedEmployeeId = employee.id;
+                                        this.query = `${employee.name} (${employee.code})`;
+                                        this.dropdownOpen = false;
+                                    },
+                                }"
+                                @immediate-head-auto-select.window="
+                                    const matched = employees.find((e) => e.id === String($event.detail));
+                                    if (matched) { selectEmployee(matched); } else { selectedEmployeeId = ''; query = ''; }
+                                "
+                                @click.away="dropdownOpen = false" class="relative">
+                                <input type="hidden" name="immediate_head_id" :value="selectedEmployeeId" />
+                                <input type="text" x-model="query" autocomplete="off"
+                                    @focus="dropdownOpen = true"
+                                    @input="selectedEmployeeId = ''; dropdownOpen = true"
+                                    placeholder="Search employee name or employee number..."
+                                    :class="selectedEmployeeId ? 'text-gray-800 dark:text-white/90' : 'text-gray-500'"
+                                    class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
+
+                                <div x-show="dropdownOpen"
+                                    class="shadow-theme-lg absolute z-50 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
+                                    <template x-for="employee in filteredEmployees()" :key="employee.id">
+                                        <div @click="selectEmployee(employee)"
+                                            class="cursor-pointer border-b border-gray-100 px-4 py-2.5 text-sm last:border-b-0 hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-white/[0.03]">
+                                            <span class="block font-medium text-gray-800 dark:text-white/90"
+                                                x-text="`${employee.name} (${employee.code})`"></span>
+                                            <span class="block text-xs text-gray-400"
+                                                x-text="[employee.department, employee.position].filter(Boolean).join(' — ')"></span>
+                                        </div>
+                                    </template>
+                                    <div x-show="filteredEmployees().length === 0" class="px-4 py-2.5 text-sm text-gray-400">
+                                        No employees found
+                                    </div>
+                                </div>
                             </div>
                             @error('immediate_head_id')
                                 <p class="mt-1.5 text-xs text-error-500">{{ $message }}</p>

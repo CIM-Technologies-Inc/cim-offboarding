@@ -1,11 +1,13 @@
 {{-- Per-checklist-item status list, shared by the "Offboarding Status" and "Timeline" tabs
      of status-timeline-modal.blade.php so both use identical icons/colors. Expects a `step`
-     Alpine variable in scope with a `checklistItems` array of {title, status}. --}}
+     Alpine variable in scope with a `checklistItems` array of {title, status, timestamp}.
+     `timestamp` is only ever set for 'completed' (checked_at) or 'on_hold' (held_at) — never
+     for 'pending'/'in_progress'/'declined' — see `OffboardingRequest::approverActivityTimeline()`. --}}
 <template x-if="step.checklistItems && step.checklistItems.length">
     <div class="mt-3 space-y-1.5 border-t border-gray-100 pt-2 dark:border-gray-800">
         <template x-for="(item, itemIndex) in step.checklistItems" :key="itemIndex">
-            <div class="flex items-center gap-2 text-xs">
-                <span class="flex h-4 w-4 shrink-0 items-center justify-center rounded-full"
+            <div class="flex items-start gap-2 text-xs">
+                <span class="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full"
                     :class="{
                         'bg-[#145a3a] dark:bg-[#3aa876]': item.status === 'completed',
                         'bg-amber-500': item.status === 'on_hold',
@@ -26,16 +28,25 @@
                         <circle cx="4" cy="4" r="4" />
                     </svg>
                 </span>
-                <span class="text-gray-600 dark:text-gray-300" x-text="item.title"></span>
-                <span class="ml-auto shrink-0 font-medium"
-                    :class="{
-                        'text-[#145a3a] dark:text-[#3aa876]': item.status === 'completed',
-                        'text-amber-600 dark:text-amber-400': item.status === 'on_hold',
-                        'text-error-600 dark:text-error-400': item.status === 'declined',
-                        'text-blue-600 dark:text-blue-400': item.status === 'in_progress',
-                        'text-gray-400': item.status === 'pending'
-                    }"
-                    x-text="{ completed: 'Completed', on_hold: 'On Hold', declined: 'Declined', in_progress: 'In Progress', pending: 'Pending' }[item.status]"></span>
+                <div class="min-w-0 flex-1">
+                    <div class="flex items-center gap-2">
+                        <span class="text-gray-600 dark:text-gray-300" x-text="item.title"></span>
+                        <span class="ml-auto shrink-0 font-medium"
+                            :class="{
+                                'text-[#145a3a] dark:text-[#3aa876]': item.status === 'completed',
+                                'text-amber-600 dark:text-amber-400': item.status === 'on_hold',
+                                'text-error-600 dark:text-error-400': item.status === 'declined',
+                                'text-blue-600 dark:text-blue-400': item.status === 'in_progress',
+                                'text-gray-400': item.status === 'pending'
+                            }"
+                            x-text="{ completed: 'Completed', on_hold: 'On Hold', declined: 'Declined', in_progress: 'In Progress', pending: 'Pending' }[item.status]"></span>
+                    </div>
+                    {{-- Never shown for 'pending' — `item.timestamp` is only ever
+                         populated server-side for 'completed'/'on_hold'. --}}
+                    <template x-if="item.timestamp">
+                        <p class="mt-0.5 text-gray-400" x-text="item.timestamp"></p>
+                    </template>
+                </div>
             </div>
         </template>
     </div>
