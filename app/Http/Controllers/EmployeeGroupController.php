@@ -9,6 +9,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\View\View;
 use PhpOffice\PhpSpreadsheet\IOFactory;
@@ -44,15 +45,24 @@ class EmployeeGroupController extends Controller
         $groupHeadId = $validated['group_head_employee_id'] ?? null;
 
         $this->ensureGroupHeadHasAccount($groupHeadId);
-        $this->syncDepartmentMembership($group, $groupHeadId, previousGroupHeadEmployeeId: null);
+
+        // "Automatically Add Group Members" — checked by default in the
+        // form, but the admin can uncheck it to create the group with an
+        // empty member list instead, adding people manually afterward. Only
+        // gates whether `syncDepartmentMembership()` runs for THIS save; it
+        // is never persisted on the group itself.
+        if ($request->boolean('auto_add_members')) {
+            $this->syncDepartmentMembership($group, $groupHeadId, previousGroupHeadEmployeeId: null);
+        }
 
         return back()->with('success', 'Group created.');
     }
 
     /**
      * Updates the group's own name/status and its current Group Head, and
-     * keeps membership in sync with whichever employee is registered as
-     * the head — see `syncDepartmentMembership()` for exactly what that
+     * — unless "Automatically Add Group Members" was unchecked for this
+     * save — keeps membership in sync with whichever employee is registered
+     * as the head — see `syncDepartmentMembership()` for exactly what that
      * means. Reassigning the head to someone in a DIFFERENT department can
      * therefore change who belongs to this group; reassigning to someone
      * in the SAME department, or just editing the name/status, only ever
@@ -75,7 +85,15 @@ class EmployeeGroupController extends Controller
         $groupHeadId = $validated['group_head_employee_id'] ?? null;
 
         $this->ensureGroupHeadHasAccount($groupHeadId);
-        $this->syncDepartmentMembership($employeeGroup, $groupHeadId, $previousGroupHeadId);
+
+        // Same "Automatically Add Group Members" gate as `store()` — see
+        // its own comment there. Unchecking it on an edit never removes
+        // anyone already in the group; it only skips adding anyone new
+        // (and skips the head-change removal side effect below) for this
+        // one save.
+        if ($request->boolean('auto_add_members')) {
+            $this->syncDepartmentMembership($employeeGroup, $groupHeadId, $previousGroupHeadId);
+        }
 
         return back()->with('success', 'Group updated.');
     }
@@ -158,13 +176,30 @@ class EmployeeGroupController extends Controller
     /**
      * Deletes the group only — member employees are never deleted, just
      * detached (their `employee_group_id` reverts to null via the foreign
-     * key's `nullOnDelete()`), preserving every employee record intact.
+     * key's `nullOnDelete()`, same as `checklist_templates.employee_group_id`
+     * for any checklist that had this group configured as its Clearance
+     * Signatory), preserving every employee record and checklist template
+     * intact. Wrapped defensively — every FK pointing at `employee_groups`
+     * is already `nullOnDelete()`, so this should never actually fail, but
+     * an unexpected DB-level error still surfaces as a normal flashed error
+     * message instead of a raw 500 page.
      */
     public function destroy(EmployeeGroup $employeeGroup): RedirectResponse
     {
-        $employeeGroup->delete();
+        $groupName = $employeeGroup->name;
 
-        return back()->with('success', 'Group deleted.');
+        try {
+            $employeeGroup->delete();
+        } catch (\Throwable $e) {
+            Log::error('Failed to delete employee group.', [
+                'employee_group_id' => $employeeGroup->id,
+                'exception' => $e->getMessage(),
+            ]);
+
+            return back()->with('error', 'Failed to delete "'.$groupName.'". Please try again.');
+        }
+
+        return back()->with('success', 'Group "'.$groupName.'" deleted.');
     }
 
     /**

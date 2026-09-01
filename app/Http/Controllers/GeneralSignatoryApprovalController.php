@@ -7,6 +7,7 @@ use App\Models\EmployeeGroup;
 use App\Models\GeneralSignatoryApprovalToken;
 use App\Models\OffboardingRequestGeneralSignatory;
 use App\Models\User;
+use App\Services\ChecklistCompletionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\DB;
@@ -186,6 +187,18 @@ class GeneralSignatoryApprovalController extends Controller
             'status' => $offboardingRequest->status,
             'comment' => 'Cleared by General Signatory: ' . $signatoryName,
         ]);
+
+        // A General Signatory can be the LAST outstanding requirement —
+        // every regular (and even Final Pay) checklist may already be fully
+        // approved while this was still pending, since the two tracks are
+        // actioned independently. Both completion gates below are already
+        // idempotent/self-guarding (see `ChecklistCompletionService`'s own
+        // docblocks) and simply no-op if their own checklist-side
+        // precondition isn't ALSO satisfied yet, so it's always safe to
+        // re-check both here rather than only from the checklist side.
+        $completionService = app(ChecklistCompletionService::class);
+        $completionService->checkRegularChecklistsCompletion($offboardingRequest);
+        $completionService->checkFinalPayCompletion($offboardingRequest);
     }
 
     /**

@@ -1063,6 +1063,15 @@ class ApprovalController extends Controller
             'This approver has already acted — no reminder needed.'
         );
 
+        // "Use Task Assignee as Clearance Signatory": this checklist has no
+        // single Clearance Signatory at all — `$offboardingRequestApprover->employee`
+        // is always null for this kind, which previously crashed below
+        // reading `->email` off it. Remind every still-pending Task
+        // Assignee instead; see `remindTaskAssignees()`.
+        if ($offboardingRequestApprover->checklistTemplate?->use_task_assignee_as_signatory) {
+            return $this->remindTaskAssignees($request, $offboardingRequestApprover);
+        }
+
         // Optional per-click override from the Offboarding Status/Timeline
         // "Select Email Template" picker — applies ONLY to this one send,
         // never persisted anywhere and never touching the global default.
@@ -1082,12 +1091,7 @@ class ApprovalController extends Controller
         $isOverdue = $offboardingRequestApprover->isOverdue();
         $templateName = $isOverdue ? self::OVERDUE_TEMPLATE : self::REMINDER_TEMPLATE;
 
-        $emailTemplate = ! empty($validated['email_template_id'])
-            ? EmailTemplate::find($validated['email_template_id'])
-            : EmailTemplate::where('is_active', true)
-                ->where('template_name', $templateName)
-                ->latest('updated_at')
-                ->first();
+        $emailTemplate = $this->resolveReminderEmailTemplate($validated['email_template_id'] ?? null, $templateName);
 
         if (! $emailTemplate) {
             return back()->with('error', 'No "' . $templateName . '" email template found. Please create one first.');
@@ -1135,6 +1139,112 @@ class ApprovalController extends Controller
 
             return back()->with('error', 'Failed to send the reminder email.');
         }
+    }
+
+    /**
+     * `remind()`'s equivalent for a "Use Task Assignee as Clearance
+     * Signatory" checklist — there is no single Clearance Signatory row to
+     * send one email to, so this sends one to EVERY Task Assignee who
+     * hasn't finished their own item(s) yet
+     * (`OffboardingRequestApprover::pendingTaskAssigneeEmployees()`), and
+     * none at all to one who's already cleared their own work. If every
+     * Task Assignee has already finished (nothing left to remind), no email
+     * is sent and the admin sees why instead of a raw error. A partial
+     * failure (e.g. one recipient has no usable email on file, or the mail
+     * send itself throws) never blocks the others — `reminder_sent_at` and
+     * the activity log only reflect who a reminder was actually sent to.
+     */
+    private function remindTaskAssignees(Request $request, OffboardingRequestApprover $offboardingRequestApprover): RedirectResponse
+    {
+        $recipients = $offboardingRequestApprover->pendingTaskAssigneeEmployees();
+
+        if ($recipients->isEmpty()) {
+            return back()->with('error', 'There are no pending assignees to remind — every Task Assignee on this checklist has already completed their own item(s).');
+        }
+
+        $validated = $request->validate([
+            'email_template_id' => ['nullable', Rule::exists('email_templates', 'id')->where('is_active', true)],
+        ]);
+
+        $offboardingRequest = $offboardingRequestApprover->offboardingRequest;
+        $offboardee = $offboardingRequest->employee;
+        $isOverdue = $offboardingRequestApprover->isOverdue();
+        $templateName = $isOverdue ? self::OVERDUE_TEMPLATE : self::REMINDER_TEMPLATE;
+
+        $emailTemplate = $this->resolveReminderEmailTemplate($validated['email_template_id'] ?? null, $templateName);
+
+        if (! $emailTemplate) {
+            return back()->with('error', 'No "' . $templateName . '" email template found. Please create one first.');
+        }
+
+        $sentNames = [];
+
+        foreach ($recipients as $approverEmployee) {
+            if (! $approverEmployee->email || ! filter_var($approverEmployee->email, FILTER_VALIDATE_EMAIL)) {
+                continue;
+            }
+
+            [$subject, $body] = $emailTemplate->render(
+                approverName: $approverEmployee->name,
+                offboardeeName: $offboardee->name,
+                creatorName: auth()->user()->name,
+                employeeNumber: $offboardee->employee_code,
+                checklistName: $offboardingRequestApprover->checklistTemplate?->title,
+                dueDate: $offboardingRequestApprover->due_at?->format('M d, Y'),
+                department: $offboardee->department,
+                position: $offboardee->designation,
+                daysOverdue: $isOverdue ? (string) $offboardingRequestApprover->daysOverdue() : null,
+                pendingItems: $isOverdue ? $offboardingRequestApprover->itemsStatusTableHtml() : null,
+                checklistStatus: $isOverdue ? $offboardingRequestApprover->clearanceStatusLabel() : null,
+            );
+
+            try {
+                Mail::to($approverEmployee->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+                $sentNames[] = $approverEmployee->name;
+            } catch (\Throwable $e) {
+                Log::error('Failed to send offboarding reminder email.', [
+                    'offboarding_request_approver_id' => $offboardingRequestApprover->id,
+                    'recipient' => $approverEmployee->email,
+                    'exception' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        if (empty($sentNames)) {
+            return back()->with('error', 'Failed to send the reminder email — no pending assignee has a valid email address on file.');
+        }
+
+        $offboardingRequestApprover->update(['reminder_sent_at' => now()]);
+
+        $offboardingRequest->activities()->create([
+            'user_id' => auth()->id(),
+            'offboarding_request_approver_id' => $offboardingRequestApprover->id,
+            'action' => 'reminder_sent',
+            'status' => $offboardingRequest->status,
+            'comment' => 'Sent to: ' . implode(', ', $sentNames),
+        ]);
+
+        return redirect()
+            ->route('offboardees.index', ['offboardee' => $offboardee->id])
+            ->with('success', 'Reminder sent to ' . implode(', ', $sentNames) . '.');
+    }
+
+    /**
+     * Resolves which email template a reminder send uses — an explicit
+     * per-click override from the Offboarding Status/Timeline "Select Email
+     * Template" picker when one was chosen, otherwise the fixed-name
+     * default (reminder vs. overdue). Scoped to `is_active` templates only,
+     * same as every other template lookup in this app. Shared verbatim by
+     * `remind()` and `remindTaskAssignees()` so both resolve identically.
+     */
+    private function resolveReminderEmailTemplate(?int $overrideTemplateId, string $templateName): ?EmailTemplate
+    {
+        return $overrideTemplateId
+            ? EmailTemplate::find($overrideTemplateId)
+            : EmailTemplate::where('is_active', true)
+                ->where('template_name', $templateName)
+                ->latest('updated_at')
+                ->first();
     }
 
     /**

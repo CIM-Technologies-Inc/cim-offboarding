@@ -3,7 +3,7 @@
 @section('content')
     <x-common.page-breadcrumb pageTitle="Employee Master" />
 
-    <div x-data="employeeGroupsWorkspace(@js($groups), @js($employees), @js(session('success')), @js($errors->any() ? $errors->first() : null))">
+    <div x-data="employeeGroupsWorkspace(@js($groups), @js($employees), @js(session('success')), @js(session('error') ?? ($errors->any() ? $errors->first() : null)))">
         <div class="mb-6 flex items-center justify-between">
             <p class="text-sm text-gray-500 dark:text-gray-400">
                 Organize employees into groups and assign the Group Head/Department Head responsible for each one.
@@ -68,6 +68,35 @@
                                 class="flex items-center justify-center gap-1.5 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
                                 Edit
                             </button>
+                            {{-- Confirm-then-submit, same pattern as the Roles
+                                 page's own delete button — member employees are
+                                 only ever detached (`employee_group_id` reverts
+                                 to null via `nullOnDelete()`), never deleted;
+                                 deleting one group never touches any other. --}}
+                            <form method="POST" :action="'/employee-groups/' + group.id" x-data="{ confirmed: false }"
+                                @submit="if (!confirmed) {
+                                    $event.preventDefault();
+                                    Swal.fire({
+                                        title: 'Delete this group?',
+                                        html: 'You are about to delete <b>' + group.name + '</b>. Its members will be unassigned, not deleted, and this cannot be undone.',
+                                        icon: 'warning',
+                                        showCancelButton: true,
+                                        confirmButtonText: 'Delete',
+                                        cancelButtonText: 'Cancel',
+                                        confirmButtonColor: '#dc2626',
+                                        cancelButtonColor: '#145a3a',
+                                        reverseButtons: true
+                                    }).then((result) => { if (result.isConfirmed) { confirmed = true; $el.requestSubmit(); } });
+                                }">
+                                @csrf
+                                @method('DELETE')
+                                <button type="submit" title="Delete Group"
+                                    class="flex h-[38px] w-[38px] items-center justify-center rounded-lg border border-gray-300 text-error-600 hover:bg-error-50 dark:border-gray-700 dark:text-error-400 dark:hover:bg-error-500/10">
+                                    <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path fill-rule="evenodd" clip-rule="evenodd" d="M8.60834 4.16667H11.3917C11.4144 4.06414 11.4271 3.95762 11.4271 3.84812C11.4271 3.30589 11.0212 2.86118 10.5 2.79018V2.5C10.5 2.22386 10.2761 2 10 2C9.72386 2 9.5 2.22386 9.5 2.5V2.79018C8.97878 2.86118 8.57292 3.30589 8.57292 3.84812C8.57292 3.95762 8.58562 4.06414 8.60834 4.16667ZM6.5 5.5C6.22386 5.5 6 5.72386 6 6C6 6.27614 6.22386 6.5 6.5 6.5H6.9743L7.51823 15.6152C7.57216 16.5197 8.32082 17.2249 9.22699 17.2249H10.773C11.6792 17.2249 12.4278 16.5197 12.4818 15.6152L13.0257 6.5H13.5C13.7761 6.5 14 6.27614 14 6C14 5.72386 13.7761 5.5 13.5 5.5H6.5ZM11.5245 6.5H8.47552L9.01462 15.5556C9.03271 15.8571 9.28229 16.0922 9.58436 16.0922H10.4156C10.7177 16.0922 10.9673 15.8571 10.9854 15.5556L11.5245 6.5Z" fill="currentColor" />
+                                    </svg>
+                                </button>
+                            </form>
                         </div>
                     </div>
                 </template>
@@ -289,6 +318,23 @@
                         </label>
                         <input type="text" name="name" x-model="groupForm.name" required placeholder="e.g. IT Department"
                             class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
+                    </div>
+
+                    {{-- Controls only whether THIS save auto-adds members from
+                         the Group Head's department (see
+                         `EmployeeGroupController::syncDepartmentMembership()`)
+                         — never stored on the group itself, so it always
+                         starts checked (the existing, original behavior)
+                         whether creating a new group or editing an existing
+                         one. Unchecking it never removes anyone already in
+                         the group; it only skips adding anyone new for this
+                         save. --}}
+                    <div class="mt-5 flex items-center gap-2">
+                        <input type="checkbox" id="groupAutoAddMembers" name="auto_add_members" value="1" x-model="groupForm.auto_add_members"
+                            class="h-4 w-4 rounded border-gray-300 text-[#145a3a] accent-[#145a3a] focus:ring-[#145a3a]/40 dark:border-gray-700" />
+                        <label for="groupAutoAddMembers" class="text-sm font-medium text-gray-700 dark:text-gray-400">
+                            Auto-Add Group Members
+                        </label>
                     </div>
 
                     {{-- Plain `@click.away` doesn't work here: `x-ui.modal`'s
@@ -586,7 +632,7 @@
                 employees: initialEmployees,
 
                 editingGroup: null,
-                groupForm: { name: '', group_head_employee_id: '', is_active: true },
+                groupForm: { name: '', group_head_employee_id: '', is_active: true, auto_add_members: true },
                 groupHeadQuery: '',
                 groupHeadDropdownOpen: false,
 
@@ -654,7 +700,7 @@
                 },
                 openCreateModal() {
                     this.editingGroup = null;
-                    this.groupForm = { name: '', group_head_employee_id: '', is_active: true };
+                    this.groupForm = { name: '', group_head_employee_id: '', is_active: true, auto_add_members: true };
                     this.groupHeadQuery = '';
                     this.$dispatch('open-group-modal');
                 },
@@ -664,6 +710,10 @@
                         name: group.name,
                         group_head_employee_id: group.group_head_employee_id ? String(group.group_head_employee_id) : '',
                         is_active: group.is_active,
+                        // Not a stored group attribute — this only controls
+                        // whether saving RIGHT NOW auto-adds members, so it
+                        // always starts checked here too, same as Create.
+                        auto_add_members: true,
                     };
                     this.groupHeadQuery = group.group_head ? `${group.group_head.name} (${group.group_head.employee_code})` : '';
                     this.$dispatch('open-group-modal');

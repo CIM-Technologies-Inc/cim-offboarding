@@ -611,7 +611,7 @@ class ChecklistDelegationController extends Controller
      * This List") — never an unrelated approver, and never an already
      * -completed item that isn't theirs.
      */
-    public function saveProgress(Request $request, OffboardingRequestApprover $offboardingRequestApprover): RedirectResponse
+    public function saveProgress(Request $request, OffboardingRequestApprover $offboardingRequestApprover): RedirectResponse|JsonResponse
     {
         $itemScope = $this->authorizeItemAction($offboardingRequestApprover);
 
@@ -671,6 +671,28 @@ class ChecklistDelegationController extends Controller
             );
         } else {
             app(ChecklistCompletionService::class)->autoApproveIfHeadless($offboardingRequestApprover);
+        }
+
+        // Same JSON branch `saveProgressGroup()` already has, for the exact
+        // same reason: the checklist modal's "Done" button submits here via
+        // `fetch()` with `Accept: application/json` so the dialog never
+        // closes/reloads on a single item's completion — it needs a JSON
+        // patch back, not the default redirect. This route is what EVERY
+        // headless ("Use Task Assignee as Clearance Signatory") checklist's
+        // Done button posts to — `saveProgressUrl` only ever resolves to
+        // the GROUP route when there's a real owning employee (see
+        // `ApprovalController::groupIntoCombinedApprovals()`) — so omitting
+        // this branch here meant the save always genuinely succeeded
+        // server-side, but the client's `res.json()` then threw trying to
+        // parse the redirected HTML page as JSON, surfacing a false "Failed
+        // to save task completion" error despite the item having actually
+        // been checked. A real browser form submission (Save Progress)
+        // never sends this header, so that flow is unaffected.
+        if ($request->wantsJson()) {
+            return response()->json([
+                'items' => $this->checkedItemPatches([$offboardingRequestApprover]),
+                'message' => 'Task list successfully checked.',
+            ]);
         }
 
         return back()->with('success', 'Checklist progress saved.');

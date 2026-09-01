@@ -31,7 +31,15 @@ class ChecklistCompletionService
             ->where('status', '!=', 'approved')
             ->doesntExist();
 
-        if (! $allRegularApproved) {
+        // A General Signatory is an additional, checklist-independent
+        // clearance requirement (see `OffboardingRequestGeneralSignatory`) —
+        // snapshotted onto the request once at creation time, so this
+        // always reflects who was actually assigned then, never a later
+        // change to the live General Signatory configuration. The Final Pay
+        // Checklist must never even be attached while any of them is still
+        // pending, regardless of how quickly the regular checklists
+        // themselves get approved.
+        if (! $allRegularApproved || ! $this->allGeneralSignatoriesApproved($offboardingRequest)) {
             return;
         }
 
@@ -113,7 +121,14 @@ class ChecklistCompletionService
             ->where('status', '!=', 'approved')
             ->doesntExist();
 
-        if (! $allFinalPayApproved) {
+        // Defense in depth alongside the same check in
+        // `checkRegularChecklistsCompletion()` above: the Final Pay
+        // Checklist is normally never even attached until every General
+        // Signatory has approved, so this is expected to already be true by
+        // the time any Final Pay checklist exists at all — but the request
+        // must never be marked `completed` while one is still outstanding,
+        // regardless of which path got a Final Pay checklist approved.
+        if (! $allFinalPayApproved || ! $this->allGeneralSignatoriesApproved($offboardingRequest)) {
             return;
         }
 
@@ -137,6 +152,24 @@ class ChecklistCompletionService
                 'comment' => 'All required Final Pay Checklist approvals have been completed.',
             ]);
         });
+    }
+
+    /**
+     * Whether every General Signatory snapshotted onto this request at
+     * creation time (`ChecklistApprovalNotifier::notifyGeneralSignatories()`)
+     * has approved — trivially true for a request with none at all, so this
+     * never changes behavior for the common case where no General
+     * Signatory is configured. Consulted by both completion gates above
+     * (see their own docblocks) so a still-pending General Signatory always
+     * blocks the Final Pay Checklist from being attached AND blocks the
+     * request from being marked `completed`, no matter which checklist
+     * approval fires last.
+     */
+    private function allGeneralSignatoriesApproved(OffboardingRequest $offboardingRequest): bool
+    {
+        return $offboardingRequest->generalSignatoryApprovals()
+            ->where('status', '!=', 'approved')
+            ->doesntExist();
     }
 
     /**

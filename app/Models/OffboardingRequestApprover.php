@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Collection;
 
 class OffboardingRequestApprover extends Model
 {
@@ -324,6 +325,40 @@ class OffboardingRequestApprover extends Model
         }
 
         return $item->signatory;
+    }
+
+    /**
+     * For a "Use Task Assignee as Clearance Signatory" checklist (no single
+     * Clearance Signatory of its own — see `ChecklistTemplate::$use_task_assignee_as_signatory`),
+     * every distinct employee actually assigned to at least one item here
+     * who has NOT yet fully completed their own item(s) — the reminder
+     * recipients for this checklist, in place of a single (nonexistent)
+     * Clearance Signatory. Grouped by `effectiveSignatoryFor()` — the same
+     * per-request-override-aware resolution the Clearance Form's own
+     * per-Task-Assignee rows use — so a live item reassignment is reflected
+     * identically here. An employee counts as pending unless EVERY one of
+     * their own items is checked; items nobody was ever assigned
+     * contribute nothing. Empty once every Task Assignee has cleared their
+     * own work (or the checklist has no items at all).
+     *
+     * @return Collection<int, Employee>
+     */
+    public function pendingTaskAssigneeEmployees(): Collection
+    {
+        $this->loadMissing('checklistTemplate.items', 'itemProgress');
+
+        $itemsByEmployeeId = $this->checklistTemplate->items
+            ->groupBy(fn (ChecklistItem $item) => $this->effectiveSignatoryFor($item)?->id)
+            ->forget(null);
+
+        $checkedItemIds = $this->itemProgress->where('is_checked', true)->pluck('checklist_item_id');
+
+        return $itemsByEmployeeId
+            ->reject(fn (Collection $items) => $items->every(fn (ChecklistItem $item) => $checkedItemIds->contains($item->id)))
+            ->keys()
+            ->map(fn ($employeeId) => Employee::find($employeeId))
+            ->filter()
+            ->values();
     }
 
     /**
