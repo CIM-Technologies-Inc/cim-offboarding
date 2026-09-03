@@ -15,6 +15,12 @@
     // / `OVERDUE_TEMPLATE` by name exactly.
     $defaultReminderTemplateId = optional($emailTemplates->firstWhere('template_name', 'Offboarding Reminder'))->id;
     $defaultOverdueTemplateId = optional($emailTemplates->firstWhere('template_name', 'Offboarding Overdue Notice'))->id;
+
+    // Default template for a General Signatory's "Notify Approver" —
+    // matches `GeneralSignatoryApprovalController::GENERAL_SIGNATORY_NOTIFICATION_TEMPLATE`
+    // by name, same resolve-once-here convention as the two checklist
+    // defaults above.
+    $defaultGeneralSignatoryTemplateId = optional($emailTemplates->firstWhere('template_name', 'General Signatory Offboarding Notification'))->id;
 @endphp
 
 <div x-data="{
@@ -26,14 +32,20 @@
         emailTemplates: @js($emailTemplates),
         defaultReminderTemplateId: @js($defaultReminderTemplateId),
         defaultOverdueTemplateId: @js($defaultOverdueTemplateId),
+        defaultGeneralSignatoryTemplateId: @js($defaultGeneralSignatoryTemplateId),
         richSteps() {
             return this.selected?.timeline?.filter((step) => step.rich) ?? [];
         },
         // The template a step's reminder would use if the admin never
         // touches the picker — same before/after-due-date split
-        // `ApprovalController::remind()` itself makes server-side, so the
-        // pre-selected option always matches what would actually be sent.
+        // `ApprovalController::remind()` itself makes server-side for a
+        // checklist approver, or the fixed General Signatory notification
+        // template for a General Signatory step — so the pre-selected
+        // option always matches what would actually be sent either way.
         defaultTemplateIdFor(step) {
+            if (step.isGeneralSignatory) {
+                return this.defaultGeneralSignatoryTemplateId;
+            }
             return step.isOverdue ? this.defaultOverdueTemplateId : this.defaultReminderTemplateId;
         },
         templateNameFor(id) {
@@ -149,6 +161,19 @@
                                         <template x-if="step.status === 'approved'">
                                             <p>Cleared: <span x-text="step.approvedAt"></span></p>
                                         </template>
+                                        <!-- <template x-if="step.status === 'approved' && step.approverSignatureUrl">
+                                            <div class="mt-1.5 flex items-center gap-2">
+                                                <span class="text-gray-400">E-Signature:</span>
+                                                <img :src="step.approverSignatureUrl" :alt="step.approverName + '\'s signature'"
+                                                    class="h-8 max-w-[120px] rounded border border-gray-200 bg-white object-contain dark:border-gray-700" />
+                                            </div>
+                                        </template> -->
+                                        <template x-if="step.approvalMethod">
+                                            <p>Approval Method: <span class="font-medium text-gray-700 dark:text-gray-300" x-text="step.approvalMethod"></span></p>
+                                        </template>
+                                        <template x-if="step.remarks">
+                                            <p>Remarks: <span x-text="step.remarks"></span></p>
+                                        </template>
                                         <template x-if="step.status === 'declined'">
                                             <p>Declined: <span x-text="step.declinedAt"></span></p>
                                         </template>
@@ -180,7 +205,7 @@
                                         <template x-if="step.reminderSentAt">
                                             <p class="text-xs text-gray-400">Last reminder sent: <span x-text="step.reminderSentAt"></span></p>
                                         </template>
-                                        <template x-if="step.canRemind">
+                                        <template x-if="isAdmin && step.canRemind">
                                             <div x-data="{ confirmed: false, showEmailPicker: false, selectedTemplateId: defaultTemplateIdFor(step) }">
                                                 <div class="flex items-center gap-2">
                                                     <form method="POST" :action="step.remindUrl"
@@ -204,7 +229,7 @@
                                                         }">
                                                         <input type="hidden" name="_token" :value="csrfToken" />
                                                         <input type="hidden" name="email_template_id" :value="selectedTemplateId" />
-                                                        <button type="submit" :disabled="confirmed || !emailTemplates.length"
+                                                        <button type="submit" :disabled="confirmed || !emailTemplates.length" data-turbo-submits-with="Sending..."
                                                             class="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
                                                             Notify Approver
                                                         </button>
@@ -311,6 +336,19 @@
                                             <template x-if="step.status === 'approved'">
                                                 <p>Cleared: <span x-text="step.approvedAt"></span></p>
                                             </template>
+                                            <!-- <template x-if="step.status === 'approved' && step.approverSignatureUrl">
+                                                <div class="mt-1.5 flex items-center gap-2">
+                                                    <span class="text-gray-400">E-Signature:</span>
+                                                    <img :src="step.approverSignatureUrl" :alt="step.approverName + '\'s signature'"
+                                                        class="h-8 max-w-[120px] rounded border border-gray-200 bg-white object-contain dark:border-gray-700" />
+                                                </div>
+                                            </template> -->
+                                            <template x-if="step.approvalMethod">
+                                                <p>Approval Method: <span class="font-medium text-gray-700 dark:text-gray-300" x-text="step.approvalMethod"></span></p>
+                                            </template>
+                                            <template x-if="step.remarks">
+                                                <p>Remarks: <span x-text="step.remarks"></span></p>
+                                            </template>
                                             <template x-if="step.status === 'declined'">
                                                 <p>Declined: <span x-text="step.declinedAt"></span></p>
                                             </template>
@@ -342,7 +380,7 @@
                                             <template x-if="step.reminderSentAt">
                                                 <p class="text-xs text-gray-400">Last reminder sent: <span x-text="step.reminderSentAt"></span></p>
                                             </template>
-                                            <template x-if="step.canRemind">
+                                            <template x-if="isAdmin && step.canRemind">
                                                 <div x-data="{ confirmed: false, showEmailPicker: false, selectedTemplateId: defaultTemplateIdFor(step) }">
                                                     <div class="flex items-center gap-2">
                                                         <form method="POST" :action="step.remindUrl"
@@ -366,7 +404,7 @@
                                                             }">
                                                             <input type="hidden" name="_token" :value="csrfToken" />
                                                             <input type="hidden" name="email_template_id" :value="selectedTemplateId" />
-                                                            <button type="submit" :disabled="confirmed || !emailTemplates.length"
+                                                            <button type="submit" :disabled="confirmed || !emailTemplates.length" data-turbo-submits-with="Sending..."
                                                                 class="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
                                                                 Notify Approver
                                                             </button>

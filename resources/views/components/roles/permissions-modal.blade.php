@@ -53,7 +53,7 @@
                                 class="flex justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03]">
                                 Close
                             </button>
-                            <button type="submit" :disabled="processing"
+                            <button type="submit" :disabled="processing" data-turbo-submits-with="Saving..."
                                 :class="processing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#0f4630]'"
                                 class="flex items-center justify-center gap-1.5 rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white">
                                 Save Permissions

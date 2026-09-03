@@ -114,7 +114,7 @@
                             }">
                             @csrf
                             <input type="hidden" name="employee_id" :value="selectedEmployeeId" />
-                            <button type="submit" :disabled="!selectedEmployeeId || processing"
+                            <button type="submit" :disabled="!selectedEmployeeId || processing" data-turbo-submits-with="Assigning..."
                                 :class="(!selectedEmployeeId || processing) ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#0f4630]'"
                                 class="flex items-center justify-center gap-1.5 rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white">
                                 Assign

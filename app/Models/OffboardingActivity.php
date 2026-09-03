@@ -11,6 +11,8 @@ class OffboardingActivity extends Model
         'offboarding_request_id',
         'user_id',
         'offboarding_request_approver_id',
+        'offboarding_request_general_signatory_id',
+        'offboarding_request_final_approval_id',
         'action',
         'status',
         'comment',
@@ -32,6 +34,28 @@ class OffboardingActivity extends Model
     }
 
     /**
+     * The General Signatory equivalent of `offboardingRequestApprover()` —
+     * which specific `OffboardingRequestGeneralSignatory` assignment this
+     * activity (a notification resend or first-view) belongs to, needed
+     * once a request has more than one General Signatory attached.
+     */
+    public function offboardingRequestGeneralSignatory(): BelongsTo
+    {
+        return $this->belongsTo(OffboardingRequestGeneralSignatory::class);
+    }
+
+    /**
+     * Which specific `OffboardingRequestFinalApproval` process this
+     * activity (sent/viewed/approved) belongs to — a request only ever has
+     * one, but this keeps the same explicit-attribution convention as the
+     * checklist/General Signatory FKs above.
+     */
+    public function offboardingRequestFinalApproval(): BelongsTo
+    {
+        return $this->belongsTo(OffboardingRequestFinalApproval::class);
+    }
+
+    /**
      * Human-readable summary for the timeline, e.g. "Cleared by John Santos (IT)".
      */
     public function label(): string
@@ -45,10 +69,17 @@ class OffboardingActivity extends Model
                 ? "Cleared by {$actor}{$suffix}"
                 : 'All checklist items completed — auto-approved',
             'general_signatory_approved' => "Cleared by General Signatory: {$actor}{$suffix}",
+            'checklist_viewed' => "Viewed by {$actor}{$suffix}",
+            'general_signatory_viewed' => "Viewed by {$actor} (General Signatory)",
+            'offboarding_reset' => "Offboarding Request Reset by {$actor}",
             'declined' => "Declined by {$actor}{$suffix}",
             'all_checklists_approved' => 'All Offboarding Checklists Cleared',
             'final_pay_notified' => 'Final Pay Checklist Notification Sent',
             'reminder_sent' => "Reminder Sent by {$actor}",
+            'general_signatory_reminder_sent' => "Notification Resent by {$actor}",
+            'final_approval_sent' => "Final Approval Requested by {$actor}",
+            'final_approval_viewed' => "Final Approval Link Viewed by {$actor}",
+            'final_approval_approved' => "Final Approval Given by {$actor}",
             'checklist_assigned' => "Checklist Assigned by {$actor}{$suffix}",
             'checklist_pool_assigned' => "Checklist Pool Opened by {$actor}{$suffix}",
             'checklist_item_reassigned' => "Checklist Item Reassigned by {$actor}{$suffix}",

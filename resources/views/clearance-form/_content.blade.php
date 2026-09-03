@@ -106,9 +106,16 @@
 
     <div class="approval-block">
         <p class="approval-label">Approved for Payment by:</p>
-        <p class="signature-line">___________________</p>
-        <p class="approver-name">VICTORIANO T. YAP</p>
-        <p class="approver-title">President</p>
+        @if ($finalApprover['signatureDataUri'])
+            <img src="{{ $finalApprover['signatureDataUri'] }}" alt="Signature" class="final-approver-signature-img" />
+        @else
+            <p class="signature-line">___________________</p>
+        @endif
+        <p class="approver-name">{{ $finalApprover['name'] }}</p>
+        <p class="approver-title">{{ $finalApprover['title'] }}</p>
+        @if ($finalApprover['approvedAt'])
+            <p class="approver-date">Approved: {{ $finalApprover['approvedAt'] }}</p>
+        @endif
     </div>
 
     <p class="form-code">CIM-HR-CAR FORM-02212025-REV.01</p>

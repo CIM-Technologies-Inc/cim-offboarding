@@ -24,6 +24,8 @@ use App\Http\Controllers\RoleController;
 use App\Http\Controllers\UserController;
 use App\Http\Controllers\GeneralSignatoryController;
 use App\Http\Controllers\GeneralSignatoryApprovalController;
+use App\Http\Controllers\FinalApproverController;
+use App\Http\Controllers\FinalApprovalController;
 
 // authentication pages
 Route::get('/signin', [AuthController::class, 'create'])->name('login');
@@ -54,6 +56,11 @@ Route::post('/approval/{id}/{token}', [ApprovalController::class, 'confirmEmailA
 // Clearance Signatory pair above.
 Route::get('/general-signatory-approval/{id}/{token}', [GeneralSignatoryApprovalController::class, 'showEmailApproval'])->name('general-signatory-approval.show');
 Route::post('/general-signatory-approval/{id}/{token}', [GeneralSignatoryApprovalController::class, 'confirmEmailApproval'])->name('general-signatory-approval.confirm');
+
+// Same public, unauthenticated "Approve" link pattern, for the Final
+// Approval Request email — see FinalApprovalController's docblock.
+Route::get('/final-approval/{id}/{token}', [FinalApprovalController::class, 'showEmailApproval'])->name('final-approval.show');
+Route::post('/final-approval/{id}/{token}', [FinalApprovalController::class, 'confirmEmailApproval'])->name('final-approval.confirm');
 
 Route::middleware(['auth', 'password.changed'])->group(function () {
 
@@ -188,6 +195,16 @@ Route::middleware('permission:offboarding-checklists.delete')->group(function ()
     Route::delete('/general-signatories/{generalSignatory}', [GeneralSignatoryController::class, 'destroy'])->name('general-signatories.destroy');
 });
 
+// Final Approver — also lives on the "Offboarding Checklist" page, but
+// deliberately gated by its OWN permission (not `offboarding-checklists.*`,
+// unlike General Signatory above) since it controls a single, org-wide
+// signatory used on every future Clearance Form.
+Route::middleware('permission:final-approver.manage')->group(function () {
+    Route::post('/final-approvers', [FinalApproverController::class, 'store'])->name('final-approvers.store');
+    Route::patch('/final-approvers/{finalApprover}/toggle-status', [FinalApproverController::class, 'toggleStatus'])->name('final-approvers.toggle-status');
+    Route::delete('/final-approvers/{finalApprover}', [FinalApproverController::class, 'destroy'])->name('final-approvers.destroy');
+});
+
 // onboarding checklist templates
 // Same registration-order requirement as the offboarding checklists group
 // above: "create" must come before "view" so the bare `/{onboardingChecklist}`
@@ -250,9 +267,33 @@ Route::middleware('permission:offboardees.view')->group(function () {
     Route::get('/offboarding-requests/{offboardingRequest}/clearance-form/print', [ClearanceFormController::class, 'print'])->name('clearance-form.print');
 });
 
+// Reset Offboarding Request (Offboardee page) — a destructive admin action
+// that wipes all checklist/approval progress and reinitializes the request
+// exactly like a newly created one, so it needs its own stricter permission
+// rather than reusing "offboardees.view". Admin-only by default (see the
+// permission's own seeding migration).
+Route::middleware('permission:offboarding-requests.reset')->group(function () {
+    Route::post('/offboarding-requests/{offboardingRequest}/reset', [OffboardingRequestController::class, 'reset'])->name('offboarding-requests.reset');
+});
+
+// Final Approval (Offboardee page) — emails the active Final Signatory to
+// sign off on a COMPLETED offboarding request. Its own dedicated
+// permission, same reasoning as the reset action above.
+Route::middleware('permission:final-approval.send')->group(function () {
+    Route::post('/offboarding-requests/{offboardingRequest}/final-approval', [FinalApprovalController::class, 'send'])->name('final-approval.send');
+});
+
 // approver reminders (HR/Admin only) — part of "acting on" an approval.
 Route::middleware('permission:approvals.approve')->group(function () {
     Route::post('/approvals/{offboardingRequestApprover}/remind', [ApprovalController::class, 'remind'])->name('approvals.remind');
+
+    // General Signatory equivalent — resends the existing assignment's own
+    // notification email (Offboarding Status/Timeline's "Notify Approver"),
+    // never creates a new assignment. Same permission as the checklist
+    // reminder above; both controllers additionally hard-require
+    // `isAdmin()` themselves, since `approvals.approve` alone is broader
+    // (also granted to the Approver role by default).
+    Route::post('/general-signatory-approvals/{generalSignatoryApproval}/remind', [GeneralSignatoryApprovalController::class, 'remind'])->name('general-signatory-approvals.remind');
 });
 
 // email templates

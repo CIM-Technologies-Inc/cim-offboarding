@@ -7,6 +7,11 @@
     $offboardingRequestFields = [
         'employee_id', 'immediate_head_id', 'notice_date', 'last_working_day', 'resignation_type', 'reason',
         'approver_notification_template_id', 'offboardee_notification_template_id', 'general_signatory_notification_template_id',
+        // Not a real form field — `OffboardingRequestController::store()`'s
+        // "no active Final Approver configured" check flashes its message
+        // under this key so the modal reopens with it shown, the same as
+        // every genuine validation failure below.
+        'final_approver',
     ];
     $offboardingRequestHasErrors = $errors->hasAny($offboardingRequestFields);
 
@@ -406,7 +411,7 @@
                     class="flex w-full justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03] sm:w-auto">
                     Close
                 </button>
-                <button type="submit" :disabled="submitting"
+                <button type="submit" :disabled="submitting" data-turbo-submits-with="Submitting..."
                     class="flex w-full items-center justify-center gap-2 rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white hover:bg-[#0f4630] disabled:cursor-not-allowed disabled:opacity-70 sm:w-auto">
                     <span x-show="submitting" class="h-4 w-4 animate-spin rounded-full border-2 border-solid border-white border-t-transparent"></span>
                     <span x-text="submitting ? 'Submitting...' : 'Submit Request'"></span>

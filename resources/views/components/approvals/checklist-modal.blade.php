@@ -60,7 +60,7 @@
             formData.append(`items[${item.id}][is_checked]`, '1');
             formData.append(`items[${item.id}][remark]`, this.remarks[item.id] || '');
 
-            fetch(this.selected.saveProgressUrl, {
+            window.fetchWithTimeout(this.selected.saveProgressUrl, {
                 method: 'POST',
                 headers: {
                     'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
@@ -96,21 +96,32 @@
                     timerProgressBar: true,
                     customClass: { container: 'app-toast' },
                 });
-            }).catch(() => {
+            }).catch((e) => {
                 this.doneProcessing[item.id] = false;
-                Swal.fire({ icon: 'error', title: 'Failed to save task completion', confirmButtonColor: '#145a3a' });
+                Swal.fire({
+                    icon: 'error',
+                    title: e?.name === 'AbortError'
+                        ? 'This is taking longer than expected. Please check before trying again.'
+                        : 'Failed to save task completion',
+                    confirmButtonColor: '#145a3a',
+                });
             });
         },
-        // True when the current viewer is literally the named signatory for
-        // this item on a per-item-approver checklist — they get a Done
-        // button alongside Hold, gated on the checkbox above being checked.
-        // Legacy (non-per-item-approver) checklists never use this path, so
-        // the Department Head's existing checkbox-only experience on those
-        // is completely unchanged. Read off the ITEM's own originating
-        // checklist (not the card as a whole) since a combined card can mix
-        // per-item-approver and legacy checklists together.
+        // True when the current viewer is either (a) literally the named
+        // signatory for this item on a per-item-approver checklist, or (b)
+        // the whole-checklist delegate the Clearance Signatory forwarded
+        // this checklist to — both get a Done button alongside Hold, gated
+        // on the checkbox above being checked, so a delegate can mark each
+        // task item done exactly like a per-item signatory does instead of
+        // only having the card-wide Save Progress button. The Department
+        // Head/primary approver's own checkbox-only experience is
+        // unaffected either way (`selected.isDelegate` is only ever true
+        // for whoever the checklist was forwarded to). Read off the ITEM's
+        // own originating checklist for the per-item-approver case (not the
+        // card as a whole) since a combined card can mix per-item-approver
+        // and legacy checklists together.
         isDoneFlowItem(item) {
-            return !!item.usesPerItemApprovers && !!item.isOwnItem;
+            return (!!item.usesPerItemApprovers && !!item.isOwnItem) || !!this.selected?.isDelegate;
         },
         canHold(item) {
             return !!(this.remarks[item.id] || '').trim() && !this.holdProcessing[item.id];
@@ -144,7 +155,7 @@
                 this.holdProcessing[item.id] = true;
                 const formData = new FormData();
                 formData.append('remark', remark);
-                fetch(item.holdUrl, {
+                window.fetchWithTimeout(item.holdUrl, {
                     method: 'POST',
                     headers: {
                         'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
@@ -174,9 +185,15 @@
                         timerProgressBar: true,
                         customClass: { container: 'app-toast' },
                     });
-                }).catch(() => {
+                }).catch((e) => {
                     this.holdProcessing[item.id] = false;
-                    Swal.fire({ icon: 'error', title: 'Failed to place item on Hold', confirmButtonColor: '#145a3a' });
+                    Swal.fire({
+                        icon: 'error',
+                        title: e?.name === 'AbortError'
+                            ? 'This is taking longer than expected. Please check before trying again.'
+                            : 'Failed to place item on Hold',
+                        confirmButtonColor: '#145a3a',
+                    });
                 });
             });
         },
@@ -195,7 +212,7 @@
                 return;
             }
             this.takeOverProcessing[item.id] = true;
-            fetch(item.takeOverUrl, {
+            window.fetchWithTimeout(item.takeOverUrl, {
                 method: 'POST',
                 headers: {
                     'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
@@ -231,9 +248,15 @@
                     }
                 });
                 this.takeOverProcessing[item.id] = false;
-            }).catch(() => {
+            }).catch((e) => {
                 this.takeOverProcessing[item.id] = false;
-                Swal.fire({ icon: 'error', title: 'Failed to accept this checklist item', confirmButtonColor: '#145a3a' });
+                Swal.fire({
+                    icon: 'error',
+                    title: e?.name === 'AbortError'
+                        ? 'This is taking longer than expected. Please check before trying again.'
+                        : 'Failed to accept this checklist item',
+                    confirmButtonColor: '#145a3a',
+                });
             });
         },
         allChecked() {
@@ -295,7 +318,7 @@
                     </template>
 
                     <p class="mb-5 text-sm text-gray-500 dark:text-gray-400" x-show="selected.isDelegate">
-                        Complete each clearance item and add remarks, then click Save Progress. The Department Head will review your work before giving final approval.
+                        Check the box for each item, add a remark if needed, then click Done to confirm it (or Save Progress to save several at once). Use Hold instead if you're blocked and need to explain why. The Clearance Signatory will review your work before giving final approval.
                     </p>
                     <p class="mb-5 text-sm text-gray-500 dark:text-gray-400" x-show="!selected.isPrimaryApprover && !selected.isDelegate">
                         Check the box for each item assigned to you, add a remark if needed, then click Done to confirm it. Use Hold instead if you're blocked and need to explain why.
@@ -465,7 +488,7 @@
                                  item to already be done first). Legacy checklists keep the Department Head's original Submit-only experience,
                                  since Submit there already saves and approves in one action. A checklist item signatory only ever sees Done. -->
                             <template x-if="(selected.isDelegate || (selected.isPrimaryApprover && selected.usesPerItemApprovers)) && selected.checklistItems && selected.checklistItems.length">
-                                <button type="submit" :formaction="selected.saveProgressUrl" :disabled="processing"
+                                <button type="submit" :formaction="selected.saveProgressUrl" :disabled="processing" data-turbo-submits-with="Saving..."
                                     :class="processing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50 dark:hover:bg-white/5'"
                                     class="flex items-center justify-center gap-1.5 rounded-lg border border-gray-300 px-4 py-2.5 text-sm font-medium text-gray-700 dark:border-gray-700 dark:text-gray-300">
                                     Save Progress
@@ -476,7 +499,7 @@
                                  checklists: enabled regardless of item checks (same as always). Per-item-approver checklists: enabled
                                  only once every item has actually been checked. -->
                             <template x-if="selected.isPrimaryApprover">
-                                <button type="submit" :formaction="selected.approveUrl" :disabled="processing || !canApprove()"
+                                <button type="submit" :formaction="selected.approveUrl" :disabled="processing || !canApprove()" data-turbo-submits-with="Submitting..."
                                     :class="(processing || !canApprove()) ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#0f4630]'"
                                     class="flex items-center justify-center gap-1.5 rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white">
                                     Submit

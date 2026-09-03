@@ -32,6 +32,7 @@ class EmployeeDashboardController extends Controller
                 'approvers.itemProgress.checkedBy',
                 'approvers.itemAssignments.assignedEmployee',
                 'approvers.employee',
+                'generalSignatoryApprovals',
                 'activities',
             ])
             ->latest()

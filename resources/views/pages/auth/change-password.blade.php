@@ -76,7 +76,7 @@
                                     </div>
                                     <!-- Button -->
                                     <div>
-                                        <button type="submit"
+                                        <button type="submit" data-turbo-submits-with="Saving..."
                                             class="bg-[#145a3a] shadow-theme-xs hover:bg-[#0f4630] flex w-full items-center justify-center rounded-lg px-4 py-3 text-sm font-medium text-white transition">
                                             Change Password
                                         </button>

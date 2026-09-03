@@ -141,7 +141,7 @@
                                     class="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-center text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/[0.03]">
                                     Clear
                                 </a>
-                                <button type="submit"
+                                <button type="submit" data-turbo-submits-with="Applying..."
                                     class="flex-1 rounded-lg bg-[#145a3a] px-3 py-2 text-sm font-medium text-white hover:bg-[#0f4630]">
                                     Apply
                                 </button>
@@ -202,6 +202,86 @@
                                 <span class="font-medium text-gray-700 dark:text-gray-300">{{ $offboardee['lastWorkingDay'] ?? '—' }}</span>
                             </div>
                         </div>
+
+                        @can('offboarding-requests.reset')
+                            @if ($offboardee['resetOffboardingUrl'] && $offboardee['hasOffboardingProgress'] && $offboardee['status'] !== 'completed')
+                                <div class="mt-4 border-t border-gray-100 pt-4 dark:border-gray-800" @click.stop="">
+                                    <form method="POST" action="{{ $offboardee['resetOffboardingUrl'] }}" x-data="{ confirmed: false }"
+                                        @submit="if (!confirmed) {
+                                            $event.preventDefault();
+                                            Swal.fire({
+                                                title: 'Reset this offboarding request?',
+                                                text: 'This will permanently clear all checklist progress, approvals, and signatory clearances for ' + @js($offboardee['name']) + ', and restart the entire offboarding process from the beginning — exactly as if it were newly created. This cannot be undone.',
+                                                icon: 'warning',
+                                                showCancelButton: true,
+                                                confirmButtonText: 'Reset',
+                                                cancelButtonText: 'Cancel',
+                                                confirmButtonColor: '#dc2626',
+                                                cancelButtonColor: '#145a3a',
+                                                reverseButtons: true
+                                            }).then((result) => { if (result.isConfirmed) { confirmed = true; $el.requestSubmit(); } });
+                                        }">
+                                        @csrf
+                                        <button type="submit" data-turbo-submits-with="Resetting..."
+                                            class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-error-200 px-3 py-2 text-xs font-medium text-error-600 hover:bg-error-50 dark:border-error-500/30 dark:text-error-400 dark:hover:bg-error-500/10">
+                                            <svg width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                <path d="M4.16667 10C4.16667 6.77834 6.77834 4.16667 10 4.16667C11.6928 4.16667 13.2144 4.88883 14.2765 6.04167H12.5C12.1548 6.04167 11.875 6.32149 11.875 6.66667C11.875 7.01185 12.1548 7.29167 12.5 7.29167H15.8333C16.1785 7.29167 16.4583 7.01185 16.4583 6.66667V3.33333C16.4583 2.98816 16.1785 2.70833 15.8333 2.70833C15.4882 2.70833 15.2083 2.98816 15.2083 3.33333V5.01603C13.912 3.66086 12.0555 2.91667 10 2.91667C6.08798 2.91667 2.91667 6.08798 2.91667 10C2.91667 13.912 6.08798 17.0833 10 17.0833C13.129 17.0833 15.7828 15.0645 16.7367 12.2635C16.8477 11.9367 16.6726 11.5818 16.3458 11.4709C16.019 11.36 15.6641 11.535 15.5532 11.8618C14.7663 14.1729 12.5765 15.8333 10 15.8333C6.77834 15.8333 4.16667 13.2217 4.16667 10Z" fill="currentColor" />
+                                            </svg>
+                                            Reset Offboarding
+                                        </button>
+                                    </form>
+                                </div>
+                            @endif
+                        @endcan
+
+                        @can('final-approval.send')
+                            {{-- Only ever shown for a request whose real `status` column is
+                                 'completed' — never based on `displayStatus()`, which can read
+                                 differently for unrelated reasons (overdue, etc.). --}}
+                            @if ($offboardee['status'] === 'completed' && $offboardee['finalApprovalUrl'])
+                                <div class="mt-4 border-t border-gray-100 pt-4 dark:border-gray-800" @click.stop="">
+                                    @if ($offboardee['finalApprovalStatus'] === 'approved')
+                                        <div class="flex w-full items-center justify-center gap-1.5 rounded-lg bg-[#145a3a]/10 px-3 py-2 text-xs font-medium text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]">
+                                            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                <path fill-rule="evenodd" clip-rule="evenodd" d="M13.4767 4.10714C13.7788 4.38292 13.8008 4.85162 13.5257 5.15436L6.83817 12.5211C6.69758 12.6759 6.49882 12.7644 6.29008 12.7644C6.08134 12.7644 5.88258 12.6759 5.74199 12.5211L2.47426 8.9211C2.19916 8.61836 2.22119 8.14966 2.52326 7.87388C2.82533 7.5981 3.29283 7.62018 3.56793 7.92292L6.29008 10.9184L12.4321 4.15582C12.7072 3.85308 13.1746 3.83137 13.4767 4.10714Z" fill="currentColor" />
+                                            </svg>
+                                            Approved
+                                        </div>
+                                    @else
+                                        @php
+                                            $finalApprovalConfirmTitle = $offboardee['finalApprovalStatus'] === 'pending'
+                                                ? 'Resend the Final Approval request?'
+                                                : 'Send this offboarding request for Final Approval?';
+                                        @endphp
+                                        <form method="POST" action="{{ $offboardee['finalApprovalUrl'] }}" x-data="{ confirmed: false }"
+                                            @submit="if (!confirmed) {
+                                                $event.preventDefault();
+                                                Swal.fire({
+                                                    title: @js($finalApprovalConfirmTitle),
+                                                    text: 'This will email the currently active Final Signatory' + (@js($offboardee['finalSignatoryName']) ? (' (' + @js($offboardee['finalSignatoryName']) + ')') : '') + ' the completed Clearance Form for ' + @js($offboardee['name']) + ' and a one-click Approve link.',
+                                                    icon: 'question',
+                                                    showCancelButton: true,
+                                                    confirmButtonText: 'Send',
+                                                    cancelButtonText: 'Cancel',
+                                                    confirmButtonColor: '#145a3a',
+                                                    cancelButtonColor: '#6b7280',
+                                                    reverseButtons: true
+                                                }).then((result) => { if (result.isConfirmed) { confirmed = true; $el.requestSubmit(); } });
+                                            }">
+                                            @csrf
+                                            <button type="submit" data-turbo-submits-with="Sending..."
+                                                class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-[#145a3a]/30 px-3 py-2 text-xs font-medium text-[#145a3a] hover:bg-[#145a3a]/5 dark:border-[#3aa876]/30 dark:text-[#3aa876] dark:hover:bg-[#3aa876]/10">
+                                                <svg width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                    <path d="M3.5 5.5L10 10.5L16.5 5.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                                                    <path d="M3.5 5.5C3.5 4.94772 3.94772 4.5 4.5 4.5H15.5C16.0523 4.5 16.5 4.94772 16.5 5.5V14C16.5 14.5523 16.0523 15 15.5 15H4.5C3.94772 15 3.5 14.5523 3.5 14V5.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+                                                </svg>
+                                                {{ $offboardee['finalApprovalStatus'] === 'pending' ? 'Resend Final Approval' : 'Final Approval' }}
+                                            </button>
+                                        </form>
+                                    @endif
+                                </div>
+                            @endif
+                        @endcan
                     </div>
                 @endforeach
             </div>

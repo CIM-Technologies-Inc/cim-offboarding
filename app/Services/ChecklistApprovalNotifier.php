@@ -350,7 +350,7 @@ class ChecklistApprovalNotifier
             return;
         }
 
-        $offboardingRequest->loadMissing('approvers.checklistTemplate', 'approvers.employee');
+        $offboardingRequest->loadMissing('approvers.checklistTemplate', 'approvers.employee', 'generalSignatoryApprovals');
 
         [$subject, $body] = $emailTemplate->render(
             approverName: $offboardee->name,
@@ -530,6 +530,59 @@ class ChecklistApprovalNotifier
     }
 
     /**
+     * Resends the General Signatory notification email for an EXISTING
+     * assignment — the "Notify Approver" action on the Offboarding Status/
+     * Timeline's General Signatory section, for when the original email was
+     * lost/deleted. Reuses the exact same subject/body assembly
+     * `notifyGeneralSignatories()` uses when a request is first created
+     * (same task list HTML, same one-click Approve button convention — a
+     * FRESH token/link every send, never reusing or invalidating a prior
+     * one, exactly like `notifyDepartmentHeadReady()`'s reminder emails
+     * already do), just re-run against the row already attached instead of
+     * attaching a new one. Never creates or touches an
+     * `OffboardingRequestGeneralSignatory` row — only ever reads `$assignment`
+     * and sends mail — so a resend can never duplicate the General
+     * Signatory's existing assignment or spawn a second approval task.
+     *
+     * @return bool whether the email was actually sent (false = no valid
+     *   recipient email on file, or the send itself threw) — the caller
+     *   decides how to surface that to the admin.
+     */
+    public function resendGeneralSignatoryNotification(OffboardingRequestGeneralSignatory $assignment, EmailTemplate $emailTemplate): bool
+    {
+        $assignment->loadMissing('offboardingRequest.employee', 'generalSignatory.clearanceSignatory', 'generalSignatory.tasks.signatory');
+
+        $generalSignatory = $assignment->generalSignatory;
+        $clearanceSignatory = $generalSignatory->clearanceSignatory;
+
+        if (! $clearanceSignatory || ! $clearanceSignatory->email || ! filter_var($clearanceSignatory->email, FILTER_VALIDATE_EMAIL)) {
+            return false;
+        }
+
+        $offboardingRequest = $assignment->offboardingRequest;
+        $offboardee = $offboardingRequest->employee;
+
+        [$subject, $body] = $emailTemplate->render(
+            approverName: $clearanceSignatory->name,
+            offboardeeName: $offboardee->name,
+            employeeNumber: $offboardee->employee_code,
+            department: $offboardee->department,
+            position: $offboardee->designation,
+            dateHired: $offboardee->date_of_joining?->format('M d, Y'),
+            separationDate: $offboardingRequest->last_working_day?->format('M d, Y'),
+            requestDate: $offboardingRequest->created_at->format('M d, Y'),
+            generalSignatoryTasks: $this->buildGeneralSignatoryTasksHtml($generalSignatory),
+            approveButton: $assignment->status === 'pending'
+                ? $this->buildApproveButtonHtml($this->createGeneralSignatoryApprovalUrl($assignment))
+                : '',
+        );
+
+        Mail::to($clearanceSignatory->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+
+        return true;
+    }
+
+    /**
      * Generates the one-click "Approve" link for a General Signatory's
      * pending assignment and returns its full URL — the General Signatory
      * equivalent of `notifyDepartmentHeadReady()`'s
@@ -558,7 +611,7 @@ class ChecklistApprovalNotifier
      * unescaped placeholder" pattern `buildGeneralSignatoryTasksHtml()`
      * below already uses for that token.
      */
-    private function buildApproveButtonHtml(string $url): string
+    public function buildApproveButtonHtml(string $url): string
     {
         return '<p style="margin:24px 0 0;">'
             .'<a href="'.e($url).'" style="display:inline-block;background-color:#145a3a;color:#ffffff;text-decoration:none;padding:12px 24px;border-radius:8px;font-weight:bold;">'
@@ -884,6 +937,31 @@ class ChecklistApprovalNotifier
                 'exception' => $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * Generates a fresh one-click "Approve" link for a Department Head/
+     * Clearance Signatory checklist assignment — the same hashed-token-
+     * plus-expiry convention `notifyDepartmentHeadReady()` just used above
+     * for the original "ready for approval" email, exposed here as its own
+     * method so a later manual follow-up (e.g. an admin resending this
+     * content as a customizable `EmailTemplate` via
+     * `ApprovalController::remind()`) can mint its own fresh link on
+     * demand — never reusing or invalidating a prior one, exactly like
+     * every other resend in this app (`resendGeneralSignatoryNotification()`
+     * above works the same way).
+     */
+    public function createChecklistApprovalUrl(OffboardingRequestApprover $assignment): string
+    {
+        $rawToken = Str::random(64);
+
+        $approvalToken = ChecklistApprovalToken::create([
+            'offboarding_request_approver_id' => $assignment->id,
+            'token' => Hash::make($rawToken),
+            'expires_at' => now()->addDays(self::APPROVAL_TOKEN_LIFETIME_DAYS),
+        ]);
+
+        return route('approval.show', ['id' => $approvalToken->id, 'token' => $rawToken]);
     }
 
     /**

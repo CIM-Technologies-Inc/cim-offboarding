@@ -96,7 +96,7 @@
                                     </div>
                                     <!-- Button -->
                                     <div>
-                                        <button type="submit" :disabled="signingIn"
+                                        <button type="submit" :disabled="signingIn" data-turbo-submits-with="Signing in..."
                                             class="bg-[#145a3a] shadow-theme-xs hover:bg-[#0f4630] flex w-full items-center justify-center gap-2 rounded-lg px-4 py-3 text-sm font-medium text-white transition disabled:cursor-not-allowed disabled:opacity-70">
                                             <span x-show="signingIn" class="h-4 w-4 animate-spin rounded-full border-2 border-solid border-white border-t-transparent"></span>
                                             <span x-text="signingIn ? 'Signing In...' : 'Sign In'"></span>
@@ -166,7 +166,7 @@
                             class="flex w-full justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03] sm:w-auto">
                             Cancel
                         </button>
-                        <button type="submit"
+                        <button type="submit" data-turbo-submits-with="Sending..."
                             class="bg-[#145a3a] shadow-theme-xs hover:bg-[#0f4630] flex w-full justify-center rounded-lg px-4 py-2.5 text-sm font-medium text-white sm:w-auto">
                             Send Reset Link
                         </button>

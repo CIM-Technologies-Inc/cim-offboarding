@@ -6,6 +6,7 @@ use App\Models\Employee;
 use App\Models\User;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use Illuminate\View\View;
 use Spatie\Permission\Models\Role;
@@ -92,9 +93,13 @@ class UserController extends Controller
         // admin sees below — it never changes what account ends up existing.
         $accountExisted = User::where('username', $employee->employee_code_digits)->exists();
 
-        $user = User::findOrCreateEmployee($employee);
-        $user->syncRoles($roles);
-        $user->update(['role' => $this->primaryRole($roles)]);
+        $user = DB::transaction(function () use ($employee, $roles) {
+            $user = User::findOrCreateEmployee($employee);
+            $user->syncRoles($roles);
+            $user->update(['role' => $this->primaryRole($roles)]);
+
+            return $user;
+        });
 
         $label = collect($roles)->map(fn ($role) => ucfirst($role))->implode(' + ');
 

@@ -37,23 +37,28 @@ class EmployeeGroupController extends Controller
             'group_head_employee_id' => ['nullable', 'exists:employees,id'],
         ]);
 
-        $group = EmployeeGroup::create($validated + [
-            'is_active' => $request->boolean('is_active', true),
-            'created_by' => $request->user()->id,
-        ]);
-
         $groupHeadId = $validated['group_head_employee_id'] ?? null;
+        $autoAddMembers = $request->boolean('auto_add_members');
+        $isActive = $request->boolean('is_active', true);
+        $createdBy = $request->user()->id;
 
-        $this->ensureGroupHeadHasAccount($groupHeadId);
+        DB::transaction(function () use ($validated, $groupHeadId, $autoAddMembers, $isActive, $createdBy) {
+            $group = EmployeeGroup::create($validated + [
+                'is_active' => $isActive,
+                'created_by' => $createdBy,
+            ]);
 
-        // "Automatically Add Group Members" — checked by default in the
-        // form, but the admin can uncheck it to create the group with an
-        // empty member list instead, adding people manually afterward. Only
-        // gates whether `syncDepartmentMembership()` runs for THIS save; it
-        // is never persisted on the group itself.
-        if ($request->boolean('auto_add_members')) {
-            $this->syncDepartmentMembership($group, $groupHeadId, previousGroupHeadEmployeeId: null);
-        }
+            $this->ensureGroupHeadHasAccount($groupHeadId);
+
+            // "Automatically Add Group Members" — checked by default in the
+            // form, but the admin can uncheck it to create the group with an
+            // empty member list instead, adding people manually afterward. Only
+            // gates whether `syncDepartmentMembership()` runs for THIS save; it
+            // is never persisted on the group itself.
+            if ($autoAddMembers) {
+                $this->syncDepartmentMembership($group, $groupHeadId, previousGroupHeadEmployeeId: null);
+            }
+        });
 
         return back()->with('success', 'Group created.');
     }
@@ -77,23 +82,26 @@ class EmployeeGroupController extends Controller
         ]);
 
         $previousGroupHeadId = $employeeGroup->group_head_employee_id;
-
-        $employeeGroup->update($validated + [
-            'is_active' => $request->boolean('is_active'),
-        ]);
-
         $groupHeadId = $validated['group_head_employee_id'] ?? null;
+        $autoAddMembers = $request->boolean('auto_add_members');
+        $isActive = $request->boolean('is_active');
 
-        $this->ensureGroupHeadHasAccount($groupHeadId);
+        DB::transaction(function () use ($employeeGroup, $validated, $isActive, $groupHeadId, $autoAddMembers, $previousGroupHeadId) {
+            $employeeGroup->update($validated + [
+                'is_active' => $isActive,
+            ]);
 
-        // Same "Automatically Add Group Members" gate as `store()` — see
-        // its own comment there. Unchecking it on an edit never removes
-        // anyone already in the group; it only skips adding anyone new
-        // (and skips the head-change removal side effect below) for this
-        // one save.
-        if ($request->boolean('auto_add_members')) {
-            $this->syncDepartmentMembership($employeeGroup, $groupHeadId, $previousGroupHeadId);
-        }
+            $this->ensureGroupHeadHasAccount($groupHeadId);
+
+            // Same "Automatically Add Group Members" gate as `store()` — see
+            // its own comment there. Unchecking it on an edit never removes
+            // anyone already in the group; it only skips adding anyone new
+            // (and skips the head-change removal side effect below) for this
+            // one save.
+            if ($autoAddMembers) {
+                $this->syncDepartmentMembership($employeeGroup, $groupHeadId, $previousGroupHeadId);
+            }
+        });
 
         return back()->with('success', 'Group updated.');
     }

@@ -127,7 +127,7 @@
                                         @csrf
                                         @method('DELETE')
                                         <div class="group relative">
-                                            <button type="submit"
+                                            <button type="submit" data-turbo-submits-with="Deleting..."
                                                 class="flex h-9 w-9 items-center justify-center rounded-lg text-gray-500 hover:bg-error-50 hover:text-error-500 dark:text-gray-400 dark:hover:bg-error-500/10 dark:hover:text-error-400">
                                                 <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
                                                     <path fill-rule="evenodd" clip-rule="evenodd" d="M8.60834 4.16667H11.3917C11.4144 4.06414 11.4271 3.95762 11.4271 3.84812C11.4271 3.30589 11.0212 2.86118 10.5 2.79018V2.5C10.5 2.22386 10.2761 2 10 2C9.72386 2 9.5 2.22386 9.5 2.5V2.79018C8.97878 2.86118 8.57292 3.30589 8.57292 3.84812C8.57292 3.95762 8.58562 4.06414 8.60834 4.16667ZM6.5 5.5C6.22386 5.5 6 5.72386 6 6C6 6.27614 6.22386 6.5 6.5 6.5H6.9743L7.51823 15.6152C7.57216 16.5197 8.32082 17.2249 9.22699 17.2249H10.773C11.6792 17.2249 12.4278 16.5197 12.4818 15.6152L13.0257 6.5H13.5C13.7761 6.5 14 6.27614 14 6C14 5.72386 13.7761 5.5 13.5 5.5H6.5ZM11.5245 6.5H8.47552L9.01462 15.5556C9.03271 15.8571 9.28229 16.0922 9.58436 16.0922H10.4156C10.7177 16.0922 10.9673 15.8571 10.9854 15.5556L11.5245 6.5Z" fill="currentColor" />
@@ -290,7 +290,7 @@
                                         @csrf
                                         @method('DELETE')
                                         <div class="group relative">
-                                            <button type="submit"
+                                            <button type="submit" data-turbo-submits-with="Deleting..."
                                                 class="flex h-9 w-9 items-center justify-center rounded-lg text-gray-500 hover:bg-error-50 hover:text-error-500 dark:text-gray-400 dark:hover:bg-error-500/10 dark:hover:text-error-400">
                                                 <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
                                                     <path fill-rule="evenodd" clip-rule="evenodd" d="M8.60834 4.16667H11.3917C11.4144 4.06414 11.4271 3.95762 11.4271 3.84812C11.4271 3.30589 11.0212 2.86118 10.5 2.79018V2.5C10.5 2.22386 10.2761 2 10 2C9.72386 2 9.5 2.22386 9.5 2.5V2.79018C8.97878 2.86118 8.57292 3.30589 8.57292 3.84812C8.57292 3.95762 8.58562 4.06414 8.60834 4.16667ZM6.5 5.5C6.22386 5.5 6 5.72386 6 6C6 6.27614 6.22386 6.5 6.5 6.5H6.9743L7.51823 15.6152C7.57216 16.5197 8.32082 17.2249 9.22699 17.2249H10.773C11.6792 17.2249 12.4278 16.5197 12.4818 15.6152L13.0257 6.5H13.5C13.7761 6.5 14 6.27614 14 6C14 5.72386 13.7761 5.5 13.5 5.5H6.5ZM11.5245 6.5H8.47552L9.01462 15.5556C9.03271 15.8571 9.28229 16.0922 9.58436 16.0922H10.4156C10.7177 16.0922 10.9673 15.8571 10.9854 15.5556L11.5245 6.5Z" fill="currentColor" />
@@ -320,4 +320,147 @@
 
     <x-offboarding.general-signatory-modal :employees="$employees" :employee-groups="$employeeGroups" />
     <x-offboarding.general-signatory-view-modal />
+
+    @can('final-approver.manage')
+        <!-- FINAL APPROVER — the configurable "Approved for Payment by:" signatory
+             on the Clearance Form (see the FinalApprover model). Exactly one row
+             is ever active at a time; this table doubles as a history of every
+             employee ever set as Final Approver. -->
+        <div x-data class="mb-6 mt-8 flex items-center justify-between">
+            <p class="text-sm text-gray-500 dark:text-gray-400">
+                Configure the final signatory shown on every new Clearance Form.
+            </p>
+            <button type="button" @click="$dispatch('open-final-approver-modal')"
+                class="shadow-theme-xs flex items-center justify-center gap-2 rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white hover:bg-[#0f4630]">
+                <svg class="fill-current" width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M9 3.75V14.25M3.75 9H14.25" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+                Set Final Signatory
+            </button>
+        </div>
+
+        <div class="overflow-hidden rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03]">
+            <div class="max-w-full overflow-x-auto custom-scrollbar">
+                <table class="w-full min-w-[900px]">
+                    <thead>
+                        <tr class="border-b border-gray-100 dark:border-gray-800">
+                            <th class="px-5 py-3 text-left sm:px-6">
+                                <p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Signatory Name</p>
+                            </th>
+                            <th class="px-5 py-3 text-left sm:px-6">
+                                <p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Employee Number</p>
+                            </th>
+                            <th class="px-5 py-3 text-left sm:px-6">
+                                <p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Position</p>
+                            </th>
+                            <th class="px-5 py-3 text-left sm:px-6">
+                                <p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Department</p>
+                            </th>
+                            <th class="px-5 py-3 text-left sm:px-6">
+                                <p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Email</p>
+                            </th>
+                            <th class="px-5 py-3 text-left sm:px-6">
+                                <p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Status</p>
+                            </th>
+                            <th class="px-5 py-3 text-left sm:px-6">
+                                <p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Date Added</p>
+                            </th>
+                            <th class="px-5 py-3 text-right sm:px-6">
+                                <p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Actions</p>
+                            </th>
+                        </tr>
+                    </thead>
+                    <tbody id="final-approvers-tbody">
+                        @forelse ($finalApprovers as $finalApprover)
+                            <tr class="border-b border-gray-100 dark:border-gray-800">
+                                <td class="px-5 py-4 sm:px-6">
+                                    <span class="block font-medium text-gray-800 text-theme-sm dark:text-white/90">
+                                        {{ $finalApprover->employee->name ?? '—' }}
+                                    </span>
+                                </td>
+                                <td class="px-5 py-4 sm:px-6">
+                                    <p class="text-gray-500 text-theme-sm dark:text-gray-400">{{ $finalApprover->employee->employee_code ?? '—' }}</p>
+                                </td>
+                                <td class="px-5 py-4 sm:px-6">
+                                    <p class="text-gray-500 text-theme-sm dark:text-gray-400">{{ $finalApprover->employee->designation ?: '—' }}</p>
+                                </td>
+                                <td class="px-5 py-4 sm:px-6">
+                                    <p class="text-gray-500 text-theme-sm dark:text-gray-400">{{ $finalApprover->employee->department ?? '—' }}</p>
+                                </td>
+                                <td class="px-5 py-4 sm:px-6">
+                                    <p class="text-gray-500 text-theme-sm dark:text-gray-400">{{ $finalApprover->employee->email ?? '—' }}</p>
+                                </td>
+                                <td class="px-5 py-4 sm:px-6">
+                                    {{-- On/Off switch — same immediate-submit convention as the Checklist
+                                         Templates/General Signatory tables' own status toggles (no confirmation
+                                         dialog on the switch itself). Turning one ON still deactivates whichever
+                                         Final Approver is currently active — enforced server-side in
+                                         `FinalApproverController::toggleStatus()`, unchanged by this UI update. --}}
+                                    <form method="POST" action="{{ route('final-approvers.toggle-status', $finalApprover) }}" class="flex items-center gap-2">
+                                        @csrf
+                                        @method('PATCH')
+                                        <label class="relative inline-flex cursor-pointer items-center">
+                                            <input type="checkbox" class="peer sr-only" onchange="this.form.requestSubmit()" @checked($finalApprover->is_active) />
+                                            <div
+                                                class="peer h-6 w-11 rounded-full bg-gray-200 transition-colors duration-200 peer-checked:bg-[#145a3a] peer-focus:outline-hidden after:absolute after:top-0.5 after:left-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:duration-200 after:content-[''] peer-checked:after:translate-x-5 dark:bg-gray-700">
+                                            </div>
+                                        </label>
+                                        <span class="text-xs font-medium {{ $finalApprover->is_active ? 'text-[#145a3a] dark:text-[#3aa876]' : 'text-gray-400' }}">
+                                            {{ $finalApprover->is_active ? 'On' : 'Off' }}
+                                        </span>
+                                    </form>
+                                </td>
+                                <td class="px-5 py-4 sm:px-6">
+                                    <p class="text-gray-500 text-theme-sm dark:text-gray-400">{{ $finalApprover->created_at->format('M d, Y') }}</p>
+                                </td>
+                                <td class="px-5 py-4 text-right sm:px-6">
+                                    {{-- Delete only — no Edit/View, per spec. Deleting a config row never
+                                         affects an offboarding request that already snapshotted it: see
+                                         `FinalApproverController::destroy()`'s docblock. --}}
+                                    <form method="POST" action="{{ route('final-approvers.destroy', $finalApprover) }}" x-data="{ confirmed: false }"
+                                        @submit="if (!confirmed) {
+                                            $event.preventDefault();
+                                            Swal.fire({
+                                                title: 'Delete this Final Approver?',
+                                                text: 'You are about to remove ' + @js($finalApprover->employee->name ?? 'this record') + ' from the Final Approver history. This does not affect any offboarding request that already used this signatory. This cannot be undone.',
+                                                icon: 'warning',
+                                                showCancelButton: true,
+                                                confirmButtonText: 'Delete',
+                                                cancelButtonText: 'Cancel',
+                                                confirmButtonColor: '#dc2626',
+                                                cancelButtonColor: '#145a3a',
+                                                reverseButtons: true
+                                            }).then((result) => { if (result.isConfirmed) { confirmed = true; $el.requestSubmit(); } });
+                                        }" class="inline-flex justify-end">
+                                        @csrf
+                                        @method('DELETE')
+                                        <div class="group relative">
+                                            <button type="submit" data-turbo-submits-with="Deleting..."
+                                                class="flex h-9 w-9 items-center justify-center rounded-lg text-gray-500 hover:bg-error-50 hover:text-error-500 dark:text-gray-400 dark:hover:bg-error-500/10 dark:hover:text-error-400">
+                                                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                    <path fill-rule="evenodd" clip-rule="evenodd" d="M8.60834 4.16667H11.3917C11.4144 4.06414 11.4271 3.95762 11.4271 3.84812C11.4271 3.30589 11.0212 2.86118 10.5 2.79018V2.5C10.5 2.22386 10.2761 2 10 2C9.72386 2 9.5 2.22386 9.5 2.5V2.79018C8.97878 2.86118 8.57292 3.30589 8.57292 3.84812C8.57292 3.95762 8.58562 4.06414 8.60834 4.16667ZM6.5 5.5C6.22386 5.5 6 5.72386 6 6C6 6.27614 6.22386 6.5 6.5 6.5H6.9743L7.51823 15.6152C7.57216 16.5197 8.32082 17.2249 9.22699 17.2249H10.773C11.6792 17.2249 12.4278 16.5197 12.4818 15.6152L13.0257 6.5H13.5C13.7761 6.5 14 6.27614 14 6C14 5.72386 13.7761 5.5 13.5 5.5H6.5ZM11.5245 6.5H8.47552L9.01462 15.5556C9.03271 15.8571 9.28229 16.0922 9.58436 16.0922H10.4156C10.7177 16.0922 10.9673 15.8571 10.9854 15.5556L11.5245 6.5Z" fill="currentColor" />
+                                                </svg>
+                                            </button>
+                                            <span
+                                                class="pointer-events-none absolute -top-9 right-0 z-10 whitespace-nowrap rounded-lg bg-[#145a3a] px-2.5 py-1 text-xs font-medium text-white opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+                                                Delete
+                                            </span>
+                                        </div>
+                                    </form>
+                                </td>
+                            </tr>
+                        @empty
+                            <tr>
+                                <td colspan="8" class="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
+                                    No Final Approver configured yet. Click "Set Final Approver" to create one.
+                                </td>
+                            </tr>
+                        @endforelse
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <x-offboarding.final-approver-modal :employees="$employees" />
+    @endcan
 @endsection

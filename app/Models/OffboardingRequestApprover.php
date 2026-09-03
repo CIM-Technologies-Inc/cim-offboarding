@@ -458,4 +458,58 @@ class OffboardingRequestApprover extends Model
             .$rows
             .'</table>';
     }
+
+    /**
+     * An HTML table of every checklist item's checked status, who checked
+     * it, when, and their remark — feeds the "{{checklist_summary}}"
+     * placeholder on a "ready for approval" follow-up email (e.g. when an
+     * admin resends `ChecklistReadyForApprovalMail`'s content via a
+     * customizable `EmailTemplate` instead — see
+     * `ApprovalController::remind()`). Unlike `itemsStatusTableHtml()`
+     * above (built for an OVERDUE notice, so it only shows each item's due
+     * date/status), this shows exactly who did the work and when — the
+     * same shape `ChecklistApprovalNotifier::buildChecklistsPayload()`
+     * already assembles for the hardcoded ready-for-approval Blade view,
+     * just rendered as inline HTML here instead so it can be dropped into
+     * an admin-editable template body.
+     */
+    public function checkedItemsSummaryHtml(): string
+    {
+        $this->loadMissing('checklistTemplate.items', 'itemProgress.checkedBy.employee');
+
+        if ($this->checklistTemplate->items->isEmpty()) {
+            return '<p>No individual checklist items.</p>';
+        }
+
+        $progress = $this->itemProgress->keyBy('checklist_item_id');
+
+        $rows = $this->checklistTemplate->items->map(function (ChecklistItem $item) use ($progress) {
+            $itemProgress = $progress->get($item->id);
+            $isChecked = (bool) ($itemProgress?->is_checked ?? false);
+            $status = $itemProgress?->status === 'hold'
+                ? 'Hold'
+                : ($isChecked ? 'Checked' : 'Pending');
+            $checkedByName = $isChecked ? ($itemProgress?->checkedBy?->employee?->name ?? $itemProgress?->checkedBy?->name) : null;
+            $checkedAt = $isChecked ? $itemProgress?->checked_at?->format('M d, Y g:i A') : null;
+
+            return '<tr>'
+                .'<td style="padding:6px 10px;border:1px solid #e5e7eb;">'.e($item->title).'</td>'
+                .'<td style="padding:6px 10px;border:1px solid #e5e7eb;">'.e($status).'</td>'
+                .'<td style="padding:6px 10px;border:1px solid #e5e7eb;">'.e($checkedByName ?? '—').'</td>'
+                .'<td style="padding:6px 10px;border:1px solid #e5e7eb;">'.e($checkedAt ?? '—').'</td>'
+                .'<td style="padding:6px 10px;border:1px solid #e5e7eb;">'.e($itemProgress?->remark ?? '—').'</td>'
+                .'</tr>';
+        })->implode('');
+
+        return '<table style="width:100%;border-collapse:collapse;font-size:13px;">'
+            .'<tr>'
+            .'<th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:left;background:#f3f4f6;">Item</th>'
+            .'<th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:left;background:#f3f4f6;">Status</th>'
+            .'<th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:left;background:#f3f4f6;">Checked By</th>'
+            .'<th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:left;background:#f3f4f6;">Date/Time</th>'
+            .'<th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:left;background:#f3f4f6;">Remarks</th>'
+            .'</tr>'
+            .$rows
+            .'</table>';
+    }
 }

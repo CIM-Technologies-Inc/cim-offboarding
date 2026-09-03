@@ -32,7 +32,7 @@ class OffboardeeController extends Controller
                 $query->whereIn('status', ['offboarding', 'offboarded'])
                     ->orWhereHas('latestOffboardingRequest', fn ($q) => $q->where('status', 'cancelled'));
             })
-            ->with(['latestOffboardingRequest.checklistTemplates', 'latestOffboardingRequest.approvers.checklistTemplate', 'latestOffboardingRequest.approvers.employee', 'latestOffboardingRequest.immediateHead'])
+            ->with(['latestOffboardingRequest.checklistTemplates', 'latestOffboardingRequest.approvers.checklistTemplate', 'latestOffboardingRequest.approvers.employee', 'latestOffboardingRequest.approvers.itemProgress', 'latestOffboardingRequest.generalSignatoryApprovals', 'latestOffboardingRequest.immediateHead', 'latestOffboardingRequest.finalApproval.employee'])
             ->orderBy('name')
             ->get();
 
@@ -74,6 +74,36 @@ class OffboardeeController extends Controller
             'printClearanceFormUrl' => $employee->latestOffboardingRequest
                 ? route('clearance-form.print', $employee->latestOffboardingRequest)
                 : null,
+            // Same "generate the URL unconditionally, gate the button in the
+            // view" convention as the Clearance Form URLs above — the Reset
+            // Offboarding button itself is only ever rendered for a user
+            // with the `offboarding-requests.reset` permission (see the
+            // card partial), and the route independently re-enforces that
+            // same permission server-side, so exposing this URL to everyone
+            // here is never itself a privilege escalation.
+            'resetOffboardingUrl' => $employee->latestOffboardingRequest
+                ? route('offboarding-requests.reset', $employee->latestOffboardingRequest)
+                : null,
+            // Gates the Reset Offboarding button's visibility (on top of the
+            // `offboarding-requests.reset` permission check in the view) —
+            // deliberately based on actual checklist/task/General Signatory
+            // records via `hasApprovedOrCompletedProgress()`, never on the
+            // request's overall display status, so a request nobody has
+            // acted on yet never shows a destructive reset action with
+            // nothing real to reset.
+            'hasOffboardingProgress' => $employee->latestOffboardingRequest?->hasApprovedOrCompletedProgress() ?? false,
+            // Final Approval — the button itself is only ever rendered for
+            // a request whose real `status` column is 'completed' (see the
+            // card partial), gated by the `final-approval.send` permission;
+            // the route independently re-enforces both server-side.
+            'finalApprovalUrl' => $employee->latestOffboardingRequest
+                ? route('final-approval.send', $employee->latestOffboardingRequest)
+                : null,
+            // null (never sent) | 'pending' (sent, awaiting the Final
+            // Signatory) | 'approved' — the card uses this to switch
+            // between showing the button and a plain "Approved" badge.
+            'finalApprovalStatus' => $employee->latestOffboardingRequest?->finalApproval?->status,
+            'finalSignatoryName' => $employee->latestOffboardingRequest?->finalApproval?->employee?->name,
         ];
 
         $offboardees = $employees->map($mapEmployee)->values();
@@ -87,7 +117,7 @@ class OffboardeeController extends Controller
             $deepLinkOffboardee = $offboardees->firstWhere('id', $openOffboardeeId);
 
             if (! $deepLinkOffboardee) {
-                $targetEmployee = Employee::with(['latestOffboardingRequest.checklistTemplates', 'latestOffboardingRequest.approvers.checklistTemplate', 'latestOffboardingRequest.approvers.employee', 'latestOffboardingRequest.immediateHead'])->find($openOffboardeeId);
+                $targetEmployee = Employee::with(['latestOffboardingRequest.checklistTemplates', 'latestOffboardingRequest.approvers.checklistTemplate', 'latestOffboardingRequest.approvers.employee', 'latestOffboardingRequest.approvers.itemProgress', 'latestOffboardingRequest.generalSignatoryApprovals', 'latestOffboardingRequest.immediateHead', 'latestOffboardingRequest.finalApproval.employee'])->find($openOffboardeeId);
                 $deepLinkOffboardee = $targetEmployee ? $mapEmployee($targetEmployee) : null;
             }
         }

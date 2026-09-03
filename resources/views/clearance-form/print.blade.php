@@ -61,13 +61,15 @@
         }
         .clearance-table td { border: 1px solid #000; padding: 8px 10px; font-size: 13px; height: 30px; }
         .signature-cell { text-align: center; }
-        .signature-img { max-height: 30px; max-width: 110px; }
+        .signature-img { max-height: 45px; max-width: 165px; }
+        .final-approver-signature-img { max-height: 68px; max-width: 248px; }
 
         .approval-block { text-align: center; margin-top: 36px; }
         .approval-label { margin: 0; }
         .signature-line { margin: 36px 0 2px; }
         .approver-name { font-weight: bold; margin: 0; }
         .approver-title { margin: 0; }
+        .approver-date { margin: 4px 0 0; font-size: 11px; color: #4b5563; }
 
         .form-code { font-size: 10px; font-weight: bold; margin-top: 48px; }
 

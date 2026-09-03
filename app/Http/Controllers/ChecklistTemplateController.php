@@ -6,6 +6,7 @@ use App\Models\ChecklistTemplate;
 use App\Models\EmailTemplate;
 use App\Models\Employee;
 use App\Models\EmployeeGroup;
+use App\Models\FinalApprover;
 use App\Models\GeneralSignatory;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -31,7 +32,11 @@ class ChecklistTemplateController extends Controller
             // this same page — its list and the data its create/edit modal
             // needs are fetched here alongside the checklist templates.
             'generalSignatories' => GeneralSignatory::with(['clearanceSignatory', 'tasks.signatory'])->latest()->get(),
-            'employees' => Employee::orderBy('name')->get(['id', 'name', 'department']),
+            // Final Approver — another independent record type on this same
+            // page (see `FinalApprover`'s own docblock); ordered active-first
+            // so the current one is always the top row of its table.
+            'finalApprovers' => FinalApprover::with(['employee', 'creator'])->orderByDesc('is_active')->latest()->get(),
+            'employees' => Employee::orderBy('name')->get(['id', 'name', 'department', 'employee_code']),
             'employeeGroups' => $this->employeeGroupsForPicker(),
         ]);
     }

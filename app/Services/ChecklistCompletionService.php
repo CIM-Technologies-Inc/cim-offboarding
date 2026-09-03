@@ -26,10 +26,16 @@ class ChecklistCompletionService
      */
     public function checkRegularChecklistsCompletion(OffboardingRequest $offboardingRequest): void
     {
-        $allRegularApproved = $offboardingRequest->approvers()
-            ->whereHas('checklistTemplate', fn ($q) => $q->where('is_final_pay_checklist', false))
-            ->where('status', '!=', 'approved')
-            ->doesntExist();
+        $regularApprovers = $offboardingRequest->approvers()
+            ->whereHas('checklistTemplate', fn ($q) => $q->where('is_final_pay_checklist', false));
+
+        // Same vacuous-truth guard as `checkFinalPayCompletion()` below:
+        // `doesntExist()` alone would read "all approved" as true for a
+        // request with zero regular checklists attached, wrongly attaching
+        // (and notifying) the Final Pay Checklist before any real approval
+        // ever happened.
+        $allRegularApproved = $regularApprovers->clone()->exists()
+            && $regularApprovers->clone()->where('status', '!=', 'approved')->doesntExist();
 
         // A General Signatory is an additional, checklist-independent
         // clearance requirement (see `OffboardingRequestGeneralSignatory`) —
@@ -116,10 +122,19 @@ class ChecklistCompletionService
      */
     public function checkFinalPayCompletion(OffboardingRequest $offboardingRequest): void
     {
-        $allFinalPayApproved = $offboardingRequest->approvers()
-            ->whereHas('checklistTemplate', fn ($q) => $q->where('is_final_pay_checklist', true))
-            ->where('status', '!=', 'approved')
-            ->doesntExist();
+        $finalPayApprovers = $offboardingRequest->approvers()
+            ->whereHas('checklistTemplate', fn ($q) => $q->where('is_final_pay_checklist', true));
+
+        // `doesntExist()` on the "not yet approved" query is vacuously true
+        // when the Final Pay Checklist hasn't even been attached to this
+        // request yet (zero rows to contradict it) — so an `exists()` check
+        // is required too, otherwise a General Signatory approving before
+        // `checkRegularChecklistsCompletion()` has attached any Final Pay
+        // Checklist would incorrectly read as "all final pay approved" and
+        // let this method complete the request with regular checklists (and
+        // the Final Pay Checklist itself) still outstanding.
+        $allFinalPayApproved = $finalPayApprovers->clone()->exists()
+            && $finalPayApprovers->clone()->where('status', '!=', 'approved')->doesntExist();
 
         // Defense in depth alongside the same check in
         // `checkRegularChecklistsCompletion()` above: the Final Pay
@@ -250,14 +265,21 @@ class ChecklistCompletionService
      * ready for the Department Head's own manual Submit and sends ONE
      * combined email — this does NOT approve anything itself, the
      * Department Head still has to review and click Submit. A no-op group
-     * (nothing in it uses per-item approvers) never gets this nudge — the
-     * Department Head can already submit any time, same as a legacy
-     * single-approver checklist always could. Guarded by every member's own
-     * `ready_for_approval_notified_at` under a row lock, so the
-     * notification only ever fires once per group even if items get
-     * toggled back and forth afterward, and two people finishing their last
-     * item on different checklists in the same group at nearly the same
-     * moment can never send a duplicate email.
+     * (nothing in it requires full completion before approval — see
+     * `requiresAllItemsCompletedBeforeApproval()`'s two independent
+     * triggers) never gets this nudge — the Department Head can already
+     * submit any time, same as a legacy single-approver checklist always
+     * could. This deliberately covers BOTH triggers, not just per-item
+     * approvers: an Immediate Head/Department Head checklist forwarded
+     * whole to a delegate also requires full completion before Submit, so
+     * its Clearance Signatory — who may never open the checklist
+     * themselves — equally needs this "come approve" nudge once the
+     * delegate finishes, not just a per-item-approver checklist's owner.
+     * Guarded by every member's own `ready_for_approval_notified_at` under
+     * a row lock, so the notification only ever fires once per group even
+     * if items get toggled back and forth afterward, and two people
+     * finishing their last item on different checklists in the same group
+     * at nearly the same moment can never send a duplicate email.
      */
     public function checkGroupReadyForApproval(OffboardingRequest $offboardingRequest, int $employeeId): bool
     {
@@ -272,9 +294,9 @@ class ChecklistCompletionService
                 return false;
             }
 
-            $usesPerItemApprovers = $members->contains(fn (OffboardingRequestApprover $m) => $m->usesPerItemApprovers());
+            $requiresNotification = $members->contains(fn (OffboardingRequestApprover $m) => $m->requiresAllItemsCompletedBeforeApproval());
 
-            if (! $usesPerItemApprovers) {
+            if (! $requiresNotification) {
                 return false;
             }
 

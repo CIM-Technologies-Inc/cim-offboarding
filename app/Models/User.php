@@ -62,6 +62,18 @@ class User extends Authenticatable
     }
 
     /**
+     * Whether this account has a usable e-signature on file — the single
+     * gate every checklist/General Signatory approval action (in-app and
+     * via an emailed approval link alike) must pass before it's allowed to
+     * finalize, so an approval can never be recorded without a real
+     * signature backing it. See `ApprovalController`/`GeneralSignatoryApprovalController`.
+     */
+    public function hasUsableSignature(): bool
+    {
+        return filled($this->signature_path);
+    }
+
+    /**
      * The employee record this account belongs to, matched by the
      * convention that `username` equals `employee_code_digits` — the
      * employee's own `employee_code` with its "EMP" prefix stripped (see

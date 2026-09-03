@@ -27,5 +27,63 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
+        // Every uncaught exception is still fully logged via Laravel's
+        // default reporting pipeline regardless of anything below — this
+        // callback only ever affects what gets RENDERED back to the
+        // client, never whether/how it's recorded server-side. See
+        // storage/logs/laravel.log for the real exception class, message,
+        // file/line, and stack trace.
         //
+        // For a JSON-expecting request (every fetch()-based modal/action
+        // in this app — General Signatory, Final Approver, Reset
+        // Offboarding, checklist item "Done", etc.), Laravel's OWN default
+        // behavior already redacts exception details when `APP_DEBUG` is
+        // off, but INCLUDES the full exception class/message/file/line/
+        // trace whenever `APP_DEBUG` is on — which is exactly the
+        // environment this app is normally developed/tested in. That gap
+        // is real: right now, a genuine server error during local testing
+        // leaks a full stack trace straight into the browser's fetch()
+        // response. Forcing a safe, generic message here for any 500+
+        // status makes that unconditional — identical in development and
+        // production — so no fetch()-driven action can ever surface raw
+        // technical detail either way.
+        //
+        // 4xx statuses are deliberately left mostly untouched: those
+        // already carry a specific, safe, human-written message the
+        // calling JS already knows how to display (`data.message`/
+        // `data.errors` — see e.g. `general-signatory-modal.blade.php`'s
+        // `submitViaFetch()`). The two exceptions are 419 (CSRF/session
+        // expiry) and 429 (rate limiting), whose Laravel-default messages
+        // ("CSRF token mismatch.", "Too Many Attempts.") read as internal
+        // jargon rather than the plain-language wording every other
+        // message in this app uses.
+        $exceptions->render(function (\Throwable $e, \Illuminate\Http\Request $request) {
+            if (! $request->expectsJson()) {
+                return null;
+            }
+
+            $status = $e instanceof \Symfony\Component\HttpKernel\Exception\HttpExceptionInterface
+                ? $e->getStatusCode()
+                : 500;
+
+            if ($status === 419) {
+                return response()->json([
+                    'message' => 'Your session has expired. Please refresh the page and try again.',
+                ], 419);
+            }
+
+            if ($status === 429) {
+                return response()->json([
+                    'message' => 'You are making requests too quickly. Please wait a moment and try again.',
+                ], 429);
+            }
+
+            if ($status < 500) {
+                return null;
+            }
+
+            return response()->json([
+                'message' => "We're sorry, but we couldn't complete your request. The process may have taken too long or an unexpected error occurred. Please try again.",
+            ], $status);
+        });
     })->create();

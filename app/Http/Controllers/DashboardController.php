@@ -63,7 +63,7 @@ class DashboardController extends Controller
             ->orderBy('template_name')
             ->get(['id', 'template_name']);
 
-        $recentRequests = OffboardingRequest::with('employee', 'approvers')
+        $recentRequests = OffboardingRequest::with('employee', 'approvers', 'generalSignatoryApprovals')
             ->latest()
             ->take(6)
             ->get()

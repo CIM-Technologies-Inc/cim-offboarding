@@ -2,16 +2,21 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\EmailTemplate;
 use App\Models\Employee;
 use App\Models\EmployeeGroup;
 use App\Models\GeneralSignatoryApprovalToken;
 use App\Models\OffboardingRequestGeneralSignatory;
 use App\Models\User;
+use App\Services\ChecklistApprovalNotifier;
 use App\Services\ChecklistCompletionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\Rule;
 use Illuminate\View\View;
 
 /**
@@ -27,6 +32,23 @@ use Illuminate\View\View;
 class GeneralSignatoryApprovalController extends Controller
 {
     /**
+     * Fixed-name email template for the "you're a Clearance Signatory on
+     * this offboarding request" notice — same template
+     * `ChecklistApprovalNotifier::notifyGeneralSignatories()` sends at
+     * request-creation time, kept as its own copy here (this controller
+     * never depends on that service beyond the one shared resend method)
+     * so `remind()` below can default to it by name.
+     */
+    private const GENERAL_SIGNATORY_NOTIFICATION_TEMPLATE = 'General Signatory Offboarding Notification';
+
+    /**
+     * Shown wherever a General Signatory's clearance is blocked for lack of
+     * an uploaded e-signature — same rule, same wording convention, as
+     * `ApprovalController::MISSING_SIGNATURE_MESSAGE`.
+     */
+    private const MISSING_SIGNATURE_MESSAGE = 'Please upload your e-signature before clearing this offboarding request.';
+
+    /**
      * The message shown for each possible state of the emailed approval
      * link — shared between the confirmation page and the JSON the actual
      * approval endpoint returns, same convention as
@@ -35,6 +57,7 @@ class GeneralSignatoryApprovalController extends Controller
     private const EMAIL_APPROVAL_MESSAGES = [
         'invalid' => 'This approval link is invalid or has expired.',
         'already_approved' => 'This offboarding request has already been cleared.',
+        'no_signature' => self::MISSING_SIGNATURE_MESSAGE . ' Log in to your account, upload it from your Profile page, then use this link again.',
         'confirm' => 'Please confirm to approve this offboarding request.',
         'approved' => 'The offboarding request was successfully cleared.',
     ];
@@ -48,6 +71,10 @@ class GeneralSignatoryApprovalController extends Controller
     public function approve(OffboardingRequestGeneralSignatory $generalSignatoryApproval): RedirectResponse
     {
         $this->authorizeAssignment($generalSignatoryApproval);
+
+        if (! auth()->user()->hasUsableSignature()) {
+            return redirect()->route('profile')->with('error', self::MISSING_SIGNATURE_MESSAGE);
+        }
 
         abort_unless($generalSignatoryApproval->status === 'pending', 422, 'This has already been actioned.');
 
@@ -63,6 +90,86 @@ class GeneralSignatoryApprovalController extends Controller
         });
 
         return back()->with('success', $generalSignatoryApproval->offboardingRequest->employee->name . '\'s offboarding request was cleared.');
+    }
+
+    /**
+     * HR/Admin-only resend of the General Signatory notification email —
+     * the "Notify Approver" action on the Offboarding Status/Timeline's
+     * General Signatory section, for when the original email was
+     * accidentally deleted or is otherwise no longer available. Mirrors
+     * `ApprovalController::remind()`'s exact shape (explicit admin check
+     * on top of the route's own permission middleware, optional per-click
+     * template override, activity logging with sender/recipient/template),
+     * so both "Notify Approver" buttons behave identically to admins.
+     *
+     * Deliberately takes no new input beyond the optional template
+     * override and never touches `$generalSignatoryApproval` itself beyond
+     * reading it — no new `OffboardingRequestGeneralSignatory` row, no
+     * status change — so this can only ever resend the notification for
+     * the General Signatory already assigned here, never create a second
+     * assignment or redirect the email to anyone else.
+     */
+    public function remind(Request $request, OffboardingRequestGeneralSignatory $generalSignatoryApproval): RedirectResponse
+    {
+        abort_unless(auth()->user()->isAdmin(), 403);
+
+        abort_if(
+            $generalSignatoryApproval->status === 'approved',
+            422,
+            'This General Signatory has already cleared — no notification needed.'
+        );
+
+        $validated = $request->validate([
+            'email_template_id' => ['nullable', Rule::exists('email_templates', 'id')->where('is_active', true)],
+        ]);
+
+        $emailTemplate = ($validated['email_template_id'] ?? null)
+            ? EmailTemplate::find($validated['email_template_id'])
+            : EmailTemplate::where('is_active', true)
+                ->where('template_name', self::GENERAL_SIGNATORY_NOTIFICATION_TEMPLATE)
+                ->latest('updated_at')
+                ->first();
+
+        if (! $emailTemplate) {
+            return back()->with('error', 'No "' . self::GENERAL_SIGNATORY_NOTIFICATION_TEMPLATE . '" email template found. Please create one first.');
+        }
+
+        $generalSignatoryApproval->loadMissing('generalSignatory.clearanceSignatory', 'offboardingRequest.employee');
+        $clearanceSignatory = $generalSignatoryApproval->generalSignatory->clearanceSignatory;
+
+        if (! $clearanceSignatory?->email || ! filter_var($clearanceSignatory->email, FILTER_VALIDATE_EMAIL)) {
+            return back()->with('error', 'This General Signatory has no valid email address on file.');
+        }
+
+        $offboardingRequest = $generalSignatoryApproval->offboardingRequest;
+
+        try {
+            // Email validity was already checked above — this only fails
+            // now if `$clearanceSignatory` itself somehow vanished between
+            // the check and here, which the transaction-free, single-read
+            // nature of this action makes effectively impossible.
+            app(ChecklistApprovalNotifier::class)->resendGeneralSignatoryNotification($generalSignatoryApproval, $emailTemplate);
+
+            $offboardingRequest->activities()->create([
+                'user_id' => auth()->id(),
+                'offboarding_request_general_signatory_id' => $generalSignatoryApproval->id,
+                'action' => 'general_signatory_reminder_sent',
+                'status' => $offboardingRequest->status,
+                'comment' => 'Sent to: ' . $clearanceSignatory->name . ' (using template: ' . $emailTemplate->template_name . ')',
+            ]);
+
+            return redirect()
+                ->route('offboardees.index', ['offboardee' => $offboardingRequest->employee_id])
+                ->with('success', 'Notification resent to ' . $clearanceSignatory->name . '.');
+        } catch (\Throwable $e) {
+            Log::error('Failed to resend General Signatory offboarding notification email.', [
+                'offboarding_request_general_signatory_id' => $generalSignatoryApproval->id,
+                'recipient' => $clearanceSignatory->email,
+                'exception' => $e->getMessage(),
+            ]);
+
+            return back()->with('error', 'Failed to resend the notification email.');
+        }
     }
 
     /**
@@ -165,6 +272,20 @@ class GeneralSignatoryApprovalController extends Controller
 
         if ($assignment->status === 'approved') {
             return ['already_approved', $assignment];
+        }
+
+        // Same e-signature gate `approve()` enforces in-app, applied here
+        // too so the emailed link can never finalize a clearance without
+        // one either — see `ApprovalController::resolveEmailApprovalState()`'s
+        // matching docblock for why this is looked up by username instead
+        // of `User::findOrCreateGeneralSignatory()` (no need to create an
+        // account just to answer "does one already exist with a signature").
+        $clearanceSignatory = $assignment->generalSignatory->clearanceSignatory;
+        $hasSignature = $clearanceSignatory
+            && (User::firstWhere('username', $clearanceSignatory->employee_code_digits)?->hasUsableSignature() ?? false);
+
+        if (! $hasSignature) {
+            return ['no_signature', $assignment];
         }
 
         return ['confirm', $assignment];

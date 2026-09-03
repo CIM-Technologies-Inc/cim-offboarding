@@ -48,12 +48,17 @@ class ChecklistDelegationController extends Controller
 
         $employee = Employee::findOrFail($validated['employee_id']);
 
-        DB::transaction(function () use ($offboardingRequestApprover, $employee) {
+        // Resolved BEFORE the transaction, same convention as
+        // `assignItem()`, so the notification email below can tell whether
+        // to include freshly-generated login credentials.
+        $existingUser = User::firstWhere('username', $employee->employee_code_digits);
+
+        DB::transaction(function () use ($offboardingRequestApprover, $employee, $existingUser) {
             $offboardingRequestApprover->delegations()
                 ->where('status', 'active')
                 ->update(['status' => 'superseded', 'superseded_at' => now()]);
 
-            $delegateUser = User::findOrCreateApprover($employee);
+            $delegateUser = $existingUser ?? User::findOrCreateApprover($employee);
 
             $offboardingRequestApprover->update([
                 'delegated_employee_id' => $employee->id,
@@ -78,6 +83,13 @@ class ChecklistDelegationController extends Controller
                 'comment' => "Assigned to: {$employee->name} ({$employee->employee_code})",
             ]);
         });
+
+        $this->notifyDelegatedApprover(
+            $offboardingRequestApprover->offboardingRequest,
+            $employee,
+            collect([$offboardingRequestApprover]),
+            $existingUser === null
+        );
 
         return back()->with('success', "Checklist assigned to {$employee->name}.");
     }
@@ -112,8 +124,11 @@ class ChecklistDelegationController extends Controller
 
         $delegate = Employee::findOrFail($validated['employee_id']);
 
-        DB::transaction(function () use ($members, $delegate) {
-            $delegateUser = User::findOrCreateApprover($delegate);
+        // Resolved BEFORE the transaction, same convention as `assign()`.
+        $existingUser = User::firstWhere('username', $delegate->employee_code_digits);
+
+        DB::transaction(function () use ($members, $delegate, $existingUser) {
+            $delegateUser = $existingUser ?? User::findOrCreateApprover($delegate);
 
             foreach ($members as $member) {
                 $member->delegations()
@@ -145,7 +160,69 @@ class ChecklistDelegationController extends Controller
             }
         });
 
+        $this->notifyDelegatedApprover($offboardingRequest, $delegate, $members, $existingUser === null);
+
         return back()->with('success', "Checklist(s) assigned to {$delegate->name}.");
+    }
+
+    /**
+     * Sends the same "Offboarding Checklist Assigned to You" email
+     * `notifyPoolAssignees()` sends for a bulk per-item assignment, here for
+     * whole-checklist delegation (`assign()`/`assignGroup()`) instead —
+     * every item across every delegated checklist is listed, so the
+     * delegate sees the full scope of what they were just handed in one
+     * email, consolidated into a single send even when `assignGroup()`
+     * delegates several checklists at once. Sent outside the DB transaction
+     * (same reasoning as `notifyReassignedApprover()`) so a slow/failed
+     * mail send can never roll back an otherwise-successful delegation.
+     *
+     * Deliberately does not touch — and its recipient is never confused
+     * with — the checklist's actual Clearance Signatory (`employee_id`):
+     * this is purely "you've been handed work to do," not a change of who
+     * gives final approval.
+     *
+     * @param  \Illuminate\Support\Collection<int, OffboardingRequestApprover>  $assignments
+     */
+    private function notifyDelegatedApprover(OffboardingRequest $offboardingRequest, Employee $delegate, $assignments, bool $isNewAccount): void
+    {
+        if (! $delegate->email || ! filter_var($delegate->email, FILTER_VALIDATE_EMAIL)) {
+            return;
+        }
+
+        $offboardee = $offboardingRequest->employee;
+
+        $assignedItems = $assignments
+            ->flatMap(function (OffboardingRequestApprover $assignment) {
+                $assignment->loadMissing('checklistTemplate.items');
+
+                return $assignment->checklistTemplate->items->map(fn (ChecklistItem $item) => [
+                    'checklistTitle' => $assignment->checklistTemplate->title,
+                    'itemTitle' => $item->title,
+                    'dueAt' => $assignment->due_at?->format('M d, Y'),
+                ]);
+            })
+            ->all();
+
+        try {
+            Mail::to($delegate->email)->send(new ChecklistItemApproverAssignedMail(
+                approverName: $delegate->name,
+                offboardeeName: $offboardee->name,
+                offboardeeEmployeeCode: $offboardee->employee_code,
+                assignedItems: $assignedItems,
+                approvalUrl: route('approvals.index'),
+                credentials: $isNewAccount ? [
+                    'username' => $delegate->employee_code_digits,
+                    'password' => $delegate->employee_code_digits,
+                ] : null,
+            ));
+        } catch (\Throwable $e) {
+            Log::error('Failed to send checklist delegation email.', [
+                'offboarding_request_id' => $offboardingRequest->id,
+                'employee_id' => $delegate->id,
+                'recipient' => $delegate->email,
+                'exception' => $e->getMessage(),
+            ]);
+        }
     }
 
     /**

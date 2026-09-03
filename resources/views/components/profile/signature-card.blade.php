@@ -53,7 +53,7 @@
                             }">
                             @csrf
                             @method('DELETE')
-                            <button type="submit"
+                            <button type="submit" data-turbo-submits-with="Removing..."
                                 class="shadow-theme-xs flex w-full items-center justify-center gap-2 rounded-full border border-error-300 bg-white px-4 py-3 text-sm font-medium text-error-600 hover:bg-error-50 sm:w-auto dark:border-error-500/30 dark:bg-gray-800 dark:text-error-400 dark:hover:bg-error-500/10">
                                 Remove Signature
                             </button>
@@ -127,7 +127,7 @@
                         class="flex w-full justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03] sm:w-auto">
                         Close
                     </button>
-                    <button type="submit"
+                    <button type="submit" data-turbo-submits-with="Saving..."
                         class="flex w-full justify-center rounded-lg bg-brand-500 px-4 py-2.5 text-sm font-medium text-white hover:bg-brand-600 sm:w-auto">
                         Save Signature
                     </button>

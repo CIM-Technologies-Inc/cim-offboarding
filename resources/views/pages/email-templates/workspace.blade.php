@@ -74,7 +74,7 @@
                                     }">
                                     @csrf
                                     @method('DELETE')
-                                    <button type="submit"
+                                    <button type="submit" data-turbo-submits-with="Deleting..."
                                         class="rounded-md border border-error-300 px-2.5 py-1 text-xs font-medium text-error-500 hover:bg-error-50 dark:border-error-500/30 dark:hover:bg-error-500/10">
                                         Delete
                                     </button>
@@ -224,6 +224,8 @@
                                 <code>@{{approver_name}}</code>, <code>@{{employee_name}}</code>, <code>@{{employee_number}}</code>, <code>@{{checklist_name}}</code>, <code>@{{due_date}}</code>, <code>@{{offboarding_link}}</code>.
                                 For an overdue-checklist template, also available:
                                 <code>@{{department}}</code>, <code>@{{position}}</code>, <code>@{{days_overdue}}</code>, <code>@{{checklist_status}}</code>, <code>@{{pending_items}}</code> (a table of each checklist item's status and due date).
+                                For a "Notify Approver" follow-up on a checklist (e.g. once it's ready for approval):
+                                <code>@{{checklist_summary}}</code> (a table of each item's Checked By/Date/Remarks) and <code>@{{approve_button}}</code> (a one-click Approve button, valid whenever the recipient is that checklist's Clearance Signatory).
                             </p>
                         </div>
                     </div>
@@ -233,7 +235,7 @@
                             class="flex h-10 items-center justify-center rounded-xl border border-gray-300 bg-white px-4 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-white/[0.03]">
                             Preview
                         </button>
-                        <button type="submit"
+                        <button type="submit" data-turbo-submits-with="Saving..."
                             class="flex h-10 items-center justify-center rounded-xl bg-[#145a3a] px-5 text-sm font-medium text-white shadow-sm hover:bg-[#0f4630]">
                             {{ $template ? 'Update Template' : 'Save Template' }}
                         </button>

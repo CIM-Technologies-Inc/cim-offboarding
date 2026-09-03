@@ -110,7 +110,7 @@
                                     });
                                 }">
                                 @csrf
-                                <button type="submit" :disabled="processing"
+                                <button type="submit" :disabled="processing" data-turbo-submits-with="Sending..."
                                     :class="processing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50 dark:hover:bg-white/5'"
                                     class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-[#145a3a] px-3 py-1.5 text-xs font-medium text-[#145a3a] dark:border-[#3aa876] dark:text-[#3aa876]">
                                     <svg width="14" height="14" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">

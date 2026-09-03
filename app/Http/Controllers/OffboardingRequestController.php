@@ -2,13 +2,16 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\ChecklistItemScheduledSend;
 use App\Models\ChecklistTemplate;
 use App\Models\Employee;
+use App\Models\FinalApprover;
 use App\Models\OffboardingRequest;
 use App\Models\User;
 use App\Services\ChecklistApprovalNotifier;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class OffboardingRequestController extends Controller
@@ -30,6 +33,26 @@ class OffboardingRequestController extends Controller
             'offboardee_notification_template_id' => ['nullable', 'exists:email_templates,id'],
             'general_signatory_notification_template_id' => ['nullable', 'exists:email_templates,id'],
         ]);
+
+        // Every request must have a real, currently-active Final Approver
+        // configured system-wide — checked here so a misconfigured system
+        // fails loudly at creation time rather than silently producing a
+        // Clearance Form with a blank final signatory later. The resolved
+        // row's `employee_id` is snapshotted below purely as a HISTORICAL
+        // record of who was active at creation time; the Clearance Form
+        // itself never reads that snapshot — it always resolves whichever
+        // `FinalApprover` is active live, at render time (see
+        // `ClearanceFormController::buildData()`), so this same check
+        // passing here is not what makes a later Clearance Form correct —
+        // it's a defensive guard against the system ever having zero
+        // active Final Approvers at all.
+        $activeFinalApprover = FinalApprover::where('is_active', true)->first();
+
+        if (! $activeFinalApprover) {
+            return back()->withErrors([
+                'final_approver' => 'No active Final Approver is configured. Please set one on the Offboarding Checklist page before creating an offboarding request.',
+            ])->withInput();
+        }
 
         $employee = Employee::findOrFail($validated['employee_id']);
 
@@ -58,6 +81,7 @@ class OffboardingRequestController extends Controller
             'status' => 'pending',
             'approval_mode' => 'async',
             'created_by' => $request->user()->id,
+            'final_approver_employee_id' => $activeFinalApprover->employee_id,
         ]);
 
         $employee->update(['status' => 'offboarding']);
@@ -95,6 +119,128 @@ class OffboardingRequestController extends Controller
         }
 
         return back()->with('success', $successMessage);
+    }
+
+    /**
+     * Wipes every checklist/approval progress artifact this offboarding
+     * request has accumulated and reinitializes it exactly the way `store()`
+     * initializes a brand-new one — same `notifyDepartmentHeads()` call,
+     * against whatever checklist templates/General Signatories are active
+     * and applicable RIGHT NOW (not whatever was attached originally), so a
+     * template added/retired since the original submission is correctly
+     * reflected. The request row itself (id, employee, notice/last-working-
+     * day dates, reason, immediate head, `created_at`/`created_by`) is left
+     * untouched — this restarts the WORKFLOW, not the request's own
+     * identity/history — and nothing here ever touches `Employee` fields
+     * beyond the same `status` flip `store()` already makes. Gated by the
+     * `offboarding-requests.reset` permission at the route level (Admin-only
+     * by default), so only an authorized admin ever reaches this action,
+     * including via a direct request.
+     *
+     * `completed` is a final, locked state — enforced HERE, not just by
+     * hiding the button in the view, so a direct POST/API call against a
+     * completed request is rejected exactly the same way regardless of how
+     * it was triggered. Checked against the real `status` column (never
+     * `displayStatus()`, which can read "overdue"/"in_progress" for other
+     * reasons but only ever reflects `completed` when the column itself
+     * genuinely is).
+     */
+    public function reset(Request $request, OffboardingRequest $offboardingRequest): RedirectResponse
+    {
+        abort_if(
+            $offboardingRequest->status === 'completed',
+            422,
+            'This offboarding request is already completed and cannot be reset.'
+        );
+
+        // Re-resolved fresh purely to refresh the historical snapshot
+        // column (see `OffboardingRequest::finalApproverEmployee()`'s own
+        // docblock) and to re-run the same defensive "must have one active"
+        // guard `store()` applies — the Clearance Form itself never reads
+        // this snapshot regardless, always resolving the live active
+        // `FinalApprover` at render time, so this re-resolution doesn't
+        // change anything about what a Clearance Form displays.
+        $activeFinalApprover = FinalApprover::where('is_active', true)->first();
+
+        abort_if(
+            ! $activeFinalApprover,
+            422,
+            'No active Final Approver is configured. Please set one on the Offboarding Checklist page before resetting this offboarding request.'
+        );
+
+        $offboardingRequest->loadMissing('employee');
+        $employee = $offboardingRequest->employee;
+        $admin = $request->user();
+
+        DB::transaction(function () use ($offboardingRequest, $employee, $admin, $activeFinalApprover) {
+            // Deleting the approver rows cascades (DB-enforced) to every
+            // per-checklist artifact keyed off them: item progress, holds,
+            // delegations, item reassignments, approval tokens, and pool
+            // members — see the matching `cascadeOnDelete()` migrations.
+            $offboardingRequest->approvers()->delete();
+
+            // Same cascade shape for the General Signatory track: deleting
+            // these rows also removes their approval tokens.
+            $offboardingRequest->generalSignatoryApprovals()->delete();
+
+            $offboardingRequest->followUps()->delete();
+            $offboardingRequest->scheduledEmailSends()->delete();
+            ChecklistItemScheduledSend::where('offboarding_request_id', $offboardingRequest->id)->delete();
+
+            // Clears the checklist-templates pivot entirely rather than
+            // leaving stale entries for a template that's since been
+            // deactivated/retired — `notifyDepartmentHeads()` below re-syncs
+            // it from scratch against whatever is active right now.
+            $offboardingRequest->checklistTemplates()->detach();
+
+            $offboardingRequest->activities()->delete();
+
+            $offboardingRequest->update([
+                'status' => 'pending',
+                'completed_at' => null,
+                'final_pay_notified_at' => null,
+                'remarks' => null,
+                'final_approver_employee_id' => $activeFinalApprover->employee_id,
+            ]);
+
+            $employee->update(['status' => 'offboarding']);
+
+            // The one thing that survives the wipe above — an explicit,
+            // dated audit record of who reset this request and when, so
+            // "the process restarted from scratch" is never silent even
+            // though every prior progress/activity row is now gone.
+            $offboardingRequest->activities()->create([
+                'user_id' => $admin->id,
+                'action' => 'offboarding_reset',
+                'status' => 'pending',
+                'comment' => "All checklist and approval progress was cleared by {$admin->name}; the offboarding process was restarted from the beginning.",
+            ]);
+        });
+
+        $offboardingRequest->refresh();
+
+        // Identical account-provisioning shape to `store()` — idempotent,
+        // never promotes/downgrades an existing account, so re-running this
+        // on reset never touches the offboardee's (or immediate head's)
+        // existing login/role.
+        $existingEmployeeUser = User::firstWhere('username', $employee->employee_code_digits);
+        $employeeUser = $existingEmployeeUser ?? User::findOrCreateEmployee($employee);
+        $isNewEmployeeAccount = $existingEmployeeUser === null;
+
+        if (! empty($offboardingRequest->immediate_head_id)) {
+            User::findOrCreateApprover(Employee::findOrFail($offboardingRequest->immediate_head_id));
+        }
+
+        try {
+            $this->notifyDepartmentHeads($offboardingRequest, $admin, $employeeUser, $isNewEmployeeAccount);
+        } catch (\Throwable $e) {
+            Log::error('Failed to process offboarding approver notifications after reset.', [
+                'offboarding_request_id' => $offboardingRequest->id,
+                'exception' => $e->getMessage(),
+            ]);
+        }
+
+        return back()->with('success', "Offboarding request for {$employee->name} has been reset and restarted.");
     }
 
     /**

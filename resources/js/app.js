@@ -18,6 +18,8 @@ import { offboardingRequestForm } from './components/offboarding-request';
 import { flashToast } from './components/flash-toast';
 // 10-minute inactivity auto-logout, active on every authenticated page
 import { initInactivityMonitor } from './components/inactivity-monitor';
+// fetch() wrapper that aborts a hung request instead of waiting forever
+import { fetchWithTimeout } from './components/fetch-with-timeout';
 
 
 
@@ -29,6 +31,7 @@ window.Swal = Swal;
 window.emailWorkspace = emailWorkspace;
 window.offboardingRequestForm = offboardingRequestForm;
 window.flashToast = flashToast;
+window.fetchWithTimeout = fetchWithTimeout;
 
 Alpine.start();
 

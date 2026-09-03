@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Support\Carbon;
 
 class OffboardingRequest extends Model
@@ -19,6 +20,7 @@ class OffboardingRequest extends Model
         'employee_id',
         'created_by',
         'immediate_head_id',
+        'final_approver_employee_id',
         'reason',
         'resignation_type',
         'notice_date',
@@ -68,6 +70,24 @@ class OffboardingRequest extends Model
     public function immediateHead(): BelongsTo
     {
         return $this->belongsTo(Employee::class, 'immediate_head_id');
+    }
+
+    /**
+     * The Employee behind whichever `FinalApprover` config row was active
+     * when this request was created (or last reset) — kept purely as a
+     * HISTORICAL record of who that was at that moment. The Clearance
+     * Form's "Approved for Payment by:" signatory is deliberately NOT
+     * sourced from this relation: `ClearanceFormController::buildData()`
+     * always resolves the CURRENTLY active `FinalApprover` fresh on every
+     * render instead, so activating a different Final Approver is
+     * reflected immediately on every request's Clearance Form — including
+     * ones created long before that change — with no per-request update
+     * needed. Null for a request created before this column existed, or if
+     * no Final Approver was configured at creation/reset time.
+     */
+    public function finalApproverEmployee(): BelongsTo
+    {
+        return $this->belongsTo(Employee::class, 'final_approver_employee_id');
     }
 
     public function emailTemplate(): BelongsTo
@@ -152,6 +172,16 @@ class OffboardingRequest extends Model
         return $this->hasMany(ChecklistFollowUp::class);
     }
 
+    /**
+     * This request's Final Approval process, if one has ever been
+     * initiated (see `FinalApprovalController::send()`) — at most one ever
+     * exists per request, enforced by a unique DB constraint.
+     */
+    public function finalApproval(): HasOne
+    {
+        return $this->hasOne(OffboardingRequestFinalApproval::class);
+    }
+
     public function scheduledEmailSends(): HasMany
     {
         return $this->hasMany(EmailTemplateScheduledSend::class);
@@ -159,16 +189,64 @@ class OffboardingRequest extends Model
 
     /**
      * True once at least one assigned approver has viewed, approved, or
-     * declined their checklist, or the checklist has been delegated in any
-     * way — i.e. someone has actually started working on this request,
-     * even though the real `status` column is still "pending" (it only
-     * flips to "in_progress" once every regular checklist is approved).
-     * Requires `approvers` to be loaded/loadable on this instance.
+     * declined their checklist, the checklist has been delegated in any
+     * way, or a General Signatory has acted (viewed/approved) — i.e.
+     * someone has actually started working on this request, even though
+     * the real `status` column is still "pending" (it only flips to
+     * "in_progress" once every regular checklist is approved). Requires
+     * `approvers` and `generalSignatoryApprovals` to be loaded/loadable on
+     * this instance.
+     *
+     * A General Signatory is snapshotted onto the request independently of
+     * the checklist approval workflow (see `generalSignatories()`), so
+     * their own activity is never reflected by the `approvers` relation at
+     * all — checking only `approvers` here let a request sit at "Pending"
+     * even after its General Signatory had already approved, since nothing
+     * about that action ever touches an `OffboardingRequestApprover` row.
      */
     public function hasApproverActivity(): bool
     {
-        return $this->approvers->contains(
+        $hasChecklistActivity = $this->approvers->contains(
             fn (OffboardingRequestApprover $approver) => $approver->status !== 'pending' || $approver->delegation_status !== null
+        );
+
+        if ($hasChecklistActivity) {
+            return true;
+        }
+
+        return $this->generalSignatoryApprovals->contains(
+            fn (OffboardingRequestGeneralSignatory $approval) => $approval->status !== 'pending' || $approval->first_viewed_at !== null
+        );
+    }
+
+    /**
+     * True once at least one checklist has been fully approved, one General
+     * Signatory has cleared, OR one individual checklist item/task has been
+     * checked off — deliberately NARROWER than `hasApproverActivity()`
+     * above, which also counts merely viewing/holding/delegating as
+     * "activity" for the Pending → In Progress status rollup. This is the
+     * gate for the Offboardee page's "Reset Offboarding" button instead: it
+     * must stay hidden for a request nobody has acted on yet (viewing a
+     * checklist alone doesn't justify offering a destructive reset), but
+     * appear the moment there's real progress to actually lose — even a
+     * single checked item on an otherwise still-pending checklist counts,
+     * since that work would otherwise be silently wiped with no warning the
+     * button ever existed. Requires `approvers.itemProgress` and
+     * `generalSignatoryApprovals` to be loaded/loadable on this instance.
+     */
+    public function hasApprovedOrCompletedProgress(): bool
+    {
+        $hasApprovedChecklistOrTask = $this->approvers->contains(
+            fn (OffboardingRequestApprover $approver) => $approver->status === 'approved'
+                || $approver->itemProgress->contains(fn (ChecklistItemProgress $progress) => (bool) $progress->is_checked)
+        );
+
+        if ($hasApprovedChecklistOrTask) {
+            return true;
+        }
+
+        return $this->generalSignatoryApprovals->contains(
+            fn (OffboardingRequestGeneralSignatory $approval) => $approval->status === 'approved'
         );
     }
 
@@ -219,6 +297,7 @@ class OffboardingRequest extends Model
     {
         return $query->where('status', 'pending')
             ->whereDoesntHave('approvers', fn (Builder $q) => static::approverActivityConstraint($q))
+            ->whereDoesntHave('generalSignatoryApprovals', fn (Builder $q) => static::generalSignatoryActivityConstraint($q))
             ->whereDoesntHave('approvers', fn (Builder $q) => static::overdueConstraint($q));
     }
 
@@ -231,7 +310,10 @@ class OffboardingRequest extends Model
             $q->where('status', 'in_progress')
                 ->orWhere(function (Builder $q2) {
                     $q2->where('status', 'pending')
-                        ->whereHas('approvers', fn (Builder $q3) => static::approverActivityConstraint($q3));
+                        ->where(function (Builder $q3) {
+                            $q3->whereHas('approvers', fn (Builder $q4) => static::approverActivityConstraint($q4))
+                                ->orWhereHas('generalSignatoryApprovals', fn (Builder $q4) => static::generalSignatoryActivityConstraint($q4));
+                        });
                 });
         })->whereDoesntHave('approvers', fn (Builder $q) => static::overdueConstraint($q));
     }
@@ -248,6 +330,15 @@ class OffboardingRequest extends Model
     private static function approverActivityConstraint(Builder $query): void
     {
         $query->where('status', '!=', 'pending')->orWhereNotNull('delegation_status');
+    }
+
+    /**
+     * Query-level equivalent of `hasApproverActivity()`'s General Signatory
+     * check above.
+     */
+    private static function generalSignatoryActivityConstraint(Builder $query): void
+    {
+        $query->where('status', '!=', 'pending')->orWhereNotNull('first_viewed_at');
     }
 
     private static function overdueConstraint(Builder $query): void
@@ -320,6 +411,17 @@ class OffboardingRequest extends Model
                 continue;
             }
 
+            if (in_array($activity->action, ['final_approval_sent', 'final_approval_viewed', 'final_approval_approved'], true)) {
+                // Rendered by the dedicated Final Approval step below
+                // instead, sourced directly from `$this->finalApproval` —
+                // avoids three loose generic-activity lines (which would
+                // also render in the wrong chronological SLOT here, since
+                // this loop's steps are always positioned before the
+                // hardcoded "Completed" step further down, even though
+                // Final Approval can only ever happen AFTER completion).
+                continue;
+            }
+
             $isDeclined = $activity->action === 'declined';
             $declined = $declined || $isDeclined;
 
@@ -360,6 +462,39 @@ class OffboardingRequest extends Model
             ];
         }
 
+        // Final Approval — strictly a post-completion event (it can only
+        // ever be initiated once `status === 'completed'`, see
+        // `FinalApprovalController::send()`), so it's always appended last
+        // rather than sourced from the generic activity loop above, which
+        // would otherwise render it in the wrong chronological slot ahead
+        // of "Completed". Sourced directly from `$this->finalApproval`
+        // (never the raw `final_approval_*` activity rows, which the loop
+        // above deliberately skips) so it always reflects the current,
+        // authoritative approval state — including the Final Signatory's
+        // employee code, the fact that approval only ever happens via the
+        // emailed link today, and any remark they left.
+        if ($finalApproval = $this->finalApproval) {
+            $finalApproval->loadMissing('employee');
+            $isApproved = $finalApproval->status === 'approved';
+            $approverEmployee = $finalApproval->employee;
+            $approverLabel = $approverEmployee
+                ? $approverEmployee->name . ' (' . $approverEmployee->employee_code . ')'
+                : 'the Final Signatory';
+
+            $steps[] = [
+                'label' => $isApproved
+                    ? 'Final Approval — Approved by ' . $approverLabel
+                    : 'Final Approval Requested — ' . $approverLabel,
+                'date' => $isApproved
+                    ? $finalApproval->approved_at?->format('M d, Y g:i A')
+                    : $finalApproval->initiated_at?->format('M d, Y g:i A'),
+                'done' => $isApproved,
+                'comment' => $isApproved
+                    ? trim('Approval Method: Via Email.' . ($finalApproval->remarks ? ' Remarks: ' . $finalApproval->remarks : ''))
+                    : 'Awaiting approval from the Final Signatory.',
+            ];
+        }
+
         return $steps;
     }
 
@@ -384,6 +519,17 @@ class OffboardingRequest extends Model
         $delegationEventsByAssignment = $this->activities
             ->whereIn('action', ['checklist_assigned', 'checklist_delegate_completed', 'checklist_item_cleared_by_other', 'checklist_item_held', 'checklist_ready_for_approval'])
             ->groupBy('offboarding_request_approver_id');
+
+        // The General Signatory equivalent of the two groupings above —
+        // keyed by `offboarding_request_general_signatory_id` (the FK
+        // `GeneralSignatoryApprovalController::remind()`/`ApprovalController::index()`'s
+        // General Signatory "first viewed" logic both stamp on their own
+        // activity rows) rather than `offboarding_request_approver_id`,
+        // since a General Signatory's notification/view events are never
+        // tied to an `OffboardingRequestApprover` row at all.
+        $generalSignatoryEventsByAssignment = $this->activities
+            ->whereIn('action', ['general_signatory_reminder_sent', 'general_signatory_viewed'])
+            ->groupBy('offboarding_request_general_signatory_id');
 
         $buildRichStep = function (OffboardingRequestApprover $assignment) use ($remindersByAssignment, $delegationEventsByAssignment): array {
             $assignment->loadMissing('checklistTemplate.items', 'itemProgress');
@@ -437,6 +583,23 @@ class OffboardingRequest extends Model
                 'reminderSentAt' => $assignment->reminder_sent_at?->format('M d, Y g:i A'),
                 'canRemind' => ! in_array($assignment->status, ['approved', 'declined'], true),
                 'remindUrl' => route('approvals.remind', $assignment->id),
+                // Discriminates a checklist approver's rich step from a
+                // General Signatory's (see `buildGeneralSignatoryRichStep()`
+                // below) — both share this exact shape, but the "Notify
+                // Approver" picker needs to know which default email
+                // template to pre-select.
+                'isGeneralSignatory' => false,
+                // Populated only once actually approved (never for a merely
+                // pending/viewed/declined row) — the approving employee's
+                // own uploaded e-signature, now guaranteed to exist by the
+                // time any row reaches 'approved' (see
+                // `User::hasUsableSignature()`), recorded here alongside the
+                // existing `approvedAt` timestamp so the admin-facing
+                // timeline shows who signed off and with what signature, not
+                // just when.
+                'approverSignatureUrl' => $assignment->status === 'approved'
+                    ? $assignment->employee?->user?->signatureUrl()
+                    : null,
                 'done' => in_array($assignment->status, ['approved', 'declined']),
                 'cancelled' => $assignment->status === 'declined',
                 'delegatedTo' => $assignment->delegatedEmployee?->name,
@@ -517,6 +680,24 @@ class OffboardingRequest extends Model
         // against too.
         foreach ($this->generalSignatoryApprovals as $generalSignatoryApproval) {
             $steps[] = $this->buildGeneralSignatoryRichStep($generalSignatoryApproval);
+
+            // Notification resends and the first-view timestamp both
+            // already show as fields directly on the rich card above
+            // (`reminderSentAt`-equivalent isn't exposed there today, but
+            // `firstViewedAt` is) — these trailing plain sub-steps are what
+            // actually make each individual event show up in the
+            // Offboarding Status/Timeline's chronological Timeline tab too,
+            // exactly like a checklist approver's reminders/delegation
+            // events do via `$remindersByAssignment`/`$delegationEventsByAssignment`
+            // above.
+            foreach ($generalSignatoryEventsByAssignment->get($generalSignatoryApproval->id, collect()) as $event) {
+                $steps[] = [
+                    'label' => $event->label(),
+                    'date' => $event->created_at->format('M d, Y g:i A'),
+                    'done' => true,
+                    'comment' => $event->comment,
+                ];
+            }
         }
 
         $completedActivity = $milestones->get('completed');
@@ -534,6 +715,15 @@ class OffboardingRequest extends Model
                 'done' => $this->status === 'completed',
             ];
 
+        // Final Approval — the true last stage, only ever reachable once
+        // every step above is already done (`FinalApprovalController::send()`
+        // requires `status === 'completed'`), so it's always the very last
+        // card here regardless of the exact activity-row ordering above.
+        if ($finalApproval = $this->finalApproval) {
+            $finalApproval->loadMissing('employee.user');
+            $steps[] = $this->buildFinalApprovalRichStep($finalApproval);
+        }
+
         return $steps;
     }
 
@@ -543,10 +733,14 @@ class OffboardingRequest extends Model
      * (`department`/`approverName`/`status`/timestamps), minus the fields
      * that only apply to checklist-item-based approval (`checklistItems`
      * stays empty, `usesPerItemApprovers` false, no due date/overdue
-     * concept, no delegation, no reminder — General Signatories have none
-     * of those). `status` is only ever 'pending' or 'approved' (see
+     * concept, no delegation — General Signatories have none of those).
+     * `status` is only ever 'pending' or 'approved' (see
      * `OffboardingRequestGeneralSignatory`), so this never needs the
      * 'declined'/'viewed' branches the department version does.
+     * `canRemind`/`remindUrl` DO apply, unlike delegation — see
+     * `GeneralSignatoryApprovalController::remind()`, the "Notify Approver"
+     * action for resending this General Signatory's own notification
+     * email.
      */
     private function buildGeneralSignatoryRichStep(OffboardingRequestGeneralSignatory $generalSignatoryApproval): array
     {
@@ -560,12 +754,71 @@ class OffboardingRequest extends Model
             'assignedAt' => $generalSignatoryApproval->created_at?->format('M d, Y g:i A'),
             'firstViewedAt' => $generalSignatoryApproval->first_viewed_at?->format('M d, Y g:i A'),
             'approvedAt' => $generalSignatoryApproval->approved_at?->format('M d, Y g:i A'),
+            // Same convention as `buildRichStep()` above — only present once
+            // actually approved, now guaranteed to exist by then.
+            'approverSignatureUrl' => $generalSignatoryApproval->status === 'approved'
+                ? $clearanceSignatory?->user?->signatureUrl()
+                : null,
+            'declinedAt' => null,
+            'declineReason' => null,
+            'reminderSentAt' => null,
+            'canRemind' => $generalSignatoryApproval->status !== 'approved',
+            'remindUrl' => route('general-signatory-approvals.remind', $generalSignatoryApproval->id),
+            'isGeneralSignatory' => true,
+            'done' => $generalSignatoryApproval->status === 'approved',
+            'cancelled' => false,
+            'delegatedTo' => null,
+            'delegatedToCode' => null,
+            'delegationStatus' => null,
+            'delegateCompletedAt' => null,
+            'dueAt' => null,
+            'isOverdue' => false,
+            'usesPerItemApprovers' => false,
+            'checklistItems' => [],
+        ];
+    }
+
+    /**
+     * The Final Approval rich step for `approverActivityTimeline()` —
+     * reuses the exact same card shape `buildGeneralSignatoryRichStep()`
+     * produces above (so the shared Offboarding Status/Timeline markup
+     * renders it identically, no template changes needed), extended with
+     * two fields no other rich step needs: `approvalMethod` (Final
+     * Approval only ever happens via the emailed one-click link today —
+     * there is no in-app equivalent action) and `remarks` (the Final
+     * Signatory's own optional comment, left on the confirmation dialog).
+     * Resending from this card is deliberately NOT wired up — Final
+     * Approval already has its own dedicated "Final Approval" button on
+     * the Offboardee page, which resends against this exact same row (see
+     * `FinalApprovalController::send()`'s `firstOrCreate` — never a
+     * duplicate) — so `canRemind` stays false here to avoid a second,
+     * differently-behaved entry point to the same action.
+     */
+    private function buildFinalApprovalRichStep(OffboardingRequestFinalApproval $finalApproval): array
+    {
+        $approverEmployee = $finalApproval->employee;
+        $isApproved = $finalApproval->status === 'approved';
+
+        return [
+            'rich' => true,
+            'department' => 'Final Approval',
+            'approverName' => $approverEmployee
+                ? $approverEmployee->name . ' (' . $approverEmployee->employee_code . ')'
+                : null,
+            'status' => $finalApproval->status,
+            'assignedAt' => $finalApproval->initiated_at?->format('M d, Y g:i A'),
+            'firstViewedAt' => $finalApproval->first_viewed_at?->format('M d, Y g:i A'),
+            'approvedAt' => $finalApproval->approved_at?->format('M d, Y g:i A'),
+            'approverSignatureUrl' => $isApproved ? $approverEmployee?->user?->signatureUrl() : null,
+            'approvalMethod' => $isApproved ? 'Via Email' : null,
+            'remarks' => $finalApproval->remarks,
             'declinedAt' => null,
             'declineReason' => null,
             'reminderSentAt' => null,
             'canRemind' => false,
             'remindUrl' => null,
-            'done' => $generalSignatoryApproval->status === 'approved',
+            'isGeneralSignatory' => false,
+            'done' => $isApproved,
             'cancelled' => false,
             'delegatedTo' => null,
             'delegatedToCode' => null,

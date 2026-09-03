@@ -1,3 +1,5 @@
+import { fetchWithTimeout } from './fetch-with-timeout';
+
 export function emailWorkspace(flashSuccess = null, flashError = null) {
   return {
     viewing: null,
@@ -132,7 +134,7 @@ export function emailWorkspace(flashSuccess = null, flashError = null) {
       const previousChecked = !checkbox.checked;
       const csrfMeta = document.querySelector('meta[name="csrf-token"]');
 
-      fetch(url, {
+      fetchWithTimeout(url, {
         method: 'PATCH',
         headers: {
           'X-CSRF-TOKEN': csrfMeta ? csrfMeta.content : '',
@@ -147,9 +149,11 @@ export function emailWorkspace(flashSuccess = null, flashError = null) {
           if (label) label.title = data.is_active ? 'Active' : 'Inactive';
           this.notify('success', data.message);
         })
-        .catch(() => {
+        .catch((e) => {
           checkbox.checked = previousChecked;
-          this.notify('error', 'Could not update template status.');
+          this.notify('error', e?.name === 'AbortError'
+            ? 'This is taking longer than expected. Please check before trying again.'
+            : 'Could not update template status.');
         });
     },
   };

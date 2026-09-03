@@ -16,17 +16,39 @@
                     <input type="hidden" name="_method" value="PUT" />
                 </template>
 
-                <div>
+                <div class="relative" @click.away="clearanceSignatoryOpen = false">
                     <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
                         Clearance Signatory
                     </label>
-                    <select name="clearance_signatory_id" x-model="clearanceSignatoryId" @change="onClearanceSignatoryChange()"
-                        class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-none px-4 py-2.5 text-sm shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:focus:border-brand-800">
-                        <option value="">Select an employee</option>
-                        @foreach ($employees as $employee)
-                            <option value="{{ $employee->id }}">{{ $employee->name }} ({{ $employee->department }})</option>
-                        @endforeach
-                    </select>
+                    <input type="hidden" name="clearance_signatory_id" :value="clearanceSignatoryId" />
+                    <div class="relative">
+                        <input type="text" x-model="clearanceSignatoryQuery" autocomplete="off"
+                            @focus="clearanceSignatoryOpen = true"
+                            @input="clearanceSignatoryId = ''; clearanceSignatoryOpen = true; onClearanceSignatoryChange()"
+                            placeholder="Search by employee ID or name..."
+                            class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 pr-9 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
+                        <button type="button" x-show="clearanceSignatoryId" @click="clearClearanceSignatory()"
+                            class="absolute top-1/2 right-3 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+                            <svg width="16" height="16" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M13.5 4.5L4.5 13.5M4.5 4.5L13.5 13.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                            </svg>
+                        </button>
+                    </div>
+
+                    <div x-show="clearanceSignatoryOpen"
+                        class="shadow-theme-lg absolute z-50 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
+                        <template x-for="employee in filteredClearanceEmployees(clearanceSignatoryQuery)" :key="employee.id">
+                            <div @click="selectClearanceSignatory(employee)"
+                                class="cursor-pointer border-b border-gray-100 px-4 py-2.5 text-sm last:border-b-0 hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-white/[0.03]">
+                                <span class="text-gray-800 dark:text-white/90" x-text="employee.name"></span>
+                                <span class="block text-xs text-gray-400" x-text="`${employee.employee_code || ''} · ${employee.department}`"></span>
+                            </div>
+                        </template>
+                        <div x-show="filteredClearanceEmployees(clearanceSignatoryQuery).length === 0"
+                            class="px-4 py-2.5 text-sm text-gray-400">
+                            No employees found
+                        </div>
+                    </div>
                     <template x-if="currentGroupName()">
                         <p class="mt-1.5 text-xs font-medium text-[#145a3a] dark:text-[#3aa876]">
                             Task Assignees below are automatically restricted to <span x-text="currentGroupName()"></span>'s group members (Employee Master).
@@ -110,7 +132,7 @@
                         class="flex justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03]">
                         Cancel
                     </button>
-                    <button type="submit" :disabled="saving"
+                    <button type="submit" :disabled="saving" data-turbo-submits-with="Saving..."
                         class="flex items-center justify-center gap-2 rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white hover:bg-[#0f4630] disabled:cursor-not-allowed disabled:opacity-70">
                         <span x-show="saving" class="h-4 w-4 animate-spin rounded-full border-2 border-solid border-white border-t-transparent"></span>
                         <span x-text="saving ? (editingId ? 'Updating...' : 'Saving...') : (editingId ? 'Update' : 'Save')"></span>
@@ -126,6 +148,8 @@
         return {
             editingId: null,
             clearanceSignatoryId: '',
+            clearanceSignatoryQuery: '',
+            clearanceSignatoryOpen: false,
             tasks: [],
             saving: false,
             employees: employees,
@@ -180,6 +204,7 @@
 
                     if (!oldEditingId) {
                         this.clearanceSignatoryId = oldClearanceSignatoryId ? String(oldClearanceSignatoryId) : '';
+                        this.clearanceSignatoryQuery = this.clearanceLabelFor(this.clearanceSignatoryId);
                         this.tasks = (oldTasks && oldTasks.length ? oldTasks : [{ title: '', signatory_id: '' }]).map((t) => ({
                             id: t.id || null,
                             title: t.title || '',
@@ -204,6 +229,7 @@
                 if (detail.mode === 'edit' && detail.record) {
                     this.editingId = detail.record.id;
                     this.clearanceSignatoryId = detail.record.clearanceSignatoryId ? String(detail.record.clearanceSignatoryId) : '';
+                    this.clearanceSignatoryQuery = this.clearanceLabelFor(this.clearanceSignatoryId);
                     const source = detail.record.tasks && detail.record.tasks.length ? detail.record.tasks : [{ title: '', signatory_id: '' }];
                     this.tasks = source.map((t) => ({
                         id: t.id || null,
@@ -215,8 +241,10 @@
                 } else {
                     this.editingId = null;
                     this.clearanceSignatoryId = '';
+                    this.clearanceSignatoryQuery = '';
                     this.tasks = [{ id: null, title: '', signatory_id: '', signatory_query: '', signatory_open: false }];
                 }
+                this.clearanceSignatoryOpen = false;
             },
             formAction() {
                 return this.editingId ? `/general-signatories/${this.editingId}` : '/general-signatories';
@@ -239,7 +267,7 @@
                 const form = event.target;
 
                 try {
-                    const response = await fetch(form.action, {
+                    const response = await window.fetchWithTimeout(form.action, {
                         method: 'POST',
                         headers: { Accept: 'application/json' },
                         body: new FormData(form),
@@ -281,7 +309,9 @@
                         toast: true,
                         position: 'bottom-end',
                         icon: 'error',
-                        title: 'Network error — please try again.',
+                        title: e?.name === 'AbortError'
+                            ? 'This is taking longer than expected. Please check before trying again.'
+                            : 'Network error — please try again.',
                         showConfirmButton: false,
                         timer: 3000,
                         customClass: { container: 'app-toast' },
@@ -314,6 +344,47 @@
             labelFor(id) {
                 const employee = this.employees.find((e) => e.id === String(id));
                 return employee ? employee.name : '';
+            },
+            clearanceLabelFor(id) {
+                if (!id) {
+                    return '';
+                }
+                const employee = this.employees.find((e) => String(e.id) === String(id));
+                return employee ? `${employee.name} (${employee.employee_code || ''})` : '';
+            },
+            // Deduplicates by employee id — the same employee must never
+            // appear twice in the dropdown even if the source list somehow
+            // contains a repeated row.
+            filteredClearanceEmployees(query) {
+                const seen = new Set();
+                const pool = this.employees.filter((e) => {
+                    if (seen.has(e.id)) {
+                        return false;
+                    }
+                    seen.add(e.id);
+                    return true;
+                });
+
+                if (!query) {
+                    return pool;
+                }
+
+                const needle = query.toLowerCase();
+                return pool.filter((e) =>
+                    e.name.toLowerCase().includes(needle) || (e.employee_code || '').toLowerCase().includes(needle)
+                );
+            },
+            selectClearanceSignatory(employee) {
+                this.clearanceSignatoryId = employee.id;
+                this.clearanceSignatoryQuery = this.clearanceLabelFor(employee.id);
+                this.clearanceSignatoryOpen = false;
+                this.onClearanceSignatoryChange();
+            },
+            clearClearanceSignatory() {
+                this.clearanceSignatoryId = '';
+                this.clearanceSignatoryQuery = '';
+                this.clearanceSignatoryOpen = false;
+                this.onClearanceSignatoryChange();
             },
             currentGroup() {
                 if (!this.clearanceSignatoryId) {

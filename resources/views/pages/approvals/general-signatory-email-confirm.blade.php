@@ -88,7 +88,7 @@
                     didOpen: () => Swal.showLoading(),
                 });
 
-                fetch(confirmUrl, {
+                window.fetchWithTimeout(confirmUrl, {
                     method: 'POST',
                     headers: {
                         'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
@@ -102,11 +102,13 @@
                         text: data.message,
                         confirmButtonColor: '#145a3a',
                     });
-                }).catch(() => {
+                }).catch((e) => {
                     Swal.fire({
                         icon: 'error',
                         title: 'Something went wrong',
-                        text: 'Please try again later.',
+                        text: e?.name === 'AbortError'
+                            ? 'The request took too long. Please check whether it went through before trying again.'
+                            : 'Please try again later.',
                         confirmButtonColor: '#145a3a',
                     });
                 });
@@ -133,6 +135,8 @@
                 });
             } else if (state === 'already_approved') {
                 Swal.fire({ icon: 'info', title: 'Already Approved', text: initialMessage, confirmButtonColor: '#145a3a' });
+            } else if (state === 'no_signature') {
+                Swal.fire({ icon: 'warning', title: 'E-Signature Required', text: initialMessage, confirmButtonColor: '#145a3a' });
             } else {
                 Swal.fire({ icon: 'error', title: 'Invalid Link', text: initialMessage, confirmButtonColor: '#145a3a' });
             }

@@ -4,10 +4,12 @@ namespace App\Http\Controllers;
 
 use App\Mail\ChecklistSignatoryAnnouncementMail;
 use App\Models\ChecklistApprovalToken;
+use App\Models\ChecklistItemAssignment;
 use App\Models\ChecklistItemProgress;
 use App\Models\ChecklistTemplate;
 use App\Models\EmailTemplate;
 use App\Models\Employee;
+use App\Models\EmployeeGroup;
 use App\Models\OffboardingRequest;
 use App\Models\OffboardingRequestApprover;
 use App\Models\OffboardingRequestGeneralSignatory;
@@ -41,6 +43,15 @@ class ApprovalController extends Controller
      */
     private const OVERDUE_TEMPLATE = 'Offboarding Overdue Notice';
 
+    /**
+     * Shown wherever an approval is blocked for lack of an uploaded
+     * e-signature — see `hasUsableSignature()`'s own docblock. Kept as one
+     * constant so the in-app flow (`redirectToUploadSignature()`) and the
+     * emailed-link flow (`EMAIL_APPROVAL_MESSAGES['no_signature']` below)
+     * never drift into two different wordings for the same rule.
+     */
+    private const MISSING_SIGNATURE_MESSAGE = 'Please upload your e-signature before approving checklist.';
+
     public function index(): View
     {
         $reasonLabels = [
@@ -66,9 +77,20 @@ class ApprovalController extends Controller
         // it — but only for the primary approver. A delegate merely opening
         // their queue must never flip the primary assignment's status.
         if (! $user->isAdmin() && $employee) {
-            $assignments->each(function (OffboardingRequestApprover $assignment) use ($employee) {
+            $assignments->each(function (OffboardingRequestApprover $assignment) use ($user, $employee) {
                 if ($assignment->employee_id === $employee->id && ! $assignment->first_viewed_at) {
                     $assignment->update(['first_viewed_at' => now(), 'status' => 'viewed']);
+
+                    // Recorded so the admin-facing Offboarding Status/Timeline
+                    // shows exactly who first opened this checklist and when
+                    // — previously this state change was silent, the only
+                    // approver action with no corresponding activity row.
+                    $assignment->offboardingRequest->activities()->create([
+                        'user_id' => $user->id,
+                        'offboarding_request_approver_id' => $assignment->id,
+                        'action' => 'checklist_viewed',
+                        'status' => $assignment->offboardingRequest->status,
+                    ]);
                 }
             });
         }
@@ -114,7 +136,7 @@ class ApprovalController extends Controller
                 // never the full active-employee roster. See
                 // `eligibleAssigneesFor()`'s own docblock for the fallback
                 // when this checklist has no group at all.
-                $rowAssignableEmployees = $this->eligibleAssigneesFor($template);
+                $rowAssignableEmployees = $this->eligibleAssigneesFor($assignment);
                 // Whether the list above is a REAL group restriction, as
                 // opposed to the "no group configured" unrestricted
                 // fallback — consulted by `groupIntoCombinedApprovals()` so
@@ -124,8 +146,14 @@ class ApprovalController extends Controller
                 // request's Immediate Head) restricts the whole card's
                 // delegate picker to the real group, instead of the
                 // groupless checklist's unrestricted fallback silently
-                // widening it back out to every active employee.
-                $rowHasGroupRestriction = $template && $template->employee_group_id !== null;
+                // widening it back out to every active employee. An
+                // Immediate Head/Department Head checklist counts as a real
+                // restriction too — it has no `employee_group_id` of its
+                // own, but `eligibleAssigneesFor()` still narrows it to the
+                // current Clearance Signatory's own group (plus anyone
+                // already assigned elsewhere on this request).
+                $rowHasGroupRestriction = ($template && $template->employee_group_id !== null)
+                    || (bool) $template?->is_immediate_head_checklist;
 
                 return [
                     // Grouping key — every checklist the same approver is
@@ -350,13 +378,46 @@ class ApprovalController extends Controller
      */
     private function buildGeneralSignatoryApprovals(User $user, array $reasonLabels)
     {
-        return OffboardingRequestGeneralSignatory::query()
+        $assignments = OffboardingRequestGeneralSignatory::query()
             ->where('status', 'pending')
             ->whereHas('offboardingRequest', fn ($q) => $q->where('status', 'pending'))
             ->visibleTo($user)
             ->with(['offboardingRequest.employee', 'generalSignatory.clearanceSignatory', 'generalSignatory.tasks.signatory'])
             ->get()
-            ->filter(fn (OffboardingRequestGeneralSignatory $assignment) => $assignment->offboardingRequest?->employee)
+            ->filter(fn (OffboardingRequestGeneralSignatory $assignment) => $assignment->offboardingRequest?->employee);
+
+        // Same "loading your own queue counts as viewing" side effect
+        // `index()` applies to a checklist approver's own assignments above
+        // — scoped the identical way (never for an admin merely monitoring,
+        // only for the General Signatory actually named on the row), and
+        // guarded on `! $assignment->first_viewed_at` so this can only ever
+        // fire once per assignment no matter how many times the page is
+        // reloaded afterward.
+        $employee = $user->employee;
+
+        if (! $user->isAdmin() && $employee) {
+            $assignments->each(function (OffboardingRequestGeneralSignatory $assignment) use ($user, $employee) {
+                if ($assignment->generalSignatory->clearance_signatory_id === $employee->id && ! $assignment->first_viewed_at) {
+                    $assignment->update(['first_viewed_at' => now()]);
+
+                    // Recorded so the admin-facing Offboarding Status/Timeline
+                    // shows exactly who first opened this General Signatory
+                    // assignment and when — see
+                    // `OffboardingRequest::approverActivityTimeline()`'s
+                    // `$generalSignatoryEventsByAssignment` grouping, which
+                    // is what actually surfaces this row under the right
+                    // General Signatory's card.
+                    $assignment->offboardingRequest->activities()->create([
+                        'user_id' => $user->id,
+                        'offboarding_request_general_signatory_id' => $assignment->id,
+                        'action' => 'general_signatory_viewed',
+                        'status' => $assignment->offboardingRequest->status,
+                    ]);
+                }
+            });
+        }
+
+        return $assignments
             ->map(function (OffboardingRequestGeneralSignatory $assignment) use ($reasonLabels) {
                 $request = $assignment->offboardingRequest;
                 $generalSignatory = $assignment->generalSignatory;
@@ -579,16 +640,24 @@ class ApprovalController extends Controller
      * template's own create/edit form, applied here to these two
      * delegation pickers instead.
      *
-     * Falls back to every active employee (today's original, unrestricted
-     * behavior) when this checklist has no group at all — an Immediate
-     * Head checklist, or an older checklist with no Clearance Signatory
-     * group configured — since there's no "employees under that Clearance
-     * Signatory" set to filter to in that case.
+     * An Immediate Head/Department Head checklist has no `employee_group_id`
+     * of its own — its Clearance Signatory is resolved per-REQUEST (whoever
+     * `OffboardingRequest::immediate_head_id` names), never a fixed template
+     * config — so it's delegated to `eligibleAssigneesForImmediateHeadChecklist()`
+     * instead of falling through to the unrestricted "every active employee"
+     * list every other groupless (legacy, pre-group) checklist still falls
+     * back to.
      *
      * @return array<int, array{id: string, name: string, code: string, department: ?string}>
      */
-    private function eligibleAssigneesFor(?ChecklistTemplate $template): array
+    private function eligibleAssigneesFor(OffboardingRequestApprover $assignment): array
     {
+        $template = $assignment->checklistTemplate;
+
+        if ($template?->is_immediate_head_checklist) {
+            return $this->eligibleAssigneesForImmediateHeadChecklist($assignment);
+        }
+
         $query = ($template && $template->employee_group_id)
             ? Employee::where('employee_group_id', $template->employee_group_id)
                 ->where('is_task_assignee', true)
@@ -596,6 +665,72 @@ class ApprovalController extends Controller
             : Employee::query();
 
         return $query->where('status', 'active')
+            ->orderBy('name')
+            ->get(['id', 'name', 'employee_code', 'department'])
+            ->map(fn (Employee $employee) => [
+                'id' => (string) $employee->id,
+                'name' => $employee->name,
+                'code' => $employee->employee_code,
+                'department' => $employee->department,
+            ])
+            ->values()
+            ->all();
+    }
+
+    /**
+     * `eligibleAssigneesFor()`'s branch for an Immediate Head/Department
+     * Head checklist. This template has no Clearance-Signatory group of its
+     * own to filter to (its approver is resolved per-request, not
+     * per-template), so eligibility here is instead computed against the
+     * CURRENT request's actual Clearance Signatory (`$assignment->employee_id`
+     * — whoever the offboardee's immediate head genuinely is on THIS
+     * request), never the logged-in user or any other assumption:
+     *
+     * - Active employees under that Clearance Signatory's own Employee
+     *   Group — the same "Group Head → members" relationship
+     *   `OffboardingRequestApprover::eligiblePoolAssigneeIds()` already uses
+     *   elsewhere, so "under the Clearance Signatory" means the same thing
+     *   in both places — OR
+     * - Active employees already acting as a delegate or per-item task
+     *   assignee on ANY checklist within this SAME offboarding request —
+     *   someone already doing real work on this offboardee's case stays
+     *   pickable even if their own Employee Master group sits elsewhere,
+     *   so re-confirming or correcting an existing assignment (or handing
+     *   off a second checklist to someone already involved) never gets
+     *   blocked by this restriction.
+     *
+     * Never includes the Clearance Signatory themselves (delegating a
+     * checklist to yourself is meaningless and separately rejected by
+     * `assign()`/`assignGroup()`).
+     *
+     * @return array<int, array{id: string, name: string, code: string, department: ?string}>
+     */
+    private function eligibleAssigneesForImmediateHeadChecklist(OffboardingRequestApprover $assignment): array
+    {
+        $signatoryId = $assignment->employee_id;
+
+        $groupIds = EmployeeGroup::where('group_head_employee_id', $signatoryId)->pluck('id');
+
+        $requestApproverIds = OffboardingRequestApprover::where('offboarding_request_id', $assignment->offboarding_request_id)
+            ->pluck('id');
+
+        $alreadyInvolvedIds = OffboardingRequestApprover::where('offboarding_request_id', $assignment->offboarding_request_id)
+            ->whereNotNull('delegated_employee_id')
+            ->pluck('delegated_employee_id')
+            ->merge(
+                ChecklistItemAssignment::whereIn('offboarding_request_approver_id', $requestApproverIds)
+                    ->where('status', 'active')
+                    ->whereNotNull('assigned_employee_id')
+                    ->pluck('assigned_employee_id')
+            )
+            ->unique();
+
+        return Employee::where('status', 'active')
+            ->where('id', '!=', $signatoryId)
+            ->where(function ($query) use ($groupIds, $alreadyInvolvedIds) {
+                $query->whereIn('employee_group_id', $groupIds)
+                    ->orWhereIn('id', $alreadyInvolvedIds);
+            })
             ->orderBy('name')
             ->get(['id', 'name', 'employee_code', 'department'])
             ->map(fn (Employee $employee) => [
@@ -674,6 +809,10 @@ class ApprovalController extends Controller
     {
         $this->authorizeAssignment($offboardingRequestApprover);
 
+        if (! auth()->user()->hasUsableSignature()) {
+            return $this->redirectToUploadSignature();
+        }
+
         abort_unless(
             in_array($offboardingRequestApprover->status, ['pending', 'viewed'], true),
             422,
@@ -720,6 +859,10 @@ class ApprovalController extends Controller
     public function approveGroup(Request $request, OffboardingRequest $offboardingRequest, Employee $employee): RedirectResponse
     {
         $this->authorizeGroupPrimary($employee);
+
+        if (! auth()->user()->hasUsableSignature()) {
+            return $this->redirectToUploadSignature();
+        }
 
         $validated = $request->validate([
             'items' => ['nullable', 'array'],
@@ -780,9 +923,21 @@ class ApprovalController extends Controller
         'already_approved' => 'This checklist has already been approved.',
         'not_actionable' => 'This checklist can no longer be approved from this link.',
         'not_ready' => 'This checklist is not yet ready for approval — not all items have been completed.',
+        'no_signature' => self::MISSING_SIGNATURE_MESSAGE . ' Log in to your account, upload it from your Profile page, then use this link again.',
         'confirm' => 'Please confirm to approve this checklist.',
         'approved' => 'The checklist was successfully approved.',
     ];
+
+    /**
+     * Sends the acting user to their Profile page (where the Electronic
+     * Signature card lives) with a clear, flashed reason why their approval
+     * didn't go through — the in-app equivalent of the emailed link's
+     * `no_signature` state below, for the same missing-e-signature rule.
+     */
+    private function redirectToUploadSignature(): RedirectResponse
+    {
+        return redirect()->route('profile')->with('error', self::MISSING_SIGNATURE_MESSAGE);
+    }
 
     /**
      * Public confirmation page for the "Approve" link embedded in the
@@ -947,6 +1102,25 @@ class ApprovalController extends Controller
             return ['not_ready', $members];
         }
 
+        // Same e-signature gate `approve()`/`approveGroup()` enforce for the
+        // in-app flow, applied here too so the emailed link can never
+        // finalize an approval without one either — shared by BOTH this GET
+        // confirmation state and the actual POST in `confirmEmailApproval()`
+        // (which calls this same method), so there is exactly one place
+        // that decides this, never two definitions that could drift apart.
+        // Looked up by username rather than `User::findOrCreateApprover()`
+        // deliberately: this runs on every page view of the link (including
+        // an unauthenticated GET), and an account that doesn't exist yet
+        // can't possibly have a signature uploaded to it, so there's no
+        // need to actually create one just to answer that question.
+        $departmentHead = $members->first()->employee;
+        $hasSignature = $departmentHead
+            && (User::firstWhere('username', $departmentHead->employee_code_digits)?->hasUsableSignature() ?? false);
+
+        if (! $hasSignature) {
+            return ['no_signature', $members];
+        }
+
         return ['confirm', $members];
     }
 
@@ -1101,6 +1275,19 @@ class ApprovalController extends Controller
             return back()->with('error', 'This approver has no valid email address on file.');
         }
 
+        $checklistNotifier = app(ChecklistApprovalNotifier::class);
+
+        // `checklistSummary`/`approveButton` are always populated (not just
+        // for the "Checklist Ready for Department Head Approval" template)
+        // since an unreferenced token is simply never touched by
+        // `render()` — this lets an admin pick that template from this same
+        // "Notify Approver" picker (every active template is selectable
+        // here, see the picker's own docblock) to manually follow up once a
+        // checklist is ready, with a genuinely working one-click Approve
+        // link, without needing a separate button/endpoint just for that
+        // one template. Clicking Approve before every item is actually
+        // checked is still safe — `confirmEmailApproval()` already handles
+        // "not ready yet" gracefully instead of approving early.
         [$subject, $body] = $emailTemplate->render(
             approverName: $approverEmployee->name,
             offboardeeName: $offboardee->name,
@@ -1113,6 +1300,10 @@ class ApprovalController extends Controller
             daysOverdue: $isOverdue ? (string) $offboardingRequestApprover->daysOverdue() : null,
             pendingItems: $isOverdue ? $offboardingRequestApprover->itemsStatusTableHtml() : null,
             checklistStatus: $isOverdue ? $offboardingRequestApprover->clearanceStatusLabel() : null,
+            checklistSummary: $offboardingRequestApprover->checkedItemsSummaryHtml(),
+            approveButton: $checklistNotifier->buildApproveButtonHtml(
+                $checklistNotifier->createChecklistApprovalUrl($offboardingRequestApprover)
+            ),
         );
 
         try {

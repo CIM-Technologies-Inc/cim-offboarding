@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\ChecklistTemplate;
 use App\Models\Employee;
+use App\Models\FinalApprover;
 use App\Models\GeneralSignatory;
 use App\Models\OffboardingRequest;
 use App\Models\OffboardingRequestApprover;
@@ -11,6 +12,7 @@ use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Response;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Illuminate\View\View;
 
 class ClearanceFormController extends Controller
@@ -21,14 +23,67 @@ class ClearanceFormController extends Controller
      */
     public function pdf(OffboardingRequest $offboardingRequest): Response
     {
-        $data = $this->buildData($offboardingRequest) + [
-            'headerImageSrc' => $this->localImageDataUri(public_path('images/clearance-form/header.png')),
-            'footerImageSrc' => $this->localImageDataUri(public_path('images/clearance-form/footer.png')),
-        ];
+        $data = $this->buildPdfData($offboardingRequest);
 
         $pdf = Pdf::loadView('clearance-form.pdf', $data)->setPaper('letter');
 
         return $pdf->stream('Clearance Form - '.$data['employeeName'].'.pdf');
+    }
+
+    /**
+     * Raw PDF bytes for the Clearance Form — used by
+     * `FinalApprovalController` to attach the document to the Final
+     * Approval Request email (and as the source `screenshotPngFromBytes()`
+     * rasterizes). Same data/view as `pdf()`, just returned as a string
+     * instead of streamed as an HTTP response.
+     */
+    public function generatePdfBytes(OffboardingRequest $offboardingRequest): string
+    {
+        return Pdf::loadView('clearance-form.pdf', $this->buildPdfData($offboardingRequest))
+            ->setPaper('letter')
+            ->output();
+    }
+
+    /**
+     * Rasterizes the Clearance Form's first (only) PDF page to a PNG —
+     * the "screenshot" attached alongside the PDF on the Final Approval
+     * Request email. Requires the `imagick` PHP extension with Ghostscript
+     * installed and discoverable on PATH (ImageMagick shells out to it for
+     * PDF decoding) — throws if either is unavailable; the caller decides
+     * whether that should block the email entirely or just be sent without
+     * this attachment.
+     */
+    public function screenshotPngFromBytes(string $pdfBytes): string
+    {
+        $tmpFile = tempnam(sys_get_temp_dir(), 'clearance_form_') . '.pdf';
+        file_put_contents($tmpFile, $pdfBytes);
+
+        try {
+            $image = new \Imagick();
+            $image->setResolution(150, 150);
+            $image->readImage($tmpFile . '[0]');
+            $image->setImageFormat('png');
+            $image->setImageBackgroundColor(new \ImagickPixel('white'));
+            $image = $image->flattenImages();
+
+            return $image->getImagesBlob();
+        } finally {
+            @unlink($tmpFile);
+        }
+    }
+
+    /**
+     * The `$data` array shape shared by `pdf()` and `generatePdfBytes()` —
+     * `buildData()` plus the header/footer images embedded as base64 data
+     * URIs (required for DomPDF, which can't fetch external/relative
+     * image URLs the way a browser can for the `print()` view below).
+     */
+    private function buildPdfData(OffboardingRequest $offboardingRequest): array
+    {
+        return $this->buildData($offboardingRequest) + [
+            'headerImageSrc' => $this->localImageDataUri(public_path('images/clearance-form/header.png')),
+            'footerImageSrc' => $this->localImageDataUri(public_path('images/clearance-form/footer.png')),
+        ];
     }
 
     /**
@@ -59,6 +114,10 @@ class ClearanceFormController extends Controller
      */
     private function buildData(OffboardingRequest $offboardingRequest): array
     {
+        // `finalApproverEmployee` is deliberately NOT eager-loaded here — the
+        // Final Approver shown on the Clearance Form is always resolved
+        // live from the `FinalApprover` table further down, never from
+        // this request's own frozen snapshot relation.
         $offboardingRequest->loadMissing(['employee', 'immediateHead.user', 'checklistTemplates', 'approvers.employee.user', 'approvers.itemProgress', 'approvers.checklistTemplate', 'generalSignatories.clearanceSignatory.user', 'generalSignatoryApprovals']);
 
         // Logged once (guarded below) so the employee's own timeline can
@@ -204,6 +263,48 @@ class ClearanceFormController extends Controller
 
         $rows = $rows->concat($generalSignatoryRows);
 
+        // This request's own Final Approval process (see
+        // `OffboardingRequestFinalApproval`), if one has ever been
+        // initiated via the Offboardee page's "Final Approval" button.
+        $finalApproval = $offboardingRequest->finalApproval()->with('employee.user')->first();
+        $isFinalApproved = $finalApproval?->status === 'approved';
+
+        // Once THIS request has actually been given Final Approval, the
+        // signatory shown is permanently whoever really signed it
+        // (`$finalApproval->employee`, frozen fact) — never re-resolved
+        // against the live config again, the same "a real signature never
+        // retroactively changes" principle every other row on this form
+        // already follows. Only BEFORE that point does this fall back to
+        // resolving the live active `FinalApprover` fresh on every render
+        // (a product decision: an admin activating a different Final
+        // Approver must be reflected immediately on any request that
+        // hasn't been finally approved yet, no manual step needed).
+        // `offboarding_request.final_approver_employee_id` is never read
+        // here either way — see that column's own docblock. No hardcoded
+        // person's name is ever shown; if there's neither a completed
+        // approval nor any active `FinalApprover` configured, the line is
+        // left blank. Upper-cased to match this block's own long-standing
+        // all-caps styling, applied regardless of who the actual person is.
+        if ($isFinalApproved) {
+            $finalApproverEmployee = $finalApproval->employee;
+        } else {
+            $finalApproverEmployee = FinalApprover::with('employee')->where('is_active', true)->first()?->employee;
+        }
+
+        $finalApprover = [
+            'name' => $finalApproverEmployee ? Str::upper($finalApproverEmployee->name) : '',
+            'title' => $finalApproverEmployee?->designation ?: ($finalApproverEmployee ? 'President' : ''),
+            'signatureDataUri' => $isFinalApproved ? $this->signatureDataUri($finalApproverEmployee->user?->signature_path) : null,
+            'approvedAt' => $isFinalApproved ? $finalApproval->approved_at?->format('M d, Y g:i A') : null,
+        ];
+
+        // Deliberately NOT added as its own row in the main signatory table
+        // above (a "Final Approval" row was previously injected at the top
+        // of `$rows` here) — the Final Approver already has their own
+        // dedicated "Approved for Payment by" block at the bottom of the
+        // form (rendered from `$finalApprover` below), so listing them a
+        // second time as a table row was redundant and has been removed.
+
         return [
             'offboardingRequest' => $offboardingRequest,
             'employeeName' => $employee->name,
@@ -214,6 +315,7 @@ class ClearanceFormController extends Controller
             'separationDate' => $offboardingRequest->last_working_day->format('M d, Y'),
             'immediateHeadRow' => $immediateHeadRow,
             'rows' => $rows,
+            'finalApprover' => $finalApprover,
         ];
     }
 

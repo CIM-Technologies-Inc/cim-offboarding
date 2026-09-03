@@ -162,7 +162,7 @@
                                             </label>
                                         @endforeach
                                     </div>
-                                    <button type="submit"
+                                    <button type="submit" data-turbo-submits-with="Saving..."
                                         class="rounded-lg bg-[#145a3a] px-3 py-1.5 text-theme-xs font-medium text-white hover:bg-[#0f4630]">
                                         Save
                                     </button>

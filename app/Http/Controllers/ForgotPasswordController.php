@@ -7,6 +7,7 @@ use App\Models\PasswordResetRequest;
 use App\Models\User;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
@@ -122,12 +123,14 @@ class ForgotPasswordController extends Controller
             ],
         ]);
 
-        $user->update([
-            'password' => $validated['password'],
-            'must_change_password' => false,
-        ]);
+        DB::transaction(function () use ($user, $validated) {
+            $user->update([
+                'password' => $validated['password'],
+                'must_change_password' => false,
+            ]);
 
-        PasswordResetRequest::where('user_id', $user->id)->whereNull('used_at')->update(['used_at' => now()]);
+            PasswordResetRequest::where('user_id', $user->id)->whereNull('used_at')->update(['used_at' => now()]);
+        });
 
         return redirect()->route('login')->with('success', 'Your password has been reset successfully. Please sign in with your new password.');
     }

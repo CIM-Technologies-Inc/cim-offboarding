@@ -90,7 +90,7 @@
                                 }">
                                 @csrf
                                 @method('DELETE')
-                                <button type="submit" title="Delete Group"
+                                <button type="submit" title="Delete Group" data-turbo-submits-with="Deleting..."
                                     class="flex h-[38px] w-[38px] items-center justify-center rounded-lg border border-gray-300 text-error-600 hover:bg-error-50 dark:border-gray-700 dark:text-error-400 dark:hover:bg-error-500/10">
                                     <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
                                         <path fill-rule="evenodd" clip-rule="evenodd" d="M8.60834 4.16667H11.3917C11.4144 4.06414 11.4271 3.95762 11.4271 3.84812C11.4271 3.30589 11.0212 2.86118 10.5 2.79018V2.5C10.5 2.22386 10.2761 2 10 2C9.72386 2 9.5 2.22386 9.5 2.5V2.79018C8.97878 2.86118 8.57292 3.30589 8.57292 3.84812C8.57292 3.95762 8.58562 4.06414 8.60834 4.16667ZM6.5 5.5C6.22386 5.5 6 5.72386 6 6C6 6.27614 6.22386 6.5 6.5 6.5H6.9743L7.51823 15.6152C7.57216 16.5197 8.32082 17.2249 9.22699 17.2249H10.773C11.6792 17.2249 12.4278 16.5197 12.4818 15.6152L13.0257 6.5H13.5C13.7761 6.5 14 6.27614 14 6C14 5.72386 13.7761 5.5 13.5 5.5H6.5ZM11.5245 6.5H8.47552L9.01462 15.5556C9.03271 15.8571 9.28229 16.0922 9.58436 16.0922H10.4156C10.7177 16.0922 10.9673 15.8571 10.9854 15.5556L11.5245 6.5Z" fill="currentColor" />
@@ -399,7 +399,7 @@
                             class="flex w-full justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03] sm:w-auto">
                             Cancel
                         </button>
-                        <button type="submit" :disabled="processing"
+                        <button type="submit" :disabled="processing" data-turbo-submits-with="Saving..."
                             :class="processing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#0f4630]'"
                             class="flex w-full justify-center rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white sm:w-auto">
                             <span x-text="editingGroup ? 'Update Group' : 'Save Group'"></span>
@@ -771,7 +771,7 @@
                     if (this.addingEmployeeId === employee.id) return;
                     this.addingEmployeeId = employee.id;
 
-                    fetch(`/employee-groups/${this.viewingGroup.id}/employees`, {
+                    window.fetchWithTimeout(`/employee-groups/${this.viewingGroup.id}/employees`, {
                         method: 'POST',
                         headers: {
                             'X-CSRF-TOKEN': this.csrfToken(),
@@ -797,7 +797,9 @@
                             // "X is already in this group.") and any other
                             // failure — surfaced as a validation-style toast
                             // rather than silently doing nothing.
-                            this.notify('error', error.message);
+                            this.notify('error', error?.name === 'AbortError'
+                                ? 'This is taking longer than expected. Please check before trying again.'
+                                : error.message);
                         })
                         .finally(() => {
                             this.addingEmployeeId = null;
@@ -819,7 +821,7 @@
                     }).then((result) => {
                         if (!result.isConfirmed) return;
 
-                        fetch(`/employee-groups/${this.viewingGroup.id}/employees/${employee.id}`, {
+                        window.fetchWithTimeout(`/employee-groups/${this.viewingGroup.id}/employees/${employee.id}`, {
                             method: 'DELETE',
                             headers: {
                                 'X-CSRF-TOKEN': this.csrfToken(),
@@ -838,7 +840,9 @@
                                 this.notify('success', 'Employee removed from the group.');
                             })
                             .catch((error) => {
-                                this.notify('error', error.message);
+                                this.notify('error', error?.name === 'AbortError'
+                                    ? 'This is taking longer than expected. Please check before trying again.'
+                                    : error.message);
                             });
                     });
                 },
@@ -849,7 +853,7 @@
                 // on failure it's reverted so the checkbox never silently
                 // drifts from the server's actual state.
                 toggleTaskAssignee(employee, checked) {
-                    fetch(`/employee-groups/${this.viewingGroup.id}/employees/${employee.id}/task-assignee`, {
+                    window.fetchWithTimeout(`/employee-groups/${this.viewingGroup.id}/employees/${employee.id}/task-assignee`, {
                         method: 'PATCH',
                         headers: {
                             'X-CSRF-TOKEN': this.csrfToken(),
@@ -869,7 +873,9 @@
                         })
                         .catch((error) => {
                             employee.is_task_assignee = !checked;
-                            this.notify('error', error.message);
+                            this.notify('error', error?.name === 'AbortError'
+                                ? 'This is taking longer than expected. Please check before trying again.'
+                                : error.message);
                         });
                 },
                 // Merges the server's fresh employee record back into the
@@ -1067,7 +1073,7 @@
                     this.assigningInFlight = true;
 
                     const request = newGroupId
-                        ? fetch(`/employee-groups/${newGroupId}/employees`, {
+                        ? window.fetchWithTimeout(`/employee-groups/${newGroupId}/employees`, {
                             method: 'POST',
                             headers: {
                                 'X-CSRF-TOKEN': this.csrfToken(),
@@ -1076,7 +1082,7 @@
                             },
                             body: JSON.stringify({ employee_id: employee.id }),
                         })
-                        : fetch(`/employee-groups/${currentGroupId}/employees/${employee.id}`, {
+                        : window.fetchWithTimeout(`/employee-groups/${currentGroupId}/employees/${employee.id}`, {
                             method: 'DELETE',
                             headers: {
                                 'X-CSRF-TOKEN': this.csrfToken(),
@@ -1098,7 +1104,9 @@
                             this.$dispatch('close-assign-group-modal');
                         })
                         .catch((error) => {
-                            this.notify('error', error.message);
+                            this.notify('error', error?.name === 'AbortError'
+                                ? 'This is taking longer than expected. Please check before trying again.'
+                                : error.message);
                         })
                         .finally(() => {
                             this.assigningInFlight = false;
