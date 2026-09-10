@@ -5,6 +5,7 @@ use App\Http\Middleware\EnsureUserHasRole;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Support\Facades\Log;
 use Spatie\Permission\Middleware\PermissionMiddleware;
 
 return Application::configure(basePath: dirname(__DIR__))
@@ -58,6 +59,46 @@ return Application::configure(basePath: dirname(__DIR__))
         // jargon rather than the plain-language wording every other
         // message in this app uses.
         $exceptions->render(function (\Throwable $e, \Illuminate\Http\Request $request) {
+            // PHP's `max_execution_time` fatal (e.g. a slow SMTP send while
+            // submitting a New Offboarding Request — see
+            // `OffboardingRequestController::store()`) surfaces here as a
+            // `FatalError`, synthesized by Laravel's own shutdown handler
+            // from `error_get_last()` — a real, catchable \Throwable by the
+            // time it reaches this callback, just like any other exception.
+            // Checked BEFORE the JSON-only guard below since this needs to
+            // render a friendly page for a plain browser form submission
+            // too, not only for fetch()-driven actions.
+            $isExecutionTimeout = $e instanceof \Symfony\Component\ErrorHandler\Error\FatalError
+                && str_contains($e->getMessage(), 'Maximum execution time');
+
+            if ($isExecutionTimeout) {
+                // Laravel's default exception reporting already logs the
+                // full exception (class/message/file/line/trace) regardless
+                // of this callback — this is a second, deliberately terse
+                // entry purely so a timeout specifically is trivial to grep
+                // for, without dumping the same trace twice.
+                Log::error('Request timed out (maximum execution time exceeded).', [
+                    'url' => $request->fullUrl(),
+                    'method' => $request->method(),
+                ]);
+
+                if ($request->expectsJson()) {
+                    return response()->json([
+                        'message' => 'The request took too long to process. Please try again.',
+                    ], 504);
+                }
+
+                // Sends the "Try Again" button back to whichever page the
+                // timed-out form was actually submitted from (e.g. the
+                // Dashboard or Offboardee page, both of which host the New
+                // Offboarding Request modal) — never a hardcoded route, so
+                // this works the same for any other form that happens to
+                // time out, not just this one.
+                return response()->view('errors.504', [
+                    'primaryAction' => $request->headers->get('referer') ?: 'reload',
+                ], 504);
+            }
+
             if (! $request->expectsJson()) {
                 return null;
             }

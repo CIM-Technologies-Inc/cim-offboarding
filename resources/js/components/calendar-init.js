@@ -44,11 +44,25 @@ export function calendarInit() {
       eventClick: calendarEventClick,
       displayEventTime: false,
       eventContent(eventInfo) {
+        // Notice Period indicator — a small colored badge next to the
+        // offboardee's name so Admin/HR can spot an approaching, due, or
+        // already-past Notification Date at a glance without opening the
+        // event. Based on the SAVED `notificationDate`/`noticePeriodStatus`
+        // (see `CalendarController::index()`), never recalculated here.
+        const noticePeriodStatus = eventInfo.event.extendedProps.noticePeriodStatus;
+        const badgesByStatus = {
+          upcoming: '<span class="ml-1 shrink-0 rounded-full bg-blue-100 px-1.5 py-0.5 text-[9px] font-semibold leading-none text-blue-700">Notice: Upcoming</span>',
+          today: '<span class="ml-1 shrink-0 rounded-full bg-orange-100 px-1.5 py-0.5 text-[9px] font-semibold leading-none text-orange-700">Notice: Today</span>',
+          past: '<span class="ml-1 shrink-0 rounded-full bg-gray-200 px-1.5 py-0.5 text-[9px] font-semibold leading-none text-gray-600">Notice: Past</span>',
+        };
+        const noticeBadge = badgesByStatus[noticePeriodStatus] ?? '';
+
         return {
           html: `
-            <div class="event-fc-color flex fc-event-main fc-bg-offboarding p-1 rounded-sm cursor-pointer">
+            <div class="event-fc-color flex items-center fc-event-main fc-bg-offboarding p-1 rounded-sm cursor-pointer">
               <div class="fc-daygrid-event-dot"></div>
               <div class="fc-event-title">${eventInfo.event.title}</div>
+              ${noticeBadge}
             </div>
           `,
         };

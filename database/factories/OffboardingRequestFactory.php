@@ -2,6 +2,7 @@
 
 namespace Database\Factories;
 
+use App\Models\SeparationType;
 use Illuminate\Database\Eloquent\Factories\Factory;
 
 /**
@@ -24,8 +25,21 @@ class OffboardingRequestFactory extends Factory
             ? fake()->dateTimeBetween($createdAt, (clone $lastWorkingDay)->modify('+5 days'))
             : null;
 
+        // Snapshotted the same way `OffboardingRequestController::store()`
+        // does for a real request — title/description/notice period frozen
+        // from whichever Separation Type happens to be picked, never a live
+        // reference. Falls back to a plain literal if Separation Type
+        // Management has no rows at all (e.g. a factory run before its seed
+        // migration), so this factory never hard-depends on seed order.
+        $separationType = SeparationType::inRandomOrder()->first();
+        $noticePeriodDays = $separationType->default_notice_period_days ?? 30;
+
         return [
-            'reason' => fake()->randomElement(['resignation', 'resignation', 'termination', 'retirement', 'layoff', 'other']),
+            'reason' => $separationType->title ?? 'Resignation',
+            'separation_type_id' => $separationType?->id,
+            'separation_type_description' => $separationType->description ?? "Employee's voluntary termination of employment.",
+            'notice_period_days' => $noticePeriodDays,
+            'notification_date' => (clone $createdAt)->modify("+{$noticePeriodDays} days"),
             'notice_date' => $createdAt,
             'last_working_day' => $lastWorkingDay,
             'status' => $status,

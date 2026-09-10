@@ -914,6 +914,14 @@ class ChecklistDelegationController extends Controller
                     'clearedByName' => $progress->checkedBy?->name,
                     'clearedByCode' => $checkedByEmployee?->employee_code,
                     'clearedAt' => $progress->checked_at?->format('M d, Y g:i A'),
+                    // Same green-vs-red rule as the initial page load (see
+                    // `ApprovalController::index()`'s matching `completedLate`)
+                    // — items share their checklist's own due date, so this
+                    // compares the item's own `checked_at` against the
+                    // assignment's `due_at`.
+                    'completedLate' => $member->due_at !== null
+                        && $progress->checked_at !== null
+                        && $progress->checked_at->greaterThanOrEqualTo($member->due_at),
                 ];
             }
         }

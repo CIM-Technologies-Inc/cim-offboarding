@@ -7,12 +7,15 @@ use App\Models\ChecklistTemplate;
 use App\Models\Employee;
 use App\Models\FinalApprover;
 use App\Models\OffboardingRequest;
+use App\Models\SeparationType;
 use App\Models\User;
 use App\Services\ChecklistApprovalNotifier;
+use App\Services\ChecklistCompletionService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\Rule;
 
 class OffboardingRequestController extends Controller
 {
@@ -23,8 +26,20 @@ class OffboardingRequestController extends Controller
             'immediate_head_id' => ['nullable', 'exists:employees,id', 'different:employee_id'],
             'notice_date' => ['required', 'date'],
             'last_working_day' => ['required', 'date', 'after_or_equal:notice_date'],
-            'resignation_type' => ['nullable', 'string', 'max:255'],
-            'reason' => ['required', 'in:resignation,termination,retirement,layoff,other'],
+            // Only the Separation Type is trusted from the client — its
+            // title, Description/Definition, and Default Notice Period are
+            // always looked up server-side from THIS id below, never taken
+            // from any other submitted field (the New Offboarding Request
+            // modal's own "Notice Period" input is `disabled` and has no
+            // `name` at all, precisely so there's nothing else to trust).
+            'separation_type_id' => ['required', 'exists:separation_types,id'],
+            // Which checklist approval workflow this request follows —
+            // frozen here at creation time and never re-derived, so a later
+            // change to how the New Request form defaults/behaves can never
+            // alter an already-created request (see
+            // `ChecklistCompletionService::checkRegularChecklistsCompletion()`
+            // for where this actually changes behavior).
+            'approval_mode' => ['required', Rule::in(['sync', 'async'])],
             // Per-request overrides for the 3 fixed-name email templates
             // that fire at creation time — see the matching Select fields
             // on the New Offboarding Request modal, and
@@ -56,6 +71,23 @@ class OffboardingRequestController extends Controller
 
         $employee = Employee::findOrFail($validated['employee_id']);
 
+        // Guards against creating a second, duplicate offboarding request
+        // for an employee who already has one in progress — most
+        // importantly, this also covers the "Try Again after a timeout"
+        // case: `$employee->update(['status' => 'offboarding'])` below runs
+        // BEFORE the slow, timeout-prone notification step further down, so
+        // even if THAT step is what actually times out, this status flip
+        // has already durably committed by then — a resubmission correctly
+        // lands here instead of creating a duplicate. The New Request
+        // modal's own employee picker already only offers `status = 'active'`
+        // employees in the first place; this is the server-side backstop
+        // for a stale page, a resubmitted form, or a direct request.
+        if ($employee->status !== 'active') {
+            return back()->withErrors([
+                'employee_id' => "{$employee->name} already has an offboarding request in progress — refresh the page and select a different employee, or use the existing request instead of submitting a new one.",
+            ])->withInput();
+        }
+
         // Fallback: if the admin didn't manually pick an Immediate Head,
         // use the offboardee's Employee Master Group Head instead — the
         // same "group's registered head" concept `Employee::departmentHead()`
@@ -72,44 +104,83 @@ class OffboardingRequestController extends Controller
             }
         }
 
-        // No longer a user-facing choice on the New Offboarding Request form
-        // — every request is created async, same as the form's own prior
-        // default. Kept as a stored value (rather than dropping the column)
-        // since ApprovalController still reads it for the Approvals page's
-        // "Approval Mode" display.
-        $offboardingRequest = OffboardingRequest::create($validated + [
-            'status' => 'pending',
-            'approval_mode' => 'async',
-            'created_by' => $request->user()->id,
-            'final_approver_employee_id' => $activeFinalApprover->employee_id,
-        ]);
+        // Separation Type — its title/description/Default Notice Period are
+        // frozen onto this request right now, so a later edit or delete on
+        // the Separation Type Management page can never change a request
+        // that already exists (see `SeparationType`'s own docblock).
+        $separationType = SeparationType::findOrFail($validated['separation_type_id']);
 
-        $employee->update(['status' => 'offboarding']);
+        // Notification Date = the actual moment this request is submitted
+        // (right now — never the admin-picked "Resignation Date"/`notice_date`
+        // field, and never the Separation Type's own Default Notice Period
+        // if it's edited later) plus the exact Notice Period this
+        // Separation Type had at THIS moment. Computed and frozen ONCE,
+        // here, at creation time.
+        $noticePeriodDays = $separationType->default_notice_period_days;
+        $notificationDate = now()->addDays($noticePeriodDays)->toDateString();
 
-        // Every offboardee gets their own login the moment their request is
-        // created, so they can track their own process from day one — see
-        // `ChecklistApprovalNotifier::notifyOffboardee()` below, which emails
-        // these exact credentials only when the account is genuinely new.
-        // Never promotes/downgrades an existing account's role (see
-        // `User::findOrCreateEmployee()`), so an employee who already has an
-        // account (e.g. as someone else's approver) keeps that role and
-        // simply never receives credentials in this email.
-        $existingEmployeeUser = User::firstWhere('username', $employee->employee_code_digits);
-        $employeeUser = $existingEmployeeUser ?? User::findOrCreateEmployee($employee);
-        $isNewEmployeeAccount = $existingEmployeeUser === null;
+        // Everything here is a fast, purely-database write — the request
+        // row, the employee's status flip, and both login accounts —
+        // wrapped in one transaction so a failure partway through (a
+        // dropped DB connection, say) can never leave the request created
+        // but the employee still "active", or vice versa. Deliberately
+        // does NOT include `notifyDepartmentHeads()` below: that step sends
+        // real emails over the network, which can genuinely take a long
+        // time — holding a DB transaction open for that entire duration
+        // would block other requests against these same rows for no
+        // reason, and is exactly the kind of slow I/O a DB transaction
+        // should never wrap.
+        [$offboardingRequest, $employeeUser, $isNewEmployeeAccount] = DB::transaction(function () use ($validated, $request, $activeFinalApprover, $separationType, $noticePeriodDays, $notificationDate, $employee) {
+            $offboardingRequest = OffboardingRequest::create($validated + [
+                'status' => 'pending',
+                'created_by' => $request->user()->id,
+                'final_approver_employee_id' => $activeFinalApprover->employee_id,
+                'reason' => $separationType->title,
+                'separation_type_description' => $separationType->description,
+                'notice_period_days' => $noticePeriodDays,
+                'notification_date' => $notificationDate,
+            ]);
 
-        // The Immediate Head is an additional authorized signatory on the
-        // Clearance Form, outside the checklist approval workflow — they
-        // still need a login account to access whatever offboarding/
-        // clearance functions they're granted, same convention as any other
-        // approver account (username/password = employee_code_digits).
-        if (! empty($validated['immediate_head_id'])) {
-            User::findOrCreateApprover(Employee::findOrFail($validated['immediate_head_id']));
-        }
+            $employee->update(['status' => 'offboarding']);
+
+            // Every offboardee gets their own login the moment their request is
+            // created, so they can track their own process from day one — see
+            // `ChecklistApprovalNotifier::notifyOffboardee()` below, which emails
+            // these exact credentials only when the account is genuinely new.
+            // Never promotes/downgrades an existing account's role (see
+            // `User::findOrCreateEmployee()`), so an employee who already has an
+            // account (e.g. as someone else's approver) keeps that role and
+            // simply never receives credentials in this email.
+            $existingEmployeeUser = User::firstWhere('username', $employee->employee_code_digits);
+            $employeeUser = $existingEmployeeUser ?? User::findOrCreateEmployee($employee);
+            $isNewEmployeeAccount = $existingEmployeeUser === null;
+
+            // The Immediate Head is an additional authorized signatory on the
+            // Clearance Form, outside the checklist approval workflow — they
+            // still need a login account to access whatever offboarding/
+            // clearance functions they're granted, same convention as any other
+            // approver account (username/password = employee_code_digits).
+            if (! empty($validated['immediate_head_id'])) {
+                User::findOrCreateApprover(Employee::findOrFail($validated['immediate_head_id']));
+            }
+
+            return [$offboardingRequest, $employeeUser, $isNewEmployeeAccount];
+        });
 
         $successMessage = 'Offboarding request submitted.';
 
         try {
+            // The step actually seen timing out in practice (sending each
+            // Department Head/General Signatory/offboardee email
+            // synchronously over SMTP) — extended well past the default
+            // execution limit so a request with many recipients has room to
+            // finish normally instead of hitting it. Harmless to call even
+            // when `max_execution_time` is unlimited (e.g. `0` via CLI).
+            // If this genuinely still isn't enough, the PHP-level fatal it
+            // triggers is handled gracefully app-wide — see
+            // `bootstrap/app.php`'s exception `render()` callback.
+            set_time_limit(120);
+
             $this->notifyDepartmentHeads($offboardingRequest, $request->user(), $employeeUser, $isNewEmployeeAccount);
         } catch (\Throwable $e) {
             Log::error('Failed to process offboarding approver notifications.', [
@@ -199,6 +270,13 @@ class OffboardingRequestController extends Controller
                 'status' => 'pending',
                 'completed_at' => null,
                 'final_pay_notified_at' => null,
+                // Mirrors `final_pay_notified_at` above — the Sync
+                // workflow's own Primary -> Secondary one-shot lock (see
+                // `ChecklistCompletionService::checkPrimaryChecklistsCompletion()`)
+                // must also be cleared, or a reset Sync request would find
+                // it already set from before the reset and never re-attach
+                // Secondary checklists at all.
+                'secondary_notified_at' => null,
                 'remarks' => null,
                 'final_approver_employee_id' => $activeFinalApprover->employee_id,
             ]);
@@ -232,6 +310,10 @@ class OffboardingRequestController extends Controller
         }
 
         try {
+            // Same reasoning as `store()`'s identical call — see its own
+            // comment.
+            set_time_limit(120);
+
             $this->notifyDepartmentHeads($offboardingRequest, $admin, $employeeUser, $isNewEmployeeAccount);
         } catch (\Throwable $e) {
             Log::error('Failed to process offboarding approver notifications after reset.', [
@@ -271,11 +353,23 @@ class OffboardingRequestController extends Controller
      */
     private function notifyDepartmentHeads(OffboardingRequest $offboardingRequest, User $creator, User $employeeUser, bool $isNewEmployeeAccount): void
     {
-        $templates = ChecklistTemplate::where('is_active', true)
+        $isSyncMode = $offboardingRequest->approval_mode === 'sync';
+
+        $templatesQuery = ChecklistTemplate::where('is_active', true)
             ->where('is_final_pay_checklist', false)
             ->applicableToDepartment($offboardingRequest->employee->department)
-            ->with(['departmentHead', 'items.signatory'])
-            ->get();
+            ->with(['departmentHead', 'items.signatory']);
+
+        // Sync: only the FIRST stage (Primary) is attached/notified now —
+        // Secondary and the Final Pay Checklist only follow once the
+        // required prior stage is approved (see
+        // `ChecklistCompletionService::checkPrimaryChecklistsCompletion()`).
+        // Async: unchanged from before this feature existed — every
+        // non-final-pay template is attached/notified in one batch,
+        // immediately, in whatever order the query returns them.
+        $templates = $isSyncMode
+            ? (clone $templatesQuery)->where('sequence_type', ChecklistTemplate::SEQUENCE_TYPE_PRIMARY)->get()
+            : $templatesQuery->get();
 
         app(ChecklistApprovalNotifier::class)->notifyDepartmentHeadsOfNewRequest($offboardingRequest, $templates);
 
@@ -285,6 +379,17 @@ class OffboardingRequestController extends Controller
             null,
             $creator->name
         );
+
+        if ($isSyncMode) {
+            // Defensive, not the expected common case: self-heals a
+            // department with zero Primary checklists configured by
+            // immediately advancing to Secondary (and beyond, if that's
+            // also empty) rather than stalling forever waiting for a
+            // Primary approval that can never happen, since none exist.
+            // A no-op whenever Primary checklists genuinely were attached
+            // above (nothing on them is approved yet).
+            app(ChecklistCompletionService::class)->checkRegularChecklistsCompletion($offboardingRequest);
+        }
 
         // Sent last so the checklist summary reflects the templates just
         // attached above (with their resolved due dates/signatories),

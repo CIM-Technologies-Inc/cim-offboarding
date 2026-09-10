@@ -26,6 +26,8 @@ use App\Http\Controllers\GeneralSignatoryController;
 use App\Http\Controllers\GeneralSignatoryApprovalController;
 use App\Http\Controllers\FinalApproverController;
 use App\Http\Controllers\FinalApprovalController;
+use App\Http\Controllers\ReportController;
+use App\Http\Controllers\SeparationTypeController;
 
 // authentication pages
 Route::get('/signin', [AuthController::class, 'create'])->name('login');
@@ -239,6 +241,30 @@ Route::middleware('permission:department-heads.edit')->group(function () {
 });
 Route::middleware('permission:department-heads.delete')->group(function () {
     Route::delete('/department-heads/{departmentHead}', [DepartmentHeadController::class, 'destroy'])->name('department-heads.destroy');
+});
+
+// separation type management — the New Offboarding Request form's
+// "Separation Type" picker (see OffboardingRequestController::store(),
+// which snapshots title/description/default notice period onto the
+// request at creation time, never re-reading these rows afterward).
+Route::middleware('permission:separation-types.view')->group(function () {
+    Route::get('/separation-types', [SeparationTypeController::class, 'index'])->name('separation-types.index');
+});
+Route::middleware('permission:separation-types.create')->group(function () {
+    Route::post('/separation-types', [SeparationTypeController::class, 'store'])->name('separation-types.store');
+});
+Route::middleware('permission:separation-types.edit')->group(function () {
+    Route::put('/separation-types/{separationType}', [SeparationTypeController::class, 'update'])->name('separation-types.update');
+});
+Route::middleware('permission:separation-types.delete')->group(function () {
+    Route::delete('/separation-types/{separationType}', [SeparationTypeController::class, 'destroy'])->name('separation-types.destroy');
+});
+
+// reports — read-only, so a single `.view` permission covers the page and
+// every export format.
+Route::middleware('permission:reports.view')->group(function () {
+    Route::get('/reports', [ReportController::class, 'index'])->name('reports.index');
+    Route::get('/reports/export', [ReportController::class, 'export'])->name('reports.export');
 });
 
 // employee master (groups + group heads + employee membership)

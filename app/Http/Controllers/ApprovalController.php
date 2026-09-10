@@ -54,14 +54,6 @@ class ApprovalController extends Controller
 
     public function index(): View
     {
-        $reasonLabels = [
-            'resignation' => 'Resignation',
-            'termination' => 'Termination',
-            'retirement' => 'Retirement',
-            'layoff' => 'Layoff',
-            'other' => 'Other',
-        ];
-
         $user = auth()->user();
         $employee = $user->employee;
 
@@ -96,7 +88,7 @@ class ApprovalController extends Controller
         }
 
         $rows = $assignments
-            ->map(function (OffboardingRequestApprover $assignment) use ($reasonLabels, $user, $employee) {
+            ->map(function (OffboardingRequestApprover $assignment) use ($user, $employee) {
                 $request = $assignment->offboardingRequest;
                 $template = $assignment->checklistTemplate;
 
@@ -176,14 +168,16 @@ class ApprovalController extends Controller
                     'isReadyForApproval' => $isReadyForApproval,
                     'delegationStatusRaw' => $assignment->delegation_status,
                     'dueAtRaw' => $assignment->due_at,
+                    'dueDateReached' => $assignment->hasReachedDueDate(),
 
                     'name' => $request->employee->name,
                     'employeeCode' => $request->employee->employee_code,
                     'department' => $request->employee->department,
                     'designation' => $request->employee->designation,
                     'status' => $request->status,
-                    'reason' => $reasonLabels[$request->reason] ?? ucfirst($request->reason),
-                    'resignationType' => $request->resignation_type,
+                    // Already a display-ready title, frozen at creation
+                    // time — see `OffboardingRequestController::store()`.
+                    'reason' => $request->reason,
                     'noticeDate' => $request->notice_date?->format('M d, Y'),
                     'lastWorkingDay' => $request->last_working_day->format('M d, Y'),
                     'approvalMode' => $request->approval_mode === 'sync' ? 'Sync' : 'Async',
@@ -277,6 +271,16 @@ class ApprovalController extends Controller
                                 'clearedByName' => $isChecked ? $progress?->checkedBy?->name : null,
                                 'clearedByCode' => $isChecked ? $checkedByEmployee?->employee_code : null,
                                 'clearedAt' => $isChecked ? $progress?->checked_at?->format('M d, Y g:i A') : null,
+                                // Green vs red for this item's own "Status:
+                                // Checked" text — items share their
+                                // checklist's own due date (no per-item due
+                                // date exists), so this compares the item's
+                                // actual `checked_at` against the
+                                // assignment's `due_at`.
+                                'completedLate' => $isChecked
+                                    && $assignment->due_at !== null
+                                    && $progress?->checked_at !== null
+                                    && $progress->checked_at->greaterThanOrEqualTo($assignment->due_at),
                                 'onHold' => $onHold,
                                 'heldByName' => $onHold ? $progress?->heldBy?->name : null,
                                 'heldByCode' => $onHold ? $heldByEmployee?->employee_code : null,
@@ -335,7 +339,7 @@ class ApprovalController extends Controller
         $combineChecklists = (bool) ($user->combine_assigned_checklists ?? true);
 
         $approvals = $this->groupIntoCombinedApprovals($rows, $combineChecklists)
-            ->concat($this->buildGeneralSignatoryApprovals($user, $reasonLabels));
+            ->concat($this->buildGeneralSignatoryApprovals($user));
 
         return view('pages.approvals.index', [
             'title' => 'Approvals',
@@ -373,10 +377,9 @@ class ApprovalController extends Controller
      * actions (Assign To) and open the General Signatory modal instead of
      * the checklist one.
      *
-     * @param  array<string, string>  $reasonLabels
      * @return \Illuminate\Support\Collection<int, array<string, mixed>>
      */
-    private function buildGeneralSignatoryApprovals(User $user, array $reasonLabels)
+    private function buildGeneralSignatoryApprovals(User $user)
     {
         $assignments = OffboardingRequestGeneralSignatory::query()
             ->where('status', 'pending')
@@ -418,7 +421,7 @@ class ApprovalController extends Controller
         }
 
         return $assignments
-            ->map(function (OffboardingRequestGeneralSignatory $assignment) use ($reasonLabels) {
+            ->map(function (OffboardingRequestGeneralSignatory $assignment) {
                 $request = $assignment->offboardingRequest;
                 $generalSignatory = $assignment->generalSignatory;
 
@@ -432,8 +435,9 @@ class ApprovalController extends Controller
                     'designation' => $request->employee->designation,
                     'status' => $request->status,
                     'displayStatus' => 'pending',
-                    'reason' => $reasonLabels[$request->reason] ?? ucfirst($request->reason),
-                    'resignationType' => $request->resignation_type,
+                    // Already a display-ready title, frozen at creation
+                    // time — see `OffboardingRequestController::store()`.
+                    'reason' => $request->reason,
                     'noticeDate' => $request->notice_date?->format('M d, Y'),
                     'lastWorkingDay' => $request->last_working_day->format('M d, Y'),
                     'approvalMode' => $request->approval_mode === 'sync' ? 'Sync' : 'Async',
@@ -447,6 +451,7 @@ class ApprovalController extends Controller
                     'allItemsCompleted' => true,
                     'dueAt' => null,
                     'isOverdue' => false,
+                    'hasReachedDueDate' => false,
                     'assignedByName' => null,
                     'assignedByCode' => null,
                     'delegations' => [],
@@ -541,7 +546,6 @@ class ApprovalController extends Controller
                     'status' => $first['status'],
                     'displayStatus' => $this->aggregateDisplayStatus($group),
                     'reason' => $first['reason'],
-                    'resignationType' => $first['resignationType'],
                     'noticeDate' => $first['noticeDate'],
                     'lastWorkingDay' => $first['lastWorkingDay'],
                     'approvalMode' => $first['approvalMode'],
@@ -577,6 +581,13 @@ class ApprovalController extends Controller
                     'allItemsCompleted' => $group->every(fn (array $row) => $row['allItemsCompleted']),
                     'dueAt' => $earliestDueAt?->format('M d, Y'),
                     'isOverdue' => $group->contains('isOverdue', true),
+                    // Whether ANY checklist in this card has reached/passed
+                    // its due date — since Submit approves the whole group
+                    // in one action, reaching even one member's due date is
+                    // enough to trigger the due-date confirmation/remarks
+                    // dialog for the group as a whole (see
+                    // `OffboardingRequestApprover::hasReachedDueDate()`).
+                    'hasReachedDueDate' => $group->contains('dueDateReached', true),
                     'assignedByName' => $first['assignedByName'],
                     'assignedByCode' => $first['assignedByCode'],
                     'delegations' => $group->pluck('delegation')->filter()->values()->all(),
@@ -824,6 +835,15 @@ class ApprovalController extends Controller
             'items.*.checklist_item_id' => ['required', 'exists:checklist_items,id'],
             'items.*.is_checked' => ['nullable', 'boolean'],
             'items.*.remark' => ['nullable', 'string'],
+            // Optional whole-checklist "reason for the delay" remark — only
+            // ever meaningfully populated by the due-date confirmation
+            // dialog in `checklist-modal.blade.php` when the checklist has
+            // reached/passed its due date, but accepted unconditionally here
+            // since a stale/manipulated client flag is harmless: the actual
+            // on-time/late determination is always recomputed server-side
+            // from `due_at`/`approved_at` (see `wasCompletedLate()`), never
+            // trusted from the client.
+            'remarks' => ['nullable', 'string', 'max:2000'],
         ]);
 
         // The Department Head may check items themselves right up to the
@@ -838,7 +858,7 @@ class ApprovalController extends Controller
             abort(422, 'All checklist items must be checked before this checklist can be approved.');
         }
 
-        $this->finalizeGroupApproval(collect([$offboardingRequestApprover]), auth()->user());
+        $this->finalizeGroupApproval(collect([$offboardingRequestApprover]), auth()->user(), $validated['remarks'] ?? null);
 
         return back()->with('success', $offboardingRequestApprover->offboardingRequest->employee->name . '\'s offboarding request was approved.');
     }
@@ -869,6 +889,7 @@ class ApprovalController extends Controller
             'items.*.checklist_item_id' => ['required', 'exists:checklist_items,id'],
             'items.*.is_checked' => ['nullable', 'boolean'],
             'items.*.remark' => ['nullable', 'string'],
+            'remarks' => ['nullable', 'string', 'max:2000'],
         ]);
 
         DB::transaction(function () use ($offboardingRequest, $employee, $validated) {
@@ -906,7 +927,7 @@ class ApprovalController extends Controller
                 );
             }
 
-            $this->finalizeGroupApproval($members, auth()->user());
+            $this->finalizeGroupApproval($members, auth()->user(), $validated['remarks'] ?? null);
         });
 
         return back()->with('success', $employee->name . '\'s assigned checklists were approved.');
@@ -1125,15 +1146,25 @@ class ApprovalController extends Controller
     }
 
     /**
-     * Marks a single checklist row approved — status, timestamp, and
-     * overdue-notification cleanup only. The completion cascade and
-     * activity/notification are deliberately NOT here — see
-     * `finalizeGroupApproval()`, which calls this once per member of a
-     * group and only runs those once, for the group as a whole.
+     * Marks a single checklist row approved — status, timestamp, the
+     * optional whole-checklist delay remark, and overdue-notification
+     * cleanup only. The completion cascade and activity/notification are
+     * deliberately NOT here — see `finalizeGroupApproval()`, which calls
+     * this once per member of a group and only runs those once, for the
+     * group as a whole.
+     *
+     * `$remarks` is stored on EVERY member of a combined-card group approval
+     * (see `finalizeGroupApproval()`) — a single remark the approver left
+     * covering the one action that approved them all, same as the single
+     * "Approved checklists: ..." activity already recorded for the group.
      */
-    private function markApproved(OffboardingRequestApprover $offboardingRequestApprover): void
+    private function markApproved(OffboardingRequestApprover $offboardingRequestApprover, ?string $remarks = null): void
     {
-        $offboardingRequestApprover->update(['status' => 'approved', 'approved_at' => now()]);
+        $offboardingRequestApprover->update([
+            'status' => 'approved',
+            'approved_at' => now(),
+            'approval_remarks' => $remarks,
+        ]);
 
         $this->resolveOverdueNotifications($offboardingRequestApprover);
     }
@@ -1157,9 +1188,9 @@ class ApprovalController extends Controller
      *
      * @param  \Illuminate\Support\Collection<int, OffboardingRequestApprover>  $members
      */
-    private function finalizeGroupApproval($members, ?User $actor): void
+    private function finalizeGroupApproval($members, ?User $actor, ?string $remarks = null): void
     {
-        $members->each(fn (OffboardingRequestApprover $row) => $this->markApproved($row));
+        $members->each(fn (OffboardingRequestApprover $row) => $this->markApproved($row, $remarks));
 
         $offboardingRequest = $members->first()->offboardingRequest;
         $employeeId = $members->first()->employee_id;

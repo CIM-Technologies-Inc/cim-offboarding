@@ -50,7 +50,7 @@
                                     Edit
                                 </a>
                                 <label class="relative inline-flex cursor-pointer items-center" title="{{ $item->is_active ? 'Active' : 'Inactive' }}">
-                                    <input type="checkbox" class="peer sr-only"
+                                    <input type="checkbox" class="peer sr-only disabled:cursor-not-allowed disabled:opacity-50"
                                         @change="toggleTemplateStatus($event, '{{ route('email-templates.toggle-status', $item) }}')"
                                         @checked($item->is_active) />
                                     <div

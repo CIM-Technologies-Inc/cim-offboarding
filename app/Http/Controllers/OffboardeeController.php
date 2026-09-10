@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\EmailTemplate;
 use App\Models\Employee;
+use App\Models\SeparationType;
 use Illuminate\Http\Request;
 use Illuminate\View\View;
 
@@ -59,6 +60,17 @@ class OffboardeeController extends Controller
             'status' => $employee->latestOffboardingRequest?->displayStatus() ?? 'pending',
             'lastWorkingDay' => $employee->latestOffboardingRequest?->last_working_day?->format('M d, Y'),
             'immediateHead' => $employee->latestOffboardingRequest?->immediateHead?->name,
+            // Separation Type + Notice Period feature — SAVED/frozen values
+            // only, never re-resolved from live Separation Type Management
+            // config (see `OffboardingRequestController::store()`), so this
+            // matches whatever `noticePeriodStatus()` and the Calendar page
+            // show for the exact same request, and never changes just
+            // because a type was edited/deleted afterward.
+            'separationType' => $employee->latestOffboardingRequest?->reason,
+            'separationTypeDescription' => $employee->latestOffboardingRequest?->separation_type_description,
+            'noticePeriodDays' => $employee->latestOffboardingRequest?->notice_period_days,
+            'notificationDate' => $employee->latestOffboardingRequest?->notification_date?->format('M d, Y'),
+            'noticePeriodStatus' => $employee->latestOffboardingRequest?->noticePeriodStatus(),
             'checklistTemplates' => $employee->latestOffboardingRequest?->checklistTemplates->pluck('title')->all() ?? [],
             'timeline' => $employee->latestOffboardingRequest?->approverActivityTimeline() ?? [],
             // URLs are generated whenever a request exists, regardless of its
@@ -124,7 +136,7 @@ class OffboardeeController extends Controller
 
         $employeesNotOffboarded = Employee::where('status', 'active')
             ->orderBy('name')
-            ->get(['id', 'name', 'employee_code', 'department', 'designation', 'sup_one']);
+            ->get(['id', 'name', 'employee_code', 'department', 'designation', 'sup_one', 'head_employee_id']);
 
         // For the New Offboarding Request modal's per-request email
         // template overrides — every function's Select is populated from
@@ -133,6 +145,10 @@ class OffboardeeController extends Controller
         $activeEmailTemplates = EmailTemplate::where('is_active', true)
             ->orderBy('template_name')
             ->get(['id', 'template_name']);
+
+        // For the New Offboarding Request modal's "Separation Type" picker
+        // — see `SeparationTypeController`/`OffboardingRequestController::store()`.
+        $separationTypes = SeparationType::orderBy('title')->get();
 
         return view('pages.offboardees.index', [
             'title' => 'Offboardees',
@@ -143,6 +159,7 @@ class OffboardeeController extends Controller
             'deepLinkOffboardee' => $deepLinkOffboardee,
             'employeesNotOffboarded' => $employeesNotOffboarded,
             'activeEmailTemplates' => $activeEmailTemplates,
+            'separationTypes' => $separationTypes,
         ]);
     }
 }

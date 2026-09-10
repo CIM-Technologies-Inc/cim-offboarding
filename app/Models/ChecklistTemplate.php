@@ -10,6 +10,27 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class ChecklistTemplate extends Model
 {
+    /**
+     * The two dates `due_in_days` can count from — see
+     * `ChecklistApprovalNotifier::attachAndNotify()`'s `dueDateBasisDate()`
+     * for where this is actually applied when a new offboarding request is
+     * created.
+     */
+    public const DUE_DATE_BASIS_RESIGNATION_DATE = 'resignation_date';
+
+    public const DUE_DATE_BASIS_LAST_WORKING_DAY = 'last_working_day';
+
+    /**
+     * The two Sync-workflow stages a non-Final-Pay checklist can belong to
+     * — see `ChecklistCompletionService::checkPrimaryChecklistsCompletion()`.
+     * Meaningless (left null) for a Final Pay checklist, which is
+     * identified solely by `is_final_pay_checklist` — a deliberately
+     * separate concept, not a third value alongside these two.
+     */
+    public const SEQUENCE_TYPE_PRIMARY = 'primary';
+
+    public const SEQUENCE_TYPE_SECONDARY = 'secondary';
+
     protected $fillable = [
         'title',
         'department_head_id',
@@ -18,9 +39,11 @@ class ChecklistTemplate extends Model
         'use_task_assignee_as_signatory',
         'department',
         'is_final_pay_checklist',
+        'sequence_type',
         'is_active',
         'created_by',
         'due_in_days',
+        'due_date_basis',
     ];
 
     protected function casts(): array

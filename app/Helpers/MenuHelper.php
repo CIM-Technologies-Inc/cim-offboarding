@@ -72,6 +72,18 @@ class MenuHelper
                 'permission' => 'email-templates.view',
             ],
             [
+                'icon' => 'tables',
+                'name' => 'Separation Types',
+                'path' => '/separation-types',
+                'permission' => 'separation-types.view',
+            ],
+            [
+                'icon' => 'charts',
+                'name' => 'Reports',
+                'path' => '/reports',
+                'permission' => 'reports.view',
+            ],
+            [
                 'icon' => 'authentication',
                 'name' => 'Roles & Permissions',
                 'path' => '/roles-permissions',

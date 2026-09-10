@@ -29,6 +29,17 @@ class CalendarController extends Controller
                     'lastWorkingDay' => $employee->latestOffboardingRequest->last_working_day->format('M d, Y'),
                     'checklistTemplates' => $employee->latestOffboardingRequest->checklistTemplates->pluck('title')->all(),
                     'timeline' => $employee->latestOffboardingRequest->timeline(),
+                    // Separation Type + Notice Period feature — SAVED/frozen
+                    // values only (never re-resolved from live Separation
+                    // Type Management config), so this stays accurate
+                    // regardless of later edits/deletes there.
+                    // `noticePeriodStatus` drives the Calendar's
+                    // upcoming/today/past indicator.
+                    'separationType' => $employee->latestOffboardingRequest->reason,
+                    'separationTypeDescription' => $employee->latestOffboardingRequest->separation_type_description,
+                    'noticePeriodDays' => $employee->latestOffboardingRequest->notice_period_days,
+                    'notificationDate' => $employee->latestOffboardingRequest->notification_date?->format('M d, Y'),
+                    'noticePeriodStatus' => $employee->latestOffboardingRequest->noticePeriodStatus(),
                 ],
             ])
             ->values();

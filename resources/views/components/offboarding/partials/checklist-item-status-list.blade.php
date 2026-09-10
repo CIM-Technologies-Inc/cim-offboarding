@@ -1,17 +1,28 @@
 {{-- Per-checklist-item status list, shared by the "Offboarding Status" and "Timeline" tabs
      of status-timeline-modal.blade.php so both use identical icons/colors. Expects a `step`
-     Alpine variable in scope with a `checklistItems` array of {title, status, timestamp}.
-     `timestamp` is only ever set for 'completed' (checked_at) or 'on_hold' (held_at) — never
-     for 'pending'/'in_progress'/'declined' — see `OffboardingRequest::approverActivityTimeline()`. --}}
+     Alpine variable in scope with a `checklistItems` array of {title, status, timestamp,
+     actorPrefix, actorName, remark, completedLate}. `timestamp`/`actorPrefix`/`actorName` are only ever
+     populated server-side for 'completed' (checked_at/checkedBy) or 'on_hold' (held_at/heldBy)
+     — never for 'pending'/'in_progress'/'declined' — see
+     `OffboardingRequest::approverActivityTimeline()`. `actorPrefix` is 'Checked by'/'Hold by'
+     when a genuine task assignee (per-item signatory or whole-checklist delegate) actually
+     performed the action, or literally 'Clearance Signatory' when the Clearance Signatory did
+     it themselves (no distinct assignee ever existed for this item) — always the ACTUAL
+     recorded actor, never an assumed/configured one. `remark` is whatever they typed alongside
+     the action — it can also be present on an 'in_progress' item (a remark left before the item
+     is actually checked/held), but never on a genuinely untouched 'pending' one. `completedLate`
+     is only ever true alongside status === 'completed' — items share their checklist's own due
+     date (there's no per-item due date), so it compares this item's own `checked_at` against the
+     assignment's `due_at`. --}}
 <template x-if="step.checklistItems && step.checklistItems.length">
     <div class="mt-3 space-y-1.5 border-t border-gray-100 pt-2 dark:border-gray-800">
         <template x-for="(item, itemIndex) in step.checklistItems" :key="itemIndex">
             <div class="flex items-start gap-2 text-xs">
                 <span class="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full"
                     :class="{
-                        'bg-[#145a3a] dark:bg-[#3aa876]': item.status === 'completed',
+                        'bg-[#145a3a] dark:bg-[#3aa876]': item.status === 'completed' && !item.completedLate,
+                        'bg-error-500': (item.status === 'completed' && item.completedLate) || item.status === 'declined',
                         'bg-amber-500': item.status === 'on_hold',
-                        'bg-error-500': item.status === 'declined',
                         'bg-blue-500': item.status === 'in_progress',
                         'bg-gray-200 dark:bg-gray-700': item.status === 'pending'
                     }">
@@ -33,9 +44,9 @@
                         <span class="text-gray-600 dark:text-gray-300" x-text="item.title"></span>
                         <span class="ml-auto shrink-0 font-medium"
                             :class="{
-                                'text-[#145a3a] dark:text-[#3aa876]': item.status === 'completed',
+                                'text-[#145a3a] dark:text-[#3aa876]': item.status === 'completed' && !item.completedLate,
+                                'text-error-600 dark:text-error-400': (item.status === 'completed' && item.completedLate) || item.status === 'declined',
                                 'text-amber-600 dark:text-amber-400': item.status === 'on_hold',
-                                'text-error-600 dark:text-error-400': item.status === 'declined',
                                 'text-blue-600 dark:text-blue-400': item.status === 'in_progress',
                                 'text-gray-400': item.status === 'pending'
                             }"
@@ -45,6 +56,12 @@
                          populated server-side for 'completed'/'on_hold'. --}}
                     <template x-if="item.timestamp">
                         <p class="mt-0.5 text-gray-400" x-text="item.timestamp"></p>
+                    </template>
+                    <template x-if="item.actorPrefix && item.actorName">
+                        <p class="mt-0.5 text-gray-400" x-text="item.actorPrefix + ': ' + item.actorName"></p>
+                    </template>
+                    <template x-if="item.remark">
+                        <p class="mt-0.5 text-gray-400">Remark: <span class="text-gray-500 dark:text-gray-300" x-text="item.remark"></span></p>
                     </template>
                 </div>
             </div>

@@ -34,6 +34,12 @@ class EmployeeGroupController extends Controller
     {
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:255', 'unique:employee_groups,name'],
+            // The admin selects the Group Head directly (see the Group Head
+            // picker in `employee-groups/index.blade.php`) — the picker lets
+            // them search by name for convenience, but what it actually
+            // submits, and all this validates, is the employee's own unique
+            // id (resolved from their `employeeNo`/`employee_code` the
+            // moment they're picked), never their name.
             'group_head_employee_id' => ['nullable', 'exists:employees,id'],
         ]);
 
@@ -44,6 +50,11 @@ class EmployeeGroupController extends Controller
 
         DB::transaction(function () use ($validated, $groupHeadId, $autoAddMembers, $isActive, $createdBy) {
             $group = EmployeeGroup::create($validated + [
+                // Mirrors the selected Group Head's own department — purely
+                // informational/for display (e.g. the Employee Directory's
+                // department filter); membership itself is always computed
+                // fresh from the head below, never from this stored value.
+                'department' => $groupHeadId ? Employee::find($groupHeadId)?->department : null,
                 'is_active' => $isActive,
                 'created_by' => $createdBy,
             ]);
@@ -88,6 +99,7 @@ class EmployeeGroupController extends Controller
 
         DB::transaction(function () use ($employeeGroup, $validated, $isActive, $groupHeadId, $autoAddMembers, $previousGroupHeadId) {
             $employeeGroup->update($validated + [
+                'department' => $groupHeadId ? Employee::find($groupHeadId)?->department : null,
                 'is_active' => $isActive,
             ]);
 
@@ -307,14 +319,17 @@ class EmployeeGroupController extends Controller
     }
 
     /**
-     * The exact 11 columns the Employee Master import expects, in header
+     * The exact 12 columns the Employee Master import expects, in header
      * order. Every one of these must be present in the uploaded file's
      * header row (structure check) — but not every one requires a value on
      * every data row (see the required-value subset in `validateRows()`).
+     * `headID` is the head/supervisor's own `employeeNo` — distinct from the
+     * free-text `head` column (the head's name) — resolved to the new
+     * `head_employee_id` FK at import time (see `import()`).
      */
     private const IMPORT_COLUMNS = [
         'employeeNo', 'lastName', 'firstName', 'middleName', 'position',
-        'department', 'email', 'personalEmail', 'supOne', 'supTwo', 'head',
+        'department', 'email', 'personalEmail', 'supOne', 'supTwo', 'head', 'headID',
     ];
 
     /**
@@ -373,6 +388,14 @@ class EmployeeGroupController extends Controller
         $importedCodes = [];
 
         DB::transaction(function () use ($validRows, &$created, &$updated, &$deleted, &$importedCodes) {
+            // Pass 1: create/update every employee first, WITHOUT touching
+            // head_employee_id yet — a row's headID can reference an
+            // employeeNo that only appears later in the file (or wasn't in
+            // the database before this upload at all), so the head must
+            // exist in the database before it can be linked to. Keeps each
+            // saved model keyed by its own employeeNo for pass 2 below.
+            $employeesByCode = [];
+
             foreach ($validRows as $row) {
                 $employee = Employee::firstOrNew(['employee_code' => $row['employeeNo']]);
                 $isNew = ! $employee->exists;
@@ -395,8 +418,22 @@ class EmployeeGroupController extends Controller
 
                 $employee->save();
 
+                $employeesByCode[$row['employeeNo']] = $employee;
                 $importedCodes[] = $row['employeeNo'];
                 $isNew ? $created++ : $updated++;
+            }
+
+            // Pass 2: every employeeNo referenced by any row's headID is now
+            // guaranteed to exist (validated in `validateRows()` against
+            // this same file) — resolve and set each employee's
+            // head_employee_id. A blank headID clears any previously set
+            // head, rather than leaving a stale one from an earlier upload.
+            foreach ($validRows as $row) {
+                $headEmployee = $row['headID'] !== '' ? ($employeesByCode[$row['headID']] ?? null) : null;
+
+                $employeesByCode[$row['employeeNo']]->update([
+                    'head_employee_id' => $headEmployee?->id,
+                ]);
             }
 
             $deleted = Employee::whereNotIn('employee_code', $importedCodes)->count();
@@ -473,9 +510,19 @@ class EmployeeGroupController extends Controller
     private function validateRows(array $rows, array $headerMap): array
     {
         $required = ['employeeNo', 'lastName', 'firstName', 'department', 'email'];
-        $validRows = [];
         $errors = [];
-        $seenCodes = [];
+
+        // First pass: trim every row's values and drop genuinely blank rows
+        // (a common trailing spreadsheet artifact). Also collects every
+        // non-blank `employeeNo` in the file up front — since this import
+        // replaces the ENTIRE roster in one shot (see `import()`'s
+        // docblock), a row's `headID` is validated against employee numbers
+        // THIS FILE will leave in place, not just whatever already exists in
+        // the database — otherwise a head and their report uploaded together
+        // for the first time (or a head listed later in the file than their
+        // reports) would wrongly fail.
+        $rowsWithValues = [];
+        $fileEmployeeNos = [];
 
         foreach ($rows as $offset => $row) {
             $rowNumber = $offset + 2; // +1 for 0-index, +1 for the header row already shifted off
@@ -485,12 +532,21 @@ class EmployeeGroupController extends Controller
                 $values[$column] = trim((string) ($row[$index] ?? ''));
             }
 
-            // A completely blank row (common trailing spreadsheet artifact)
-            // is silently skipped rather than reported as an error.
             if (implode('', $values) === '') {
                 continue;
             }
 
+            if ($values['employeeNo'] !== '') {
+                $fileEmployeeNos[$values['employeeNo']] = true;
+            }
+
+            $rowsWithValues[] = [$rowNumber, $values];
+        }
+
+        $validRows = [];
+        $seenCodes = [];
+
+        foreach ($rowsWithValues as [$rowNumber, $values]) {
             foreach ($required as $field) {
                 if ($values[$field] === '') {
                     $errors[] = "Row {$rowNumber}: {$field} is required";
@@ -511,6 +567,14 @@ class EmployeeGroupController extends Controller
                 } else {
                     $seenCodes[$values['employeeNo']] = $rowNumber;
                 }
+            }
+
+            // Blank headID is valid and intentionally left unassigned (e.g.
+            // the topmost head in the org chart has no supervisor of their
+            // own) — only a NON-blank value that fails to match any
+            // employeeNo in this file is an error.
+            if ($values['headID'] !== '' && ! isset($fileEmployeeNos[$values['headID']])) {
+                $errors[] = "Row {$rowNumber}: headID \"{$values['headID']}\" does not match any employeeNo in this file";
             }
 
             $nameParts = array_filter([

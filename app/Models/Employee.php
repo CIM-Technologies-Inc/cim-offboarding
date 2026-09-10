@@ -30,6 +30,7 @@ class Employee extends Model
         'sup_one',
         'sup_two',
         'head',
+        'head_employee_id',
         'date_of_joining',
         'status',
     ];
@@ -92,6 +93,20 @@ class Employee extends Model
     public function employeeGroup(): BelongsTo
     {
         return $this->belongsTo(EmployeeGroup::class);
+    }
+
+    /**
+     * The employee's immediate head/supervisor, resolved from the Employee
+     * Master Excel import's `headID` column (that column holds the head's
+     * own `employeeNo`, resolved to this FK at import time — see
+     * `EmployeeGroupController::import()`). Distinct from the free-text
+     * `head` column (the head's NAME, kept for backward compatibility) and
+     * from `departmentHead()` below (the admin-curated Employee Master
+     * group head, a separate concept).
+     */
+    public function headEmployee(): BelongsTo
+    {
+        return $this->belongsTo(Employee::class, 'head_employee_id');
     }
 
     /**

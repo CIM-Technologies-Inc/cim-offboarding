@@ -152,18 +152,29 @@ class User extends Authenticatable
      * Employee role using the same established convention as
      * `findOrCreateApprover()` above (username = password =
      * `employee_code_digits`, flagged `must_change_password` immediately).
-     * Never promotes/downgrades an existing account's role — an employee
-     * who already has an account (e.g. as someone else's approver) keeps
-     * that role rather than being switched to Employee, same rule
-     * `findOrCreateApprover()` already follows. Dual-writes the legacy
-     * `role` column and the Spatie role — see `findOrCreateApprover()`'s
-     * docblock for why.
+     * Never DOWNGRADES an existing account's role — an employee who already
+     * has an account (e.g. as someone else's Approver) keeps every role
+     * they already hold. It DOES additively grant the Employee role to an
+     * existing account that doesn't already have it (e.g. becoming an
+     * offboardee for the first time while already an Approver elsewhere),
+     * since every offboardee genuinely needs Employee-role access to their
+     * own self-service dashboard regardless of whatever else they already
+     * are — this is purely additive via Spatie's `assignRole()`, so it can
+     * never remove or replace an existing role. The legacy `role` column
+     * (a single-value label, unlike the real Spatie roles) is deliberately
+     * left untouched for an existing account — only ever set when the
+     * account is first created — so this never overwrites whatever that
+     * column already shows for an Approver/Admin account.
      */
     public static function findOrCreateEmployee(Employee $employee): self
     {
         $user = static::firstWhere('username', $employee->employee_code_digits);
 
         if ($user) {
+            if (! $user->hasRole(self::ROLE_EMPLOYEE)) {
+                $user->assignRole(self::ROLE_EMPLOYEE);
+            }
+
             return $user;
         }
 

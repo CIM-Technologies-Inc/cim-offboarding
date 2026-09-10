@@ -68,8 +68,20 @@ class ChecklistTemplateController extends Controller
             'is_immediate_head_checklist' => ['nullable', 'boolean'],
             'use_task_assignee_as_signatory' => ['nullable', 'boolean'],
             'department' => ['nullable', 'string', Rule::in($this->departmentOptions())],
-            'is_final_pay_checklist' => ['nullable', 'boolean'],
+            // Primary/Secondary/Final Pay — the Sync workflow's stage
+            // ordering (see `ChecklistCompletionService::checkPrimaryChecklistsCompletion()`).
+            // Replaces the old standalone `is_final_pay_checklist` checkbox
+            // input; that column still exists and is still what every other
+            // part of the app checks — this is just a single 3-way control
+            // over it plus the new `sequence_type` column together, since a
+            // checklist can never be both Final Pay and Primary/Secondary
+            // at once.
+            'checklist_classification' => ['required', Rule::in(['primary', 'secondary', 'final_pay'])],
             'due_in_days' => ['nullable', 'integer', 'min:0', 'max:3650'],
+            'due_date_basis' => ['required', Rule::in([
+                ChecklistTemplate::DUE_DATE_BASIS_RESIGNATION_DATE,
+                ChecklistTemplate::DUE_DATE_BASIS_LAST_WORKING_DAY,
+            ])],
             'items' => ['required', 'array', 'min:1'],
             'items.*.title' => ['required', 'string', 'max:255'],
             'items.*.signatory_id' => ['nullable', 'exists:employees,id'],
@@ -78,6 +90,9 @@ class ChecklistTemplateController extends Controller
             'items.*.notify_timing' => ['nullable', 'required_if:items.*.notify_enabled,1', Rule::in(['before', 'after'])],
             'items.*.notify_days' => ['nullable', 'required_if:items.*.notify_enabled,1', 'integer', 'min:1'],
         ]);
+
+        $isFinalPayChecklist = $validated['checklist_classification'] === 'final_pay';
+        $sequenceType = $isFinalPayChecklist ? null : $validated['checklist_classification'];
 
         // An Immediate Head checklist is assigned exclusively to whichever
         // Immediate Head is picked on each individual offboarding request
@@ -102,7 +117,7 @@ class ChecklistTemplateController extends Controller
         // disabled-field treatment.
         $department = $useTaskAssigneeAsSignatory ? null : ($validated['department'] ?? null);
 
-        DB::transaction(function () use ($validated, $request, $isImmediateHeadChecklist, $useTaskAssigneeAsSignatory, $employeeGroupId, $departmentHeadId, $department, $eligibleSignatoryIds) {
+        DB::transaction(function () use ($validated, $request, $isImmediateHeadChecklist, $useTaskAssigneeAsSignatory, $employeeGroupId, $departmentHeadId, $department, $eligibleSignatoryIds, $isFinalPayChecklist, $sequenceType) {
             $template = ChecklistTemplate::create([
                 'title' => $validated['title'],
                 'employee_group_id' => $employeeGroupId,
@@ -110,8 +125,10 @@ class ChecklistTemplateController extends Controller
                 'is_immediate_head_checklist' => $isImmediateHeadChecklist,
                 'use_task_assignee_as_signatory' => $useTaskAssigneeAsSignatory,
                 'department' => $department,
-                'is_final_pay_checklist' => $request->boolean('is_final_pay_checklist'),
+                'is_final_pay_checklist' => $isFinalPayChecklist,
+                'sequence_type' => $sequenceType,
                 'due_in_days' => $validated['due_in_days'] ?: null,
+                'due_date_basis' => $validated['due_date_basis'],
                 'is_active' => true,
                 'created_by' => $request->user()->id,
             ]);
@@ -167,8 +184,12 @@ class ChecklistTemplateController extends Controller
             'is_immediate_head_checklist' => ['nullable', 'boolean'],
             'use_task_assignee_as_signatory' => ['nullable', 'boolean'],
             'department' => ['nullable', 'string', Rule::in($this->departmentOptions($checklistTemplate->department))],
-            'is_final_pay_checklist' => ['nullable', 'boolean'],
+            'checklist_classification' => ['required', Rule::in(['primary', 'secondary', 'final_pay'])],
             'due_in_days' => ['nullable', 'integer', 'min:0', 'max:3650'],
+            'due_date_basis' => ['required', Rule::in([
+                ChecklistTemplate::DUE_DATE_BASIS_RESIGNATION_DATE,
+                ChecklistTemplate::DUE_DATE_BASIS_LAST_WORKING_DAY,
+            ])],
             'items' => ['required', 'array', 'min:1'],
             'items.*.id' => ['nullable', 'integer', Rule::exists('checklist_items', 'id')->where('checklist_template_id', $checklistTemplate->id)],
             'items.*.title' => ['required', 'string', 'max:255'],
@@ -179,6 +200,9 @@ class ChecklistTemplateController extends Controller
             'items.*.notify_days' => ['nullable', 'required_if:items.*.notify_enabled,1', 'integer', 'min:1'],
         ]);
 
+        $isFinalPayChecklist = $validated['checklist_classification'] === 'final_pay';
+        $sequenceType = $isFinalPayChecklist ? null : $validated['checklist_classification'];
+
         $employeeGroupId = ($isImmediateHeadChecklist || $useTaskAssigneeAsSignatory)
             ? null
             : ($validated['employee_group_id'] ?: null);
@@ -186,7 +210,7 @@ class ChecklistTemplateController extends Controller
         $eligibleSignatoryIds = $this->eligibleSignatoryIds($employeeGroupId);
         $department = $useTaskAssigneeAsSignatory ? null : ($validated['department'] ?? null);
 
-        DB::transaction(function () use ($validated, $request, $checklistTemplate, $isImmediateHeadChecklist, $useTaskAssigneeAsSignatory, $employeeGroupId, $departmentHeadId, $department, $eligibleSignatoryIds) {
+        DB::transaction(function () use ($validated, $request, $checklistTemplate, $isImmediateHeadChecklist, $useTaskAssigneeAsSignatory, $employeeGroupId, $departmentHeadId, $department, $eligibleSignatoryIds, $isFinalPayChecklist, $sequenceType) {
             $checklistTemplate->update([
                 'title' => $validated['title'],
                 'employee_group_id' => $employeeGroupId,
@@ -194,8 +218,10 @@ class ChecklistTemplateController extends Controller
                 'is_immediate_head_checklist' => $isImmediateHeadChecklist,
                 'use_task_assignee_as_signatory' => $useTaskAssigneeAsSignatory,
                 'department' => $department,
-                'is_final_pay_checklist' => $request->boolean('is_final_pay_checklist'),
+                'is_final_pay_checklist' => $isFinalPayChecklist,
+                'sequence_type' => $sequenceType,
                 'due_in_days' => $validated['due_in_days'] ?: null,
+                'due_date_basis' => $validated['due_date_basis'],
             ]);
 
             $this->reconcileItems($checklistTemplate, $validated['items'] ?? [], $eligibleSignatoryIds);

@@ -9,18 +9,20 @@
                 Organize employees into groups and assign the Group Head/Department Head responsible for each one.
             </p>
             <div class="flex items-center gap-3">
-                <form method="POST" action="{{ route('employee-groups.import') }}" enctype="multipart/form-data" x-ref="importForm">
+                <form method="POST" action="{{ route('employee-groups.import') }}" enctype="multipart/form-data" x-ref="importForm"
+                    @turbo:submit-end="uploading = false">
                     @csrf
                     <input type="file" name="excel_file" accept=".xlsx,.xls" class="hidden" x-ref="importInput"
                         @change="confirmImport($event)" />
                 </form>
-                <button type="button" @click="$refs.importInput.click()"
-                    class="shadow-theme-xs flex items-center justify-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-white/[0.03]">
+                <button type="button" @click="$refs.importInput.click()" :disabled="uploading"
+                    :class="uploading ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50 dark:hover:bg-white/[0.03]'"
+                    class="shadow-theme-xs flex items-center justify-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300">
                     <svg class="fill-current" width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
                         <path d="M9 12.75V3.75M9 3.75L5.25 7.5M9 3.75L12.75 7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
                         <path d="M2.25 12.75V13.5C2.25 14.7426 3.25736 15.75 4.5 15.75H13.5C14.7426 15.75 15.75 14.7426 15.75 13.5V12.75" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
                     </svg>
-                    Upload Excel
+                    <span x-text="uploading ? 'Uploading...' : 'Upload Excel'"></span>
                 </button>
                 <button type="button" @click="openCreateModal()"
                     class="shadow-theme-xs flex items-center justify-center gap-2 rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white hover:bg-[#0f4630]">
@@ -351,7 +353,15 @@
                          for every outside click, including ones elsewhere in
                          this same modal, while a click on the select field
                          or its own dropdown rows (inside `$refs.groupHeadSelect`)
-                         is correctly ignored. --}}
+                         is correctly ignored.
+
+                         Typing here only FILTERS the list below by name or
+                         employeeNo (`employee_code`) for convenience —
+                         picking a row is what actually sets
+                         `groupForm.group_head_employee_id` (that employee's
+                         real, unique id), which is the only thing submitted
+                         and validated server-side. The employee's name is
+                         never itself the reference. --}}
                     <div class="relative mt-5" x-ref="groupHeadSelect"
                         @click.window.capture="groupHeadDropdownOpen && $refs.groupHeadSelect && ! $refs.groupHeadSelect.contains($event.target) && (groupHeadDropdownOpen = false)">
                         <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
@@ -362,7 +372,7 @@
                             <input type="text" x-model="groupHeadQuery" autocomplete="off"
                                 @focus="groupHeadDropdownOpen = true"
                                 @input="groupForm.group_head_employee_id = ''; groupHeadDropdownOpen = true"
-                                placeholder="Search employee..."
+                                placeholder="Search by name or employee no..."
                                 class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 pr-9 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
                             <button type="button" x-show="groupForm.group_head_employee_id" @click="groupForm.group_head_employee_id = ''; groupHeadQuery = ''"
                                 class="absolute top-1/2 right-3 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
@@ -450,14 +460,21 @@
                                                 <td class="px-4 py-2.5 text-sm text-gray-500 dark:text-gray-400" x-text="employee.designation || '—'"></td>
                                                 <td class="px-4 py-2.5 text-sm text-gray-500 dark:text-gray-400" x-text="employee.department || '—'"></td>
                                                 <td class="px-4 py-2.5">
+                                                    {{-- HR/Admin can check/uncheck this freely, with no disabled
+                                                         state at all — unlike Remove (a destructive, harder-to-undo
+                                                         action, still guarded against a double-click below), a
+                                                         mis-click here just means toggling it again, so there's no
+                                                         real risk in letting it always respond immediately. --}}
                                                     <input type="checkbox" x-model="employee.is_task_assignee"
                                                         @change="toggleTaskAssignee(employee, employee.is_task_assignee)"
                                                         class="h-4 w-4 accent-brand-500" />
                                                 </td>
                                                 <td class="px-4 py-2.5 text-right">
                                                     <button type="button" @click="removeEmployeeFromGroup(employee)"
-                                                        class="rounded-md border border-error-300 px-2.5 py-1 text-xs font-medium text-error-500 hover:bg-error-50 dark:border-error-500/30 dark:hover:bg-error-500/10">
-                                                        Remove
+                                                        :disabled="removingEmployeeId === employee.id"
+                                                        :class="removingEmployeeId === employee.id ? 'opacity-50 cursor-not-allowed' : 'hover:bg-error-50 dark:hover:bg-error-500/10'"
+                                                        class="rounded-md border border-error-300 px-2.5 py-1 text-xs font-medium text-error-500 dark:border-error-500/30">
+                                                        <span x-text="removingEmployeeId === employee.id ? 'Removing...' : 'Remove'"></span>
                                                     </button>
                                                 </td>
                                             </tr>
@@ -653,6 +670,18 @@
                 assigningEmployee: null,
                 assignGroupId: '',
                 assigningInFlight: false,
+                // Keyed per employee id so acting on one row in the View
+                // Group modal's member table never disables another row's
+                // own Remove button — see `removeEmployeeFromGroup()`. The
+                // Task Assignee checkbox has no equivalent flag; it's never
+                // disabled at all — see its own comment in the markup.
+                removingEmployeeId: null,
+                // Drives the "Upload Excel" button's disabled/label state
+                // while the import form (a real Turbo form submit, not
+                // fetch()) is processing — see `confirmImport()` and the
+                // form's own `@turbo:submit-end` listener below. A large
+                // roster can take a few seconds to validate and import.
+                uploading: false,
 
                 init() {
                     if (flashSuccess) {
@@ -680,6 +709,7 @@
                         reverseButtons: true,
                     }).then((result) => {
                         if (result.isConfirmed) {
+                            this.uploading = true;
                             this.$refs.importForm.requestSubmit();
                         } else {
                             input.value = '';
@@ -821,6 +851,8 @@
                     }).then((result) => {
                         if (!result.isConfirmed) return;
 
+                        this.removingEmployeeId = employee.id;
+
                         window.fetchWithTimeout(`/employee-groups/${this.viewingGroup.id}/employees/${employee.id}`, {
                             method: 'DELETE',
                             headers: {
@@ -843,6 +875,9 @@
                                 this.notify('error', error?.name === 'AbortError'
                                     ? 'This is taking longer than expected. Please check before trying again.'
                                     : error.message);
+                            })
+                            .finally(() => {
+                                this.removingEmployeeId = null;
                             });
                     });
                 },

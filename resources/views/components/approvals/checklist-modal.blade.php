@@ -373,9 +373,10 @@
                 </div>
 
                 <form method="POST" :action="selected.saveProgressUrl"
-                    id="checklistProgressForm" x-data="{ processing: false }" @submit="processing = true"
+                    id="checklistProgressForm" x-data="{ processing: false, remarksResolved: false, approvalRemarks: '' }" @submit="processing = true"
                     class="flex min-h-0 flex-1 flex-col">
                         @csrf
+                        <input type="hidden" name="remarks" :value="approvalRemarks" />
                         <div class="custom-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto px-6 pb-2 lg:px-8">
                             <template x-if="!selected.checklistItems || selected.checklistItems.length === 0">
                                 <p class="rounded-lg bg-gray-50 px-4 py-3 text-sm text-gray-500 dark:bg-white/[0.03] dark:text-gray-400">
@@ -396,7 +397,7 @@
                                                 x-text="'Assigned To: ' + (item.approverCode ? item.approverCode + ' – ' : '') + item.approverName"></span>
                                             <span class="block text-xs text-gray-400" x-show="item.isReassigned"
                                                 x-text="'Previously: ' + (item.originalApproverCode ? item.originalApproverCode + ' – ' : '') + (item.originalApproverName || 'Unassigned')"></span>
-                                            <span class="block text-sm font-semibold text-success-600 dark:text-success-400" x-show="item.checked">Status: Checked</span>
+                                            <span class="block text-sm font-semibold" :class="item.completedLate ? 'text-error-600 dark:text-error-400' : 'text-success-600 dark:text-success-400'" x-show="item.checked">Status: Checked</span>
                                             <span class="block text-sm text-gray-500 dark:text-gray-400" x-show="item.checked && item.clearedByName"
                                                 x-text="'Checked By: ' + (item.clearedByCode ? item.clearedByCode + ' – ' : '') + item.clearedByName"></span>
                                             <span class="block text-sm text-gray-500 dark:text-gray-400" x-show="item.checked && item.clearedAt"
@@ -500,6 +501,45 @@
                                  only once every item has actually been checked. -->
                             <template x-if="selected.isPrimaryApprover">
                                 <button type="submit" :formaction="selected.approveUrl" :disabled="processing || !canApprove()" data-turbo-submits-with="Submitting..."
+                                    @click="
+                                        if (!remarksResolved && selected.hasReachedDueDate) {
+                                            $event.preventDefault();
+                                            Swal.fire({
+                                                title: 'This checklist has reached its due date.',
+                                                text: 'Would you like to add remarks explaining the reason for the delay?',
+                                                icon: 'warning',
+                                                showDenyButton: true,
+                                                showCancelButton: true,
+                                                confirmButtonText: 'Add Remarks',
+                                                denyButtonText: 'Continue Without Remarks',
+                                                cancelButtonText: 'Cancel',
+                                                confirmButtonColor: '#145a3a',
+                                                denyButtonColor: '#6b7280',
+                                                reverseButtons: true,
+                                            }).then((result) => {
+                                                if (result.isConfirmed) {
+                                                    Swal.fire({
+                                                        title: 'Add Remarks',
+                                                        input: 'textarea',
+                                                        inputPlaceholder: 'Explain the reason for the delay...',
+                                                        showCancelButton: true,
+                                                        confirmButtonText: 'Submit',
+                                                        confirmButtonColor: '#145a3a',
+                                                        cancelButtonColor: '#6b7280',
+                                                    }).then((remarkResult) => {
+                                                        if (remarkResult.isConfirmed) {
+                                                            approvalRemarks = (remarkResult.value || '').trim();
+                                                            remarksResolved = true;
+                                                            $nextTick(() => $el.click());
+                                                        }
+                                                    });
+                                                } else if (result.isDenied) {
+                                                    remarksResolved = true;
+                                                    $nextTick(() => $el.click());
+                                                }
+                                            });
+                                        }
+                                    "
                                     :class="(processing || !canApprove()) ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#0f4630]'"
                                     class="flex items-center justify-center gap-1.5 rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white">
                                     Submit

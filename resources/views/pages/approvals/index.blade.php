@@ -31,8 +31,8 @@
                     Combined Checklist
                 </span>
                 <label class="relative inline-flex cursor-pointer items-center">
-                    <input type="checkbox" name="separate_checklists" value="1" class="peer sr-only"
-                        onchange="this.form.requestSubmit()" @checked(! $combineChecklists) />
+                    <input type="checkbox" name="separate_checklists" value="1" class="peer sr-only disabled:cursor-not-allowed disabled:opacity-50"
+                        onchange="this.form.requestSubmit(); this.disabled = true;" @checked(! $combineChecklists) />
                     <div class="peer h-6 w-11 rounded-full bg-gray-200 transition-colors duration-200 peer-checked:bg-[#145a3a] peer-focus:outline-hidden after:absolute after:top-0.5 after:left-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:duration-200 after:content-[''] peer-checked:after:translate-x-5 dark:bg-gray-700">
                     </div>
                 </label>

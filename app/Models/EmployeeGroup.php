@@ -10,6 +10,7 @@ class EmployeeGroup extends Model
 {
     protected $fillable = [
         'name',
+        'department',
         'group_head_employee_id',
         'is_active',
         'created_by',
@@ -24,7 +25,13 @@ class EmployeeGroup extends Model
 
     /**
      * The Group Head / Department Head responsible for this group — distinct
-     * from the group's rank-and-file `employees()` members below.
+     * from the group's rank-and-file `employees()` members below. Set
+     * directly by the admin picking an employee on the Create/Edit Group
+     * form (see `EmployeeGroupController::store()`/`update()`); the picker
+     * searches by name for convenience, but this FK — and everything that
+     * reads it — is always keyed on that employee's unique id, so it stays
+     * correct even if their name (or any other personal info) later
+     * changes.
      */
     public function groupHead(): BelongsTo
     {

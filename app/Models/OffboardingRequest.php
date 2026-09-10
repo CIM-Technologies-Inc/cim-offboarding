@@ -22,7 +22,10 @@ class OffboardingRequest extends Model
         'immediate_head_id',
         'final_approver_employee_id',
         'reason',
-        'resignation_type',
+        'separation_type_id',
+        'separation_type_description',
+        'notice_period_days',
+        'notification_date',
         'notice_date',
         'last_working_day',
         'approval_mode',
@@ -34,21 +37,61 @@ class OffboardingRequest extends Model
         'remarks',
         'completed_at',
         'final_pay_notified_at',
+        'secondary_notified_at',
     ];
 
     protected function casts(): array
     {
         return [
             'notice_date' => 'date',
+            'notification_date' => 'date',
             'last_working_day' => 'date',
             'completed_at' => 'datetime',
             'final_pay_notified_at' => 'datetime',
+            'secondary_notified_at' => 'datetime',
         ];
+    }
+
+    /**
+     * 'upcoming' | 'today' | 'past' — where the saved (never recalculated)
+     * `notification_date` sits relative to right now, purely for the
+     * Calendar/Offboardee-status UI's visual indicator. Null when no
+     * Notification Date was ever recorded (a request created before this
+     * feature existed). Deliberately compares against the SAVED date, not
+     * a live re-derivation from the current Notice Period default/config,
+     * per this feature's own "never dynamically changes" requirement.
+     */
+    public function noticePeriodStatus(): ?string
+    {
+        if (! $this->notification_date) {
+            return null;
+        }
+
+        return match (true) {
+            $this->notification_date->isToday() => 'today',
+            $this->notification_date->isFuture() => 'upcoming',
+            default => 'past',
+        };
     }
 
     public function employee(): BelongsTo
     {
         return $this->belongsTo(Employee::class);
+    }
+
+    /**
+     * Non-authoritative reference back to the Separation Type Management
+     * config row this request was created against — nulled automatically if
+     * that row is later deleted (see the FK's `nullOnDelete()`). Never used
+     * to DISPLAY this request's separation type/description/notice period;
+     * those are frozen on this row itself (`reason`, `separation_type_description`,
+     * `notice_period_days`) precisely so a later edit or delete here can't
+     * alter a request that already exists. Useful only for
+     * reporting/traceability (e.g. "how many requests used this type").
+     */
+    public function separationType(): BelongsTo
+    {
+        return $this->belongsTo(SeparationType::class);
     }
 
     /**
@@ -532,7 +575,11 @@ class OffboardingRequest extends Model
             ->groupBy('offboarding_request_general_signatory_id');
 
         $buildRichStep = function (OffboardingRequestApprover $assignment) use ($remindersByAssignment, $delegationEventsByAssignment): array {
-            $assignment->loadMissing('checklistTemplate.items', 'itemProgress');
+            $assignment->loadMissing(
+                'checklistTemplate.items',
+                'itemProgress.checkedBy.employee',
+                'itemProgress.heldBy.employee',
+            );
             $progressByItem = $assignment->itemProgress->keyBy('checklist_item_id');
 
             $checklistItems = $assignment->checklistTemplate?->items
@@ -561,10 +608,69 @@ class OffboardingRequest extends Model
                         default => null,
                     };
 
+                    // Who actually performed the check/hold — read straight
+                    // off `ChecklistItemProgress.checked_by_user_id`/
+                    // `held_by_user_id` (the REAL action recorded in the
+                    // system), never guessed from the item's configured/
+                    // effective signatory. This matters because a
+                    // whole-checklist delegate (see
+                    // `ChecklistDelegationController::assign()`) never gets
+                    // its own `ChecklistItemAssignment` row, so
+                    // `effectiveSignatoryFor()` would incorrectly resolve
+                    // back to the Clearance Signatory even when the
+                    // delegate is who genuinely did the work.
+                    $actorEmployee = match ($status) {
+                        'completed' => $progress?->checkedBy?->employee,
+                        'on_hold' => $progress?->heldBy?->employee,
+                        default => null,
+                    };
+
+                    // No distinct task assignee ever did this item — the
+                    // Clearance Signatory themselves is the one who
+                    // actually checked/held it (or the actor couldn't be
+                    // resolved to an Employee at all, e.g. an admin account
+                    // with no Employee Master record) — labeled as the
+                    // Clearance Signatory rather than implying a "task
+                    // assignee" that never existed for this item.
+                    $actorPrefix = match (true) {
+                        $status !== 'completed' && $status !== 'on_hold' => null,
+                        $actorEmployee && $actorEmployee->id !== $assignment->employee_id => $status === 'completed' ? 'Checked by' : 'Hold by',
+                        default => 'Clearance Signatory',
+                    };
+
+                    $actorName = match (true) {
+                        $actorPrefix === null => null,
+                        $actorPrefix === 'Clearance Signatory' => $actorEmployee?->name ?? $assignment->employee?->name,
+                        default => $actorEmployee?->name,
+                    };
+
                     return [
                         'title' => $item->title,
                         'status' => $status,
                         'timestamp' => $timestamp?->format('F d, Y – g:i A'),
+                        'actorPrefix' => $actorPrefix,
+                        'actorName' => $actorName,
+                        // Whatever the task assignee or Clearance Signatory
+                        // themselves typed alongside checking/holding the
+                        // item (or while it's merely 'in_progress' — a
+                        // remark can exist before the item is actually
+                        // checked/held, see the `$status` match above).
+                        // Never displayed for a genuinely untouched
+                        // 'pending' item, since that state is only reached
+                        // when no remark exists in the first place.
+                        'remark' => $progress?->remark,
+                        // Green vs red for THIS item's own "Completed" badge
+                        // — items have no due date of their own, so this
+                        // compares the item's actual `checked_at` against
+                        // its CHECKLIST's shared `due_at` (same due date
+                        // every item on this assignment shares). Only
+                        // meaningful once actually completed; never true for
+                        // any other status or when the checklist has no due
+                        // date at all.
+                        'completedLate' => $status === 'completed'
+                            && $assignment->due_at !== null
+                            && $timestamp !== null
+                            && $timestamp->greaterThanOrEqualTo($assignment->due_at),
                     ];
                 })
                 ->values()
@@ -608,6 +714,19 @@ class OffboardingRequest extends Model
                 'delegateCompletedAt' => $assignment->delegate_completed_at?->format('M d, Y g:i A'),
                 'dueAt' => $assignment->due_at?->format('M d, Y g:i A'),
                 'isOverdue' => $assignment->isOverdue(),
+                // Persisted, refresh-proof basis for the completed-status
+                // color (green if approved on/before `due_at`, red if
+                // approved at/after it) — always derived from the row's own
+                // stored `due_at`/`approved_at`, never from "now", so it
+                // never changes once the row is approved. See
+                // `OffboardingRequestApprover::wasCompletedLate()`.
+                'wasCompletedLate' => $assignment->wasCompletedLate(),
+                // The whole-checklist "reason for the delay" remark left via
+                // the due-date confirmation dialog at Submit time — distinct
+                // from each checklist item's own `remark` above (which
+                // explains one specific item, not the checklist as a
+                // whole).
+                'approvalRemarks' => $assignment->approval_remarks,
                 'usesPerItemApprovers' => $assignment->usesPerItemApprovers(),
                 'checklistItems' => $checklistItems,
             ]];

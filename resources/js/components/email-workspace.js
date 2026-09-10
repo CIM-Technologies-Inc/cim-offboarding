@@ -134,6 +134,10 @@ export function emailWorkspace(flashSuccess = null, flashError = null) {
       const previousChecked = !checkbox.checked;
       const csrfMeta = document.querySelector('meta[name="csrf-token"]');
 
+      // Disabled for the round trip so a second click can't race the first
+      // — always re-enabled below, in both the success and error paths.
+      checkbox.disabled = true;
+
       fetchWithTimeout(url, {
         method: 'PATCH',
         headers: {
@@ -154,6 +158,9 @@ export function emailWorkspace(flashSuccess = null, flashError = null) {
           this.notify('error', e?.name === 'AbortError'
             ? 'This is taking longer than expected. Please check before trying again.'
             : 'Could not update template status.');
+        })
+        .finally(() => {
+          checkbox.disabled = false;
         });
     },
   };

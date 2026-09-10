@@ -1,11 +1,12 @@
 @props([
     'employees' => [],
     'emailTemplates' => [],
+    'separationTypes' => [],
 ])
 
 @php
     $offboardingRequestFields = [
-        'employee_id', 'immediate_head_id', 'notice_date', 'last_working_day', 'resignation_type', 'reason',
+        'employee_id', 'immediate_head_id', 'notice_date', 'last_working_day', 'separation_type_id', 'approval_mode',
         'approver_notification_template_id', 'offboardee_notification_template_id', 'general_signatory_notification_template_id',
         // Not a real form field — `OffboardingRequestController::store()`'s
         // "no active Final Approver configured" check flashes its message
@@ -34,51 +35,24 @@
         'defaultId' => optional($emailTemplates->firstWhere('template_name', $function['templateName']))->id,
     ]);
 
-    // Maps employee id => the id of the employee referenced by that
-    // employee's `sup_one` (Immediate Head) column, or null when `sup_one`
-    // is blank or doesn't resolve to anyone currently on record. Built once
-    // here (not per-request in a controller) so this auto-fill behavior
-    // lives in exactly one place regardless of which page renders this
-    // modal.
+    // Maps employee id => that employee's own `head_employee_id` — the
+    // Immediate Head's real employee id, resolved from the Employee Master
+    // Excel import's `headID` column (matched against `employeeNo`/
+    // `employee_code`; see `EmployeeGroupController::import()`) — or null
+    // when unset. Built once here (not per-request in a controller) so this
+    // auto-fill behavior lives in exactly one place regardless of which
+    // page renders this modal.
     //
-    // `sup_one` is free-text from the Employee Master Excel import, not a
-    // foreign key, and checking it against the real data shows no single
-    // consistent convention: usually "First Last" while `employees.name` is
-    // the full "First Middle Last" (sup_one "Joel Grospe" for the employee
-    // actually named "Joel Concepcion Grospe"), occasionally reversed
-    // "Last First" (sup_one "Bicol Aljon" for "Aljon Tobes Bicol"), and at
-    // least once naming two non-adjacent inner segments of a longer name
-    // (sup_one "Jedaver Opingo" for "Mary Grace Jedaver Pancho Opingo"). A
-    // plain full-name match, or even a fixed first-word/last-word match,
-    // therefore misses most real rows. The rule that actually covers all of
-    // these at once: every word in `sup_one` must appear as a whole word
-    // somewhere in the candidate's name, in any order — checked against
-    // this app's actual ~100-employee roster to confirm it never resolves
-    // one `sup_one` to more than one candidate. Still a full-word match
-    // (never a partial/substring guess within a word), and an employee is
-    // never matched to themselves — an Immediate Head can't be their own. A
-    // `sup_one` that still doesn't resolve to any current employee (a typo,
-    // a since-renamed/removed employee, or someone who was never in this
-    // roster to begin with — e.g. an executive tracked elsewhere) simply
-    // resolves to null, which the picker treats as "no suggestion, pick
-    // manually", never an error.
-    $nameWordSet = fn (?string $name) => $name
-        ? array_unique(array_map('mb_strtolower', preg_split('/\s+/', trim($name), -1, PREG_SPLIT_NO_EMPTY)))
-        : [];
-    $employeeWordSets = $employees->map(fn ($employee) => ['id' => $employee->id, 'words' => $nameWordSet($employee->name)]);
-    $immediateHeadByEmployeeId = $employees->mapWithKeys(function ($employee) use ($employeeWordSets, $nameWordSet) {
-        $supWords = $nameWordSet($employee->sup_one);
-
-        if (empty($supWords)) {
-            return [$employee->id => null];
-        }
-
-        $match = $employeeWordSets->first(
-            fn ($candidate) => $candidate['id'] !== $employee->id && empty(array_diff($supWords, $candidate['words']))
-        );
-
-        return [$employee->id => $match['id'] ?? null];
-    });
+    // Deliberately ID-based, never the offboardee's department, full name,
+    // or the free-text `sup_one`/`head` columns — those can change or be
+    // ambiguous; `head_employee_id` is a real foreign key that stays
+    // correct even if the head's own name is later edited. If it points to
+    // someone not currently offered by this modal's own employee list (e.g.
+    // no longer active), the `immediate-head-auto-select` handler below
+    // finds no match and clears the field instead of applying a bad one —
+    // the same "leave it empty, let the admin pick manually" fallback as a
+    // genuinely blank `head_employee_id`.
+    $immediateHeadByEmployeeId = $employees->pluck('head_employee_id', 'id');
 @endphp
 
 <button @click="$dispatch('open-offboarding-request-modal')"
@@ -110,24 +84,43 @@
                 <div class="grid grid-cols-1 gap-x-6 gap-y-5 lg:grid-cols-2">
                     <div class="col-span-2 space-y-5"
                         x-data="{
-                            immediateHeadBySupOne: @js($immediateHeadByEmployeeId),
-                            // Looks up the newly-selected Offboardee's `sup_one`-matched
-                            // Immediate Head (if any) and applies it directly to the
-                            // Immediate Head <select> — found via a plain `document` query
-                            // (not $el/$refs: this method is invoked from the Employee
-                            // select's OWN nested x-data scope via its @change, and Alpine
-                            // resolves $el/$refs to the NEAREST x-data in that call chain —
-                            // the Employee select's own small wrapper div — not this outer
-                            // one, even though this method is defined here; `document` sidesteps
-                            // that ambiguity, and this modal only ever has one instance live
-                            // on a page) — dispatching a real 'change' event afterward so
-                            // that select's own isOptionSelected/label-color state updates
+                            // Shared by both searchable pickers below instead of each
+                            // owning its own independent 'is my dropdown open' flag —
+                            // `x-ui.modal`'s own Modal Content wrapper has `@click.stop`
+                            // on it (so clicking inside the modal doesn't also close the
+                            // whole thing via the backdrop's handler), which stops every
+                            // in-modal click from ever bubbling up to `document`; Alpine's
+                            // `@click.away` listens on `document`, so it can never fire
+                            // for a click elsewhere inside this modal (see
+                            // `final-approver-modal.blade.php`'s matching comment, which
+                            // hit this exact issue first). A single shared value fixes
+                            // BOTH required behaviors at once: the `@click` below (a
+                            // plain bubble-phase listener on this shared ancestor, not
+                            // `document`, so it isn't blocked by the modal's `.stop`)
+                            // closes whichever picker is open the moment anything else in
+                            // the modal is clicked, and — since only one picker can ever
+                            // be 'active' at a time — opening one via its own
+                            // @focus/@input below automatically closes the other with no
+                            // extra wiring.
+                            activeDropdown: null,
+                            immediateHeadByEmployeeId: @js($immediateHeadByEmployeeId),
+                            // Looks up the newly-selected Offboardee's own `head_employee_id`
+                            // (if any) and applies it directly to the Immediate Head
+                            // picker — found via a plain `document` query (not $el/$refs:
+                            // this method is invoked from the Employee select's OWN nested
+                            // x-data scope via its @change, and Alpine resolves $el/$refs
+                            // to the NEAREST x-data in that call chain — the Employee
+                            // select's own small wrapper div — not this outer one, even
+                            // though this method is defined here; `document` sidesteps that
+                            // ambiguity, and this modal only ever has one instance live on
+                            // a page) — dispatching a real 'change' event afterward so that
+                            // select's own isOptionSelected/label-color state updates
                             // exactly as if the user had picked it themselves. No match
-                            // (blank sup_one, or a name that doesn't match any current
-                            // employee) clears the field back to 'Select an immediate head'
-                            // so the user can still pick one manually, per spec.
+                            // (blank `head_employee_id`, or one that doesn't resolve to a
+                            // currently-offered employee) clears the field back to empty so
+                            // the user can still pick one manually, per spec.
                             setImmediateHeadFromEmployee(employeeId) {
-                                const matchedId = this.immediateHeadBySupOne[employeeId];
+                                const matchedId = this.immediateHeadByEmployeeId[employeeId];
                                 // The Immediate Head field is its own isolated Alpine
                                 // island (searchable picker, not a plain <select>), so
                                 // it can't be reached via document/$refs from here —
@@ -135,7 +128,8 @@
                                 // it to its own state instead.
                                 window.dispatchEvent(new CustomEvent('immediate-head-auto-select', { detail: matchedId ?? null }));
                             },
-                        }">
+                        }"
+                        @click="activeDropdown = null">
                         <div>
                             <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
                                 Employee <span class="text-error-500">*</span>
@@ -150,7 +144,6 @@
                             <div x-data="{
                                     query: @js($selectedEmployeeQuery),
                                     selectedEmployeeId: @js($selectedEmployeeIdOld),
-                                    dropdownOpen: false,
                                     employees: @js($employees->map(fn ($employee) => [
                                         'id' => (string) $employee->id,
                                         'name' => $employee->name,
@@ -171,13 +164,24 @@
                                     selectEmployee(employee) {
                                         this.selectedEmployeeId = employee.id;
                                         this.query = `${employee.name} (${employee.code})`;
-                                        this.dropdownOpen = false;
                                     },
-                                }" @click.away="dropdownOpen = false" class="relative">
+                                }"
+                                {{-- `activeDropdown` lives on the OUTER x-data above (shared
+                                     with the Immediate Head picker below) — see that x-data's
+                                     own comment for why closing on "click elsewhere in the
+                                     modal" can't use a plain `@click.away` here. `@click.stop`
+                                     keeps a click anywhere inside THIS picker (typing, picking
+                                     an option) from bubbling up and immediately re-closing
+                                     itself via the outer wrapper's own catch-all `@click`;
+                                     `@click.away` is kept too as a harmless extra — it only
+                                     ever gets a chance to fire for a genuine click on the
+                                     modal's backdrop, which already closes the whole modal
+                                     anyway. --}}
+                                @click.stop @click.away="activeDropdown = null" class="relative">
                                 <input type="hidden" name="employee_id" :value="selectedEmployeeId" />
                                 <input type="text" x-model="query" autocomplete="off"
-                                    @focus="dropdownOpen = true"
-                                    @input="selectedEmployeeId = ''; dropdownOpen = true"
+                                    @focus="activeDropdown = 'employee'"
+                                    @input="selectedEmployeeId = ''; activeDropdown = 'employee'"
                                     placeholder="Search employee name or employee number..."
                                     :class="selectedEmployeeId ? 'text-gray-800 dark:text-white/90' : 'text-gray-500'"
                                     class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
@@ -190,11 +194,12 @@
                                      walking up to that ancestor scope correctly — calling it from
                                      inside a method body would instead resolve `this` to just this
                                      component's own (child) scope, per the same quirk documented
-                                     on `setImmediateHeadFromEmployee()` itself. --}}
-                                <div x-show="dropdownOpen"
+                                     on `setImmediateHeadFromEmployee()` itself. `activeDropdown =
+                                     null` is set the same inline way, for the same reason. --}}
+                                <div x-show="activeDropdown === 'employee'"
                                     class="shadow-theme-lg absolute z-50 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
                                     <template x-for="employee in filteredEmployees()" :key="employee.id">
-                                        <div @click="selectEmployee(employee); setImmediateHeadFromEmployee(employee.id)"
+                                        <div @click="selectEmployee(employee); setImmediateHeadFromEmployee(employee.id); activeDropdown = null"
                                             class="cursor-pointer border-b border-gray-100 px-4 py-2.5 text-sm last:border-b-0 hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-white/[0.03]">
                                             <span class="block font-medium text-gray-800 dark:text-white/90"
                                                 x-text="`${employee.name} (${employee.code})`"></span>
@@ -226,7 +231,6 @@
                             <div x-data="{
                                     query: @js($selectedImmediateHeadQuery),
                                     selectedEmployeeId: @js($selectedImmediateHeadIdOld),
-                                    dropdownOpen: false,
                                     employees: @js($employees->map(fn ($employee) => [
                                         'id' => (string) $employee->id,
                                         'name' => $employee->name,
@@ -247,26 +251,29 @@
                                     selectEmployee(employee) {
                                         this.selectedEmployeeId = employee.id;
                                         this.query = `${employee.name} (${employee.code})`;
-                                        this.dropdownOpen = false;
                                     },
                                 }"
                                 @immediate-head-auto-select.window="
                                     const matched = employees.find((e) => e.id === String($event.detail));
                                     if (matched) { selectEmployee(matched); } else { selectedEmployeeId = ''; query = ''; }
+                                    activeDropdown = null;
                                 "
-                                @click.away="dropdownOpen = false" class="relative">
+                                {{-- Same `activeDropdown`/`@click.stop` pattern as the
+                                     Employee picker above — see its comment for why a plain
+                                     `@click.away` alone can't close this inside the modal. --}}
+                                @click.stop @click.away="activeDropdown = null" class="relative">
                                 <input type="hidden" name="immediate_head_id" :value="selectedEmployeeId" />
                                 <input type="text" x-model="query" autocomplete="off"
-                                    @focus="dropdownOpen = true"
-                                    @input="selectedEmployeeId = ''; dropdownOpen = true"
+                                    @focus="activeDropdown = 'immediate_head'"
+                                    @input="selectedEmployeeId = ''; activeDropdown = 'immediate_head'"
                                     placeholder="Search employee name or employee number..."
                                     :class="selectedEmployeeId ? 'text-gray-800 dark:text-white/90' : 'text-gray-500'"
                                     class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
 
-                                <div x-show="dropdownOpen"
+                                <div x-show="activeDropdown === 'immediate_head'"
                                     class="shadow-theme-lg absolute z-50 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
                                     <template x-for="employee in filteredEmployees()" :key="employee.id">
-                                        <div @click="selectEmployee(employee)"
+                                        <div @click="selectEmployee(employee); activeDropdown = null"
                                             class="cursor-pointer border-b border-gray-100 px-4 py-2.5 text-sm last:border-b-0 hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-white/[0.03]">
                                             <span class="block font-medium text-gray-800 dark:text-white/90"
                                                 x-text="`${employee.name} (${employee.code})`"></span>
@@ -317,39 +324,112 @@
                         @enderror
                     </div>
 
-                    <div class="col-span-2 lg:col-span-1">
-                        <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
-                            Resignation Type
-                        </label>
-                        <input type="text" name="resignation_type" value="{{ old('resignation_type') }}" placeholder="e.g. Voluntary"
-                            class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
-                        @error('resignation_type')
-                            <p class="mt-1.5 text-xs text-error-500">{{ $message }}</p>
-                        @enderror
+                    @php
+                        $selectedSeparationTypeId = old('separation_type_id', '');
+                        $separationTypesJs = $separationTypes->map(fn ($type) => [
+                            'id' => (string) $type->id,
+                            'description' => $type->description,
+                            'defaultNoticePeriodDays' => $type->default_notice_period_days,
+                        ])->keyBy('id');
+                    @endphp
+                    <div class="contents" x-data="{
+                        isOptionSelected: {{ $selectedSeparationTypeId ? 'true' : 'false' }},
+                        selectedSeparationTypeId: @js((string) $selectedSeparationTypeId),
+                        separationTypesById: @js($separationTypesJs),
+                        // Managed here (not just left to `x-model` on the
+                        // Notice Period input below) because that field is
+                        // `disabled` — the admin can never type into it, it
+                        // only ever reflects whichever type is picked.
+                        noticePeriodDays: @js(optional($separationTypesJs->get((string) $selectedSeparationTypeId))['defaultNoticePeriodDays'] ?? ''),
+                        applySeparationType() {
+                            const type = this.separationTypesById[this.selectedSeparationTypeId];
+                            this.noticePeriodDays = type ? type.defaultNoticePeriodDays : '';
+                        },
+                    }">
+                        <div class="col-span-2 lg:col-span-1">
+                            <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                                Separation Type <span class="text-error-500">*</span>
+                            </label>
+                            <div class="relative z-20 bg-transparent">
+                                <select name="separation_type_id" required
+                                    @change="isOptionSelected = true; selectedSeparationTypeId = $event.target.value; applySeparationType()"
+                                    :class="isOptionSelected && 'text-gray-800 dark:text-white/90'"
+                                    class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-500 shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800">
+                                    <option value="" class="text-gray-700 dark:bg-gray-900 dark:text-gray-400">Select a separation type</option>
+                                    @foreach ($separationTypes as $type)
+                                        <option value="{{ $type->id }}" @selected((string) $selectedSeparationTypeId === (string) $type->id) class="text-gray-700 dark:bg-gray-900 dark:text-gray-400">
+                                            {{ $type->title }}
+                                        </option>
+                                    @endforeach
+                                </select>
+                                <template x-if="selectedSeparationTypeId && separationTypesById[selectedSeparationTypeId]">
+                                    <p class="mt-1.5 text-sm text-gray-500 dark:text-gray-400">
+                                        <span class="font-medium text-gray-600 dark:text-gray-300">Definition per Policy:</span>
+                                        <span x-text="separationTypesById[selectedSeparationTypeId].description"></span>
+                                    </p>
+                                </template>
+                            </div>
+                            @error('separation_type_id')
+                                <p class="mt-1.5 text-xs text-error-500">{{ $message }}</p>
+                            @enderror
+                        </div>
+
+                        <div class="col-span-2 lg:col-span-1">
+                            <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                                Notice Period (Days)
+                            </label>
+                            {{-- Deliberately no `name` attribute: a `disabled`
+                                 field is never submitted with the form anyway
+                                 (browsers exclude it), and the server never
+                                 trusts a client-supplied notice period —
+                                 `OffboardingRequestController::store()` always
+                                 re-derives it from the selected Separation
+                                 Type's OWN `default_notice_period_days`
+                                 server-side, so this input is purely a
+                                 read-only preview for the admin, never a real
+                                 source of truth. --}}
+                            <input type="number" disabled :value="noticePeriodDays"
+                                placeholder="Select a separation type first"
+                                class="dark:bg-dark-900 h-11 w-full cursor-not-allowed appearance-none rounded-lg border border-gray-300 bg-gray-50 bg-none px-4 py-2.5 text-sm text-gray-500 shadow-theme-xs placeholder:text-gray-400 dark:border-gray-700 dark:bg-white/5 dark:text-gray-400 dark:placeholder:text-white/30" />
+                            <!-- <p class="mt-1.5 text-xs text-gray-400">
+                                Set automatically from the selected Separation Type's Default Notice Period. Manage these on the
+                                <a href="{{ route('separation-types.index') }}" target="_blank" class="text-brand-500 hover:text-brand-600 dark:text-brand-400 font-medium">Separation Types</a>
+                                page. The Notification Date will be calculated automatically from today's date.
+                            </p> -->
+                        </div>
                     </div>
 
-                    <div class="col-span-2 lg:col-span-1">
+                    <div class="col-span-2">
                         <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
-                            Reason <span class="text-error-500">*</span>
+                            Checklist Approval Workflow <span class="text-error-500">*</span>
                         </label>
-                        <div x-data="{ isOptionSelected: {{ old('reason') ? 'true' : 'false' }} }" class="relative z-20 bg-transparent">
-                            <select name="reason" required @change="isOptionSelected = true"
-                                :class="isOptionSelected && 'text-gray-800 dark:text-white/90'"
-                                class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 pr-11 text-sm text-gray-500 shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800">
-                                <option value="" class="text-gray-700 dark:bg-gray-900 dark:text-gray-400">Select a reason</option>
-                                @foreach (['resignation' => 'Resignation', 'termination' => 'Termination', 'retirement' => 'Retirement', 'layoff' => 'Layoff', 'other' => 'Other'] as $value => $label)
-                                    <option value="{{ $value }}" @selected(old('reason') === $value) class="text-gray-700 dark:bg-gray-900 dark:text-gray-400">
-                                        {{ $label }}
-                                    </option>
-                                @endforeach
-                            </select>
-                            <span class="pointer-events-none absolute top-1/2 right-4 z-30 -translate-y-1/2 text-gray-500 dark:text-gray-400">
-                                <svg class="stroke-current" width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                    <path d="M4.79175 7.396L10.0001 12.6043L15.2084 7.396" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-                                </svg>
-                            </span>
+                        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                            <label class="flex cursor-pointer items-start gap-2 rounded-lg border border-gray-200 p-3 text-sm text-gray-700 dark:border-gray-700 dark:text-gray-300"
+                                title="Checklists are sent to all approvers immediately and can be completed independently, in any order.">
+                                <input type="radio" name="approval_mode" value="async"
+                                    @checked(old('approval_mode', 'async') === 'async')
+                                    class="mt-0.5 h-4 w-4 accent-brand-500" />
+                                <span>
+                                    <span class="block font-medium text-gray-800 dark:text-white/90">Parallel Approval</span>
+                                    <span class="block text-xs text-gray-400">
+                                        All applicable checklists are sent immediately and can be completed independently — no required order.
+                                    </span>
+                                </span>
+                            </label>
+                            <label class="flex cursor-pointer items-start gap-2 rounded-lg border border-gray-200 p-3 text-sm text-gray-700 dark:border-gray-700 dark:text-gray-300"
+                                title="Checklists must be completed and approved in the configured order — the next stage only starts once the required checklist(s) in the current stage are approved.">
+                                <input type="radio" name="approval_mode" value="sync"
+                                    @checked(old('approval_mode', 'async') === 'sync')
+                                    class="mt-0.5 h-4 w-4 accent-brand-500" />
+                                <span>
+                                    <span class="block font-medium text-gray-800 dark:text-white/90">Sequential Approval</span>
+                                    <span class="block text-xs text-gray-400">
+                                        Checklists must be completed in the configured Primary &rarr; Secondary &rarr; Final Pay order.
+                                    </span>
+                                </span>
+                            </label>
                         </div>
-                        @error('reason')
+                        @error('approval_mode')
                             <p class="mt-1.5 text-xs text-error-500">{{ $message }}</p>
                         @enderror
                     </div>

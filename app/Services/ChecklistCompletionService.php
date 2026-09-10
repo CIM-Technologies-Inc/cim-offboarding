@@ -18,13 +18,122 @@ class ChecklistCompletionService
     private const FINAL_PAY_APPROVAL_TEMPLATE = 'Final Pay Checklist Approval';
 
     /**
+     * Dispatches to whichever gate actually applies for THIS request's own
+     * frozen `approval_mode` — an Async request (today's original, only
+     * behavior) goes straight to `attachFinalPayChecklistsIfReady()`
+     * unchanged; a Sync request instead runs the Primary -> Secondary gate
+     * first, which itself falls through to that same shared method once
+     * Secondary is also satisfied. Called from the exact same places as
+     * before (`ApprovalController::finalizeGroupApproval()`,
+     * `autoApproveIfHeadless()`) — neither needed to change, since both
+     * already call this method unconditionally after any non-final-pay
+     * approval, regardless of sync/async.
+     */
+    public function checkRegularChecklistsCompletion(OffboardingRequest $offboardingRequest): void
+    {
+        if ($offboardingRequest->approval_mode === 'sync') {
+            $this->checkPrimaryChecklistsCompletion($offboardingRequest);
+
+            return;
+        }
+
+        $this->attachFinalPayChecklistsIfReady($offboardingRequest);
+    }
+
+    /**
+     * Sync-mode-only stage gate: once every Primary (non-final-pay)
+     * checklist assignment is approved, attaches + notifies the Secondary
+     * checklist(s) — the exact same `notifyDepartmentHeadsOfNewRequest()` +
+     * `attachAndNotify()` pair already used for the initial Primary batch
+     * at request creation (`OffboardingRequestController::notifyDepartmentHeads()`),
+     * reused here rather than duplicated. Guarded by `secondary_notified_at`
+     * under a row lock, the same one-shot-per-request pattern
+     * `final_pay_notified_at` already uses one stage later.
+     *
+     * Whether or not there were any Secondary templates to attach, this
+     * always finishes by calling `attachFinalPayChecklistsIfReady()` — a
+     * harmless no-op if Secondary was just attached (nothing on it is
+     * approved yet), but the same "zero templates configured" self-heal
+     * `attachFinalPayChecklistsIfReady()` itself already relies on for
+     * Final Pay: a Sync request with zero Secondary templates configured
+     * falls straight through to the Final Pay gate instead of stalling
+     * forever waiting for an approval that can never happen.
+     */
+    private function checkPrimaryChecklistsCompletion(OffboardingRequest $offboardingRequest): void
+    {
+        $primaryApprovers = $offboardingRequest->approvers()
+            ->whereHas('checklistTemplate', fn ($q) => $q
+                ->where('is_final_pay_checklist', false)
+                ->where('sequence_type', ChecklistTemplate::SEQUENCE_TYPE_PRIMARY));
+
+        // Deliberately WITHOUT the `exists()` half of the vacuous-truth
+        // guard used elsewhere in this file: here, "zero Primary checklists
+        // were ever attached" must count as the Primary stage trivially
+        // PASSED (so a department with none configured advances straight
+        // to Secondary — see `OffboardingRequestController::notifyDepartmentHeads()`'s
+        // defensive call right after creation), not blocked forever. The
+        // `secondary_notified_at` lock below still makes this safe to
+        // re-evaluate on every call — it only ever attaches Secondary once.
+        $allPrimaryApproved = $primaryApprovers->clone()->where('status', '!=', 'approved')->doesntExist();
+
+        if ($allPrimaryApproved) {
+            DB::transaction(function () use ($offboardingRequest) {
+                $locked = OffboardingRequest::whereKey($offboardingRequest->id)
+                    ->whereNull('secondary_notified_at')
+                    ->lockForUpdate()
+                    ->first();
+
+                if (! $locked) {
+                    // Already claimed by a concurrent approval — nothing more to do here.
+                    return;
+                }
+
+                $locked->activities()->create([
+                    'action' => 'primary_checklists_approved',
+                    'status' => $locked->status,
+                ]);
+
+                $secondaryTemplates = ChecklistTemplate::where('is_active', true)
+                    ->where('is_final_pay_checklist', false)
+                    ->where('sequence_type', ChecklistTemplate::SEQUENCE_TYPE_SECONDARY)
+                    ->applicableToDepartment($locked->employee->department)
+                    ->with(['departmentHead', 'items.signatory'])
+                    ->get();
+
+                $locked->update(['secondary_notified_at' => now()]);
+
+                if ($secondaryTemplates->isEmpty()) {
+                    return;
+                }
+
+                app(ChecklistApprovalNotifier::class)->notifyDepartmentHeadsOfNewRequest($locked, $secondaryTemplates);
+                $notified = app(ChecklistApprovalNotifier::class)->attachAndNotify($locked, $secondaryTemplates, null);
+
+                $locked->activities()->create([
+                    'action' => 'secondary_checklists_notified',
+                    'status' => $locked->status,
+                    'comment' => 'Sent to: '.(count($notified) ? implode(', ', $notified) : 'no one — check the department heads\' emails'),
+                ]);
+            });
+        }
+
+        $this->attachFinalPayChecklistsIfReady($offboardingRequest);
+    }
+
+    /**
      * Once every regular (non-final-pay) checklist assignment on this
      * request is approved, either finish up as before (if no Final Pay
      * Checklist is configured) or attach + notify the Final Pay Checklist
      * approver(s). Guarded by `final_pay_notified_at` under a row lock so
-     * two near-simultaneous approvals can never trigger this twice.
+     * two near-simultaneous approvals can never trigger this twice. Shared
+     * verbatim by both Async requests (called directly, unchanged from
+     * before this feature existed) and Sync requests (called by
+     * `checkPrimaryChecklistsCompletion()` above once Secondary is also
+     * satisfied) — by this point "every regular checklist approved" means
+     * the same thing either way, so this needs no awareness of
+     * `approval_mode` at all.
      */
-    public function checkRegularChecklistsCompletion(OffboardingRequest $offboardingRequest): void
+    private function attachFinalPayChecklistsIfReady(OffboardingRequest $offboardingRequest): void
     {
         $regularApprovers = $offboardingRequest->approvers()
             ->whereHas('checklistTemplate', fn ($q) => $q->where('is_final_pay_checklist', false));
@@ -85,7 +194,7 @@ class ChecklistCompletionService
                 ->first();
 
             if (! $emailTemplate) {
-                Log::warning('No "' . self::FINAL_PAY_APPROVAL_TEMPLATE . '" email template found — final pay approvers were not emailed.', [
+                Log::warning('No "'.self::FINAL_PAY_APPROVAL_TEMPLATE.'" email template found — final pay approvers were not emailed.', [
                     'offboarding_request_id' => $locked->id,
                 ]);
             }
@@ -99,7 +208,7 @@ class ChecklistCompletionService
             $locked->activities()->create([
                 'action' => 'final_pay_notified',
                 'status' => $locked->status,
-                'comment' => 'Sent to: ' . (count($notified) ? implode(', ', $notified) : 'no one — check the department heads\' emails'),
+                'comment' => 'Sent to: '.(count($notified) ? implode(', ', $notified) : 'no one — check the department heads\' emails'),
             ]);
         });
     }

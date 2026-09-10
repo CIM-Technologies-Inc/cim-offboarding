@@ -51,6 +51,19 @@
         templateNameFor(id) {
             return this.emailTemplates.find((t) => t.id === Number(id))?.template_name ?? '';
         },
+        // Generate/Print Clearance Form open the PDF in a NEW tab (plain
+        // target=_blank links, not a form submit or fetch()) — this tab
+        // never receives any done signal from that navigation, so there's
+        // no real response to wait for. A brief, timed disable + spinner
+        // still gives the same processing-please-wait feedback the rest
+        // of the app shows, and stops a rapid double-click from opening the
+        // same document in two tabs at once.
+        generatingClearanceForm: false,
+        printingClearanceForm: false,
+        briefLoadingState(prop) {
+            this[prop] = true;
+            setTimeout(() => { this[prop] = false; }, 2500);
+        },
     }"
     @open-offboardee-modal.window="selected = $event.detail; activeTab = hideStatusTab ? 'timeline' : 'status'">
     <x-ui.modal x-data="{ open: false }" @open-offboardee-modal.window="open = true" :isOpen="$initial !== null" class="w-full sm:w-[60vw] sm:max-w-[60vw]">
@@ -68,7 +81,7 @@
                             </div>
                         </div>
 
-                        <div class="mt-4 flex items-center gap-4 rounded-xl bg-gray-50 px-4 py-3 text-sm dark:bg-white/[0.03]">
+                        <div class="mt-4 flex flex-wrap items-center gap-x-4 gap-y-3 rounded-xl bg-gray-50 px-4 py-3 text-sm dark:bg-white/[0.03]">
                             <div>
                                 <p class="text-xs text-gray-400">Employee Code</p>
                                 <p class="font-medium text-gray-700 dark:text-gray-300" x-text="selected.employeeCode"></p>
@@ -87,9 +100,64 @@
                                     </div>
                                 </div>
                             </template>
+                            <template x-if="selected.separationType">
+                                <div class="contents">
+                                    <div class="h-8 w-px bg-gray-200 dark:bg-gray-700"></div>
+                                    <div>
+                                        <p class="text-xs text-gray-400">Separation Type</p>
+                                        <p class="font-medium text-gray-700 dark:text-gray-300" x-text="selected.separationType"></p>
+                                    </div>
+                                </div>
+                            </template>
+                            <template x-if="selected.noticePeriodDays !== null && selected.noticePeriodDays !== undefined">
+                                <div class="contents">
+                                    <div class="h-8 w-px bg-gray-200 dark:bg-gray-700"></div>
+                                    <div>
+                                        <p class="text-xs text-gray-400">Notice Period</p>
+                                        <p class="font-medium text-gray-700 dark:text-gray-300" x-text="selected.noticePeriodDays + ' days'"></p>
+                                    </div>
+                                </div>
+                            </template>
+                            <template x-if="selected.notificationDate">
+                                <div class="contents">
+                                    <div class="h-8 w-px bg-gray-200 dark:bg-gray-700"></div>
+                                    <div>
+                                        <p class="text-xs text-gray-400">Notification Date</p>
+                                        <div class="flex items-center gap-1.5">
+                                            <p class="font-medium text-gray-700 dark:text-gray-300" x-text="selected.notificationDate"></p>
+                                            <span class="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold"
+                                                :class="{
+                                                    'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400': selected.noticePeriodStatus === 'upcoming',
+                                                    'bg-orange-50 text-orange-700 dark:bg-orange-500/15 dark:text-orange-400': selected.noticePeriodStatus === 'today',
+                                                    'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400': selected.noticePeriodStatus === 'past'
+                                                }"
+                                                x-text="{ upcoming: 'Upcoming', today: 'Today', past: 'Past' }[selected.noticePeriodStatus]"></span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </template>
                         </div>
 
                         <template x-if="selected.checklistTemplates && selected.checklistTemplates.length">
+                            <div class="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2">
+                                <span class="text-xs font-medium text-gray-400">Legend:</span>
+                                <span class="inline-flex items-center gap-1.5">
+                                    <span class="h-2.5 w-2.5 shrink-0 rounded-full bg-[#145a3a] dark:bg-[#3aa876]"></span>
+                                    <span class="text-xs font-medium text-gray-600 dark:text-gray-300">Completed On Time</span>
+                                </span>
+                                <span class="inline-flex items-center gap-1.5">
+                                    <span class="h-2.5 w-2.5 shrink-0 rounded-full bg-error-500"></span>
+                                    <span class="text-xs font-medium text-gray-600 dark:text-gray-300">Completed Late</span>
+                                </span>
+                                <span class="inline-flex items-center gap-1.5">
+                                    <span class="h-2.5 w-2.5 shrink-0 rounded-full bg-blue-500"></span>
+                                    <span class="text-xs font-medium text-gray-600 dark:text-gray-300">In Progress</span>
+                                </span>
+                                <span class="inline-flex items-center gap-1.5">
+                                    <span class="h-2.5 w-2.5 shrink-0 rounded-full bg-orange-500"></span>
+                                    <span class="text-xs font-medium text-gray-600 dark:text-gray-300">Hold</span>
+                                </span>
+                            </div>
                             <div class="mt-4">
                                 <p class="mb-1.5 text-xs font-medium text-gray-400">Clearance Checklist(s)</p>
                                 <div class="flex flex-wrap gap-2">
@@ -118,6 +186,20 @@
                                 </button>
                             </div>
                         </template>
+
+                        {{-- Color legend for both tabs below — pinned here (outside the
+                             scrollable content area) so it's always visible above whichever
+                             tab is active, never scrolled out of view. Every chip reuses the
+                             EXACT same classes as the real badges it explains, so it's
+                             guaranteed to match what's actually shown: green/red come from
+                             the "Cleared"/"Completed" checklist badge and the per-item
+                             "Completed" dot (see the `step.wasCompletedLate`-keyed `:class`
+                             bindings below and in checklist-item-status-list.blade.php), blue
+                             from the "In Progress"/"viewed" badge, and orange from the
+                             existing "Overdue" chip's own color scale — the closest already-
+                             established "orange" in this tab, since a checklist item's own
+                             Hold indicator uses a very similar amber shade. --}}
+                        
                     </div>
 
                     <!-- Scrollable content area: only this region scrolls, both tabs share the same scroll container -->
@@ -136,17 +218,17 @@
                                     <div class="flex flex-wrap items-center justify-between gap-2">
                                         <div>
                                             <p class="text-sm font-semibold text-gray-800 dark:text-white/90" x-text="step.department || 'Department'"></p>
-                                            <p class="text-xs text-gray-500 dark:text-gray-400">Approver: <span x-text="step.approverName"></span></p>
+                                            <p class="text-xs text-gray-500 dark:text-gray-400">Clearance Signatory: <span x-text="step.approverName"></span></p>
                                         </div>
                                         <span class="shrink-0 rounded-full px-2.5 py-1 text-xs font-medium"
                                             :class="{
                                                 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300': step.status === 'pending' && !step.isOverdue,
                                                 'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400': step.status === 'viewed' && !step.isOverdue,
-                                                'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]': step.status === 'approved',
-                                                'bg-error-50 text-error-700 dark:bg-error-500/15 dark:text-error-400': step.status === 'declined',
+                                                'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]': step.status === 'approved' && !step.wasCompletedLate,
+                                                'bg-error-50 text-error-700 dark:bg-error-500/15 dark:text-error-400': (step.status === 'approved' && step.wasCompletedLate) || step.status === 'declined',
                                                 'bg-orange-50 text-orange-700 dark:bg-orange-500/15 dark:text-orange-400': step.isOverdue
                                             }"
-                                            x-text="step.isOverdue ? 'Overdue' : (step.status === 'approved' ? 'Cleared' : (step.status === 'viewed' ? 'In Progress' : (step.status.charAt(0).toUpperCase() + step.status.slice(1))))"></span>
+                                            x-text="step.isOverdue ? 'Overdue' : (step.status === 'approved' ? (step.wasCompletedLate ? 'Completed' : 'Cleared') : (step.status === 'viewed' ? 'In Progress' : (step.status.charAt(0).toUpperCase() + step.status.slice(1))))"></span>
                                     </div>
 
                                     <div class="mt-2 space-y-1 text-xs text-gray-500 dark:text-gray-400">
@@ -159,7 +241,10 @@
                                         </template>
                                         <p>First Viewed: <span x-text="step.firstViewedAt || 'Not viewed yet'"></span></p>
                                         <template x-if="step.status === 'approved'">
-                                            <p>Cleared: <span x-text="step.approvedAt"></span></p>
+                                            <p :class="step.wasCompletedLate ? 'font-medium text-error-600 dark:text-error-400' : ''">
+                                                Cleared: <span x-text="step.approvedAt"></span>
+                                                <span x-show="step.wasCompletedLate"> — Completed Beyond Deadline</span>
+                                            </p>
                                         </template>
                                         <!-- <template x-if="step.status === 'approved' && step.approverSignatureUrl">
                                             <div class="mt-1.5 flex items-center gap-2">
@@ -174,6 +259,13 @@
                                         <template x-if="step.remarks">
                                             <p>Remarks: <span x-text="step.remarks"></span></p>
                                         </template>
+                                        <!-- The whole-checklist "reason for the delay" remark, distinct from
+                                             each item's own remark shown below by checklist-item-status-list. -->
+                                        <template x-if="step.approvalRemarks">
+                                            <p class="rounded-lg border border-error-200 bg-error-50 px-2.5 py-1.5 text-error-700 dark:border-error-500/30 dark:bg-error-500/10 dark:text-error-400">
+                                                Remarks: <span x-text="step.approvalRemarks"></span>
+                                            </p>
+                                        </template>
                                         <template x-if="step.status === 'declined'">
                                             <p>Declined: <span x-text="step.declinedAt"></span></p>
                                         </template>
@@ -184,7 +276,7 @@
 
                                     @include('components.offboarding.partials.checklist-item-status-list')
 
-                                    <template x-if="step.delegatedTo">
+                                    <!-- <template x-if="step.delegatedTo">
                                         <div class="mt-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs dark:border-gray-800 dark:bg-white/[0.03]">
                                             <p class="text-gray-500 dark:text-gray-400">
                                                 Assigned To: <span class="font-medium text-gray-700 dark:text-gray-300" x-text="step.delegatedTo + ' (' + step.delegatedToCode + ')'"></span>
@@ -199,7 +291,7 @@
                                                 </p>
                                             </template>
                                         </div>
-                                    </template>
+                                    </template> -->
 
                                     <div class="mt-2 space-y-2">
                                         <template x-if="step.reminderSentAt">
@@ -282,7 +374,7 @@
                                     x-show="index < selected.timeline.length - 1"></div>
                                 <div class="relative z-10 flex h-6 w-6 shrink-0 items-center justify-center rounded-full"
                                     :class="step.rich
-                                        ? (step.status === 'declined' ? 'bg-error-500' : step.status === 'approved' ? 'bg-[#145a3a]' : step.status === 'viewed' ? 'bg-blue-500' : 'bg-gray-200 dark:bg-gray-700')
+                                        ? (step.status === 'declined' ? 'bg-error-500' : step.status === 'approved' ? (step.wasCompletedLate ? 'bg-error-500' : 'bg-[#145a3a]') : step.status === 'viewed' ? 'bg-blue-500' : 'bg-gray-200 dark:bg-gray-700')
                                         : (step.cancelled ? 'bg-error-500' : (step.hold ? 'bg-amber-500' : (step.done ? 'bg-[#145a3a]' : 'bg-gray-200 dark:bg-gray-700')))">
                                     <svg x-show="step.done" width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
                                         <path fill-rule="evenodd" clip-rule="evenodd" d="M13.4767 4.10714C13.7788 4.38292 13.8008 4.85162 13.5257 5.15436L6.83817 12.5211C6.69758 12.6759 6.49882 12.7644 6.29008 12.7644C6.08134 12.7644 5.88258 12.6759 5.74199 12.5211L2.47426 8.9211C2.19916 8.61836 2.22119 8.14966 2.52326 7.87388C2.82533 7.5981 3.29283 7.62018 3.56793 7.92292L6.29008 10.9184L12.4321 4.15582C12.7072 3.85308 13.1746 3.83137 13.4767 4.10714Z" fill="white" />
@@ -311,17 +403,17 @@
                                         <div class="flex flex-wrap items-center justify-between gap-2">
                                             <div>
                                                 <p class="text-sm font-semibold text-gray-800 dark:text-white/90" x-text="step.department || 'Department'"></p>
-                                                <p class="text-xs text-gray-500 dark:text-gray-400">Approver: <span x-text="step.approverName"></span></p>
+                                                <p class="text-xs text-gray-500 dark:text-gray-400">Clearance Signatory: <span x-text="step.approverName"></span></p>
                                             </div>
                                             <span class="shrink-0 rounded-full px-2.5 py-1 text-xs font-medium"
                                                 :class="{
                                                     'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300': step.status === 'pending' && !step.isOverdue,
                                                     'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400': step.status === 'viewed' && !step.isOverdue,
-                                                    'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]': step.status === 'approved',
-                                                    'bg-error-50 text-error-700 dark:bg-error-500/15 dark:text-error-400': step.status === 'declined',
+                                                    'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]': step.status === 'approved' && !step.wasCompletedLate,
+                                                    'bg-error-50 text-error-700 dark:bg-error-500/15 dark:text-error-400': (step.status === 'approved' && step.wasCompletedLate) || step.status === 'declined',
                                                     'bg-orange-50 text-orange-700 dark:bg-orange-500/15 dark:text-orange-400': step.isOverdue
                                                 }"
-                                                x-text="step.isOverdue ? 'Overdue' : (step.status === 'approved' ? 'Cleared' : (step.status === 'viewed' ? 'In Progress' : (step.status.charAt(0).toUpperCase() + step.status.slice(1))))"></span>
+                                                x-text="step.isOverdue ? 'Overdue' : (step.status === 'approved' ? (step.wasCompletedLate ? 'Completed' : 'Cleared') : (step.status === 'viewed' ? 'In Progress' : (step.status.charAt(0).toUpperCase() + step.status.slice(1))))"></span>
                                         </div>
 
                                         <div class="mt-2 space-y-1 text-xs text-gray-500 dark:text-gray-400">
@@ -334,7 +426,10 @@
                                             </template>
                                             <p>First Viewed: <span x-text="step.firstViewedAt || 'Not viewed yet'"></span></p>
                                             <template x-if="step.status === 'approved'">
-                                                <p>Cleared: <span x-text="step.approvedAt"></span></p>
+                                                <p :class="step.wasCompletedLate ? 'font-medium text-error-600 dark:text-error-400' : ''">
+                                                    Cleared: <span x-text="step.approvedAt"></span>
+                                                    <span x-show="step.wasCompletedLate"> — Completed Beyond Deadline</span>
+                                                </p>
                                             </template>
                                             <!-- <template x-if="step.status === 'approved' && step.approverSignatureUrl">
                                                 <div class="mt-1.5 flex items-center gap-2">
@@ -349,6 +444,11 @@
                                             <template x-if="step.remarks">
                                                 <p>Remarks: <span x-text="step.remarks"></span></p>
                                             </template>
+                                            <template x-if="step.approvalRemarks">
+                                                <p class="rounded-lg border border-error-200 bg-error-50 px-2.5 py-1.5 text-error-700 dark:border-error-500/30 dark:bg-error-500/10 dark:text-error-400">
+                                                    Remarks: <span x-text="step.approvalRemarks"></span>
+                                                </p>
+                                            </template>
                                             <template x-if="step.status === 'declined'">
                                                 <p>Declined: <span x-text="step.declinedAt"></span></p>
                                             </template>
@@ -359,7 +459,7 @@
 
                                         @include('components.offboarding.partials.checklist-item-status-list')
 
-                                        <template x-if="step.delegatedTo">
+                                        <!-- <template x-if="step.delegatedTo">
                                             <div class="mt-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs dark:border-gray-800 dark:bg-white/[0.03]">
                                                 <p class="text-gray-500 dark:text-gray-400">
                                                     Assigned To: <span class="font-medium text-gray-700 dark:text-gray-300" x-text="step.delegatedTo + ' (' + step.delegatedToCode + ')'"></span>
@@ -374,7 +474,7 @@
                                                     </p>
                                                 </template>
                                             </div>
-                                        </template>
+                                        </template> -->
 
                                         <div class="mt-2 space-y-2">
                                             <template x-if="step.reminderSentAt">
@@ -456,20 +556,26 @@
                     <div class="flex flex-wrap items-center justify-end gap-3">
                         <template x-if="(isAdmin || selected.status === 'completed') && selected.clearanceFormUrl">
                             <a :href="selected.clearanceFormUrl" target="_blank" rel="noopener"
-                                class="flex items-center justify-center gap-1.5 rounded-lg border border-gray-300 px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
-                                <svg width="16" height="16" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                @click="briefLoadingState('generatingClearanceForm')"
+                                :class="generatingClearanceForm ? 'pointer-events-none opacity-50' : 'hover:bg-gray-50 dark:hover:bg-white/5'"
+                                class="flex items-center justify-center gap-1.5 rounded-lg border border-gray-300 px-4 py-2.5 text-sm font-medium text-gray-700 dark:border-gray-700 dark:text-gray-300">
+                                <svg x-show="!generatingClearanceForm" width="16" height="16" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
                                     <path d="M4.5 12V15.75C4.5 16.1642 4.83579 16.5 5.25 16.5H12.75C13.1642 16.5 13.5 16.1642 13.5 15.75V12M9 1.5V11.25M9 11.25L5.625 7.875M9 11.25L12.375 7.875" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
                                 </svg>
-                                Generate Clearance Form
+                                <span x-show="generatingClearanceForm" x-cloak class="h-4 w-4 animate-spin rounded-full border-2 border-solid border-gray-400 border-t-transparent"></span>
+                                <span x-text="generatingClearanceForm ? 'Generating...' : 'Generate Clearance Form'"></span>
                             </a>
                         </template>
                         <template x-if="(isAdmin || selected.status === 'completed') && selected.printClearanceFormUrl">
                             <a :href="selected.printClearanceFormUrl" target="_blank" rel="noopener"
-                                class="flex items-center justify-center gap-1.5 rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white hover:bg-[#0f4630]">
-                                <svg width="16" height="16" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                @click="briefLoadingState('printingClearanceForm')"
+                                :class="printingClearanceForm ? 'pointer-events-none opacity-50' : 'hover:bg-[#0f4630]'"
+                                class="flex items-center justify-center gap-1.5 rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white">
+                                <svg x-show="!printingClearanceForm" width="16" height="16" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
                                     <path d="M4.5 6.75V2.25H13.5V6.75M4.5 14.25H3C2.17157 14.25 1.5 13.5784 1.5 12.75V8.25C1.5 7.42157 2.17157 6.75 3 6.75H15C15.8284 6.75 16.5 7.42157 16.5 8.25V12.75C16.5 13.5784 15.8284 14.25 15 14.25H13.5M4.5 14.25V16.5H13.5V14.25M4.5 14.25H13.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
                                 </svg>
-                                Print Clearance Form
+                                <span x-show="printingClearanceForm" x-cloak class="h-4 w-4 animate-spin rounded-full border-2 border-solid border-white border-t-transparent"></span>
+                                <span x-text="printingClearanceForm ? 'Preparing...' : 'Print Clearance Form'"></span>
                             </a>
                         </template>
                         <button @click="open = false" type="button"

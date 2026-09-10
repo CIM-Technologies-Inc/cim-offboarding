@@ -18,6 +18,7 @@ class OffboardingRequestApprover extends Model
         'assigned_at',
         'first_viewed_at',
         'approved_at',
+        'approval_remarks',
         'declined_at',
         'decline_reason',
         'reminder_sent_at',
@@ -371,6 +372,37 @@ class OffboardingRequestApprover extends Model
         return $this->due_at !== null
             && ! in_array($this->status, ['approved', 'declined'], true)
             && now()->greaterThan($this->due_at);
+    }
+
+    /**
+     * True once "now" is at or past this checklist's due date, regardless of
+     * status — the trigger for the Submit-time due-date confirmation/remarks
+     * dialog (see `checklist-modal.blade.php`). Unlike `isOverdue()` (which
+     * stops applying the moment a row is resolved, since it only drives the
+     * "still outstanding and overdue" warning badge), this deliberately
+     * keeps returning true after approval too, since `wasCompletedLate()`
+     * below needs the exact same "was due" fact to still hold once the row
+     * is approved.
+     */
+    public function hasReachedDueDate(): bool
+    {
+        return $this->due_at !== null && now()->greaterThanOrEqualTo($this->due_at);
+    }
+
+    /**
+     * The permanent, persisted basis for the green ("Completed On Time") vs
+     * red ("Completed Late") status color — always compares this row's own
+     * stored `due_at` against its own stored `approved_at` (never "now"), so
+     * it stays correct forever after a refresh, regardless of when it's
+     * viewed. A checklist with no due date configured, or not yet approved,
+     * is never "late".
+     */
+    public function wasCompletedLate(): bool
+    {
+        return $this->status === 'approved'
+            && $this->due_at !== null
+            && $this->approved_at !== null
+            && $this->approved_at->greaterThanOrEqualTo($this->due_at);
     }
 
     /**

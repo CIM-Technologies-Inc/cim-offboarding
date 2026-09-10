@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\EmailTemplate;
 use App\Models\Employee;
 use App\Models\OffboardingRequest;
+use App\Models\SeparationType;
 use Illuminate\Support\Carbon;
 
 class DashboardController extends Controller
@@ -53,7 +54,7 @@ class DashboardController extends Controller
 
         $employeesNotOffboarded = Employee::where('status', 'active')
             ->orderBy('name')
-            ->get(['id', 'name', 'employee_code', 'department', 'designation', 'sup_one']);
+            ->get(['id', 'name', 'employee_code', 'department', 'designation', 'sup_one', 'head_employee_id']);
 
         // For the New Offboarding Request modal's per-request email
         // template overrides — every function's Select is populated from
@@ -63,6 +64,10 @@ class DashboardController extends Controller
             ->orderBy('template_name')
             ->get(['id', 'template_name']);
 
+        // For the New Offboarding Request modal's "Separation Type" picker
+        // — see `SeparationTypeController`/`OffboardingRequestController::store()`.
+        $separationTypes = SeparationType::orderBy('title')->get();
+
         $recentRequests = OffboardingRequest::with('employee', 'approvers', 'generalSignatoryApprovals')
             ->latest()
             ->take(6)
@@ -70,7 +75,9 @@ class DashboardController extends Controller
             ->map(fn (OffboardingRequest $request) => [
                 'employee' => $request->employee->name,
                 'department' => $request->employee->department,
-                'reason' => ucfirst(str_replace('_', ' ', $request->reason)),
+                // Already a display-ready title, frozen at creation time —
+                // see `OffboardingRequestController::store()`.
+                'reason' => $request->reason,
                 'last_working_day' => $request->last_working_day->format('M d, Y'),
                 'status' => $request->displayStatus(),
             ])->all();
@@ -93,6 +100,7 @@ class DashboardController extends Controller
             'recentRequests' => $recentRequests,
             'employeesNotOffboarded' => $employeesNotOffboarded,
             'activeEmailTemplates' => $activeEmailTemplates,
+            'separationTypes' => $separationTypes,
         ]);
     }
 
