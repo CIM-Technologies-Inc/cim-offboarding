@@ -25,15 +25,19 @@ class OffboardingRequestGeneralSignatory extends Model
     protected $fillable = [
         'offboarding_request_id',
         'general_signatory_id',
+        'sequence_type',
+        'is_final_pay_signatory',
         'status',
         'first_viewed_at',
         'approved_at',
         'approved_by',
+        'remarks',
     ];
 
     protected function casts(): array
     {
         return [
+            'is_final_pay_signatory' => 'boolean',
             'first_viewed_at' => 'datetime',
             'approved_at' => 'datetime',
         ];

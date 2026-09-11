@@ -78,7 +78,36 @@
 
         <form class="flex flex-col" method="POST" action="{{ route('offboarding-requests.store') }}"
             x-data="offboardingRequestForm(@js(session('success')), @js($offboardingRequestHasErrors ? $errors->first() : null))"
-            @submit="submitting = true">
+            @submit="if (!confirmed) {
+                $event.preventDefault();
+                // Read straight off the Employee picker's own visible text
+                // input via `document` rather than through Alpine state —
+                // that field lives in a deeply nested x-data scope (the
+                // Employee picker's own island, see its surrounding
+                // comments), and this outer form-level handler can't reach
+                // into a descendant's state directly, only the DOM itself.
+                const rawName = document.getElementById('offboardeeNameInput')?.value ?? '';
+                const offboardeeName = rawName.replace(/\s*\([^)]*\)\s*$/, '').trim() || 'this employee';
+                Swal.fire({
+                    title: 'Create Offboarding Request?',
+                    text: `You are about to create an Offboarding Request for ${offboardeeName}. Please confirm that you want to proceed.`,
+                    icon: 'question',
+                    showCancelButton: true,
+                    confirmButtonText: 'Confirm',
+                    cancelButtonText: 'Cancel',
+                    confirmButtonColor: '#145a3a',
+                    cancelButtonColor: '#6b7280',
+                    reverseButtons: true,
+                }).then((result) => {
+                    if (result.isConfirmed) {
+                        confirmed = true;
+                        submitting = true;
+                        $el.requestSubmit();
+                    }
+                });
+            } else {
+                submitting = true;
+            }"
             @csrf
             <div class="custom-scrollbar h-[458px] overflow-y-auto p-2">
                 <div class="grid grid-cols-1 gap-x-6 gap-y-5 lg:grid-cols-2">
@@ -179,7 +208,7 @@
                                      anyway. --}}
                                 @click.stop @click.away="activeDropdown = null" class="relative">
                                 <input type="hidden" name="employee_id" :value="selectedEmployeeId" />
-                                <input type="text" x-model="query" autocomplete="off"
+                                <input type="text" id="offboardeeNameInput" x-model="query" autocomplete="off"
                                     @focus="activeDropdown = 'employee'"
                                     @input="selectedEmployeeId = ''; activeDropdown = 'employee'"
                                     placeholder="Search employee name or employee number..."

@@ -38,6 +38,8 @@ class OffboardingRequest extends Model
         'completed_at',
         'final_pay_notified_at',
         'secondary_notified_at',
+        'general_signatory_secondary_notified_at',
+        'general_signatory_final_pay_notified_at',
     ];
 
     protected function casts(): array
@@ -49,6 +51,8 @@ class OffboardingRequest extends Model
             'completed_at' => 'datetime',
             'final_pay_notified_at' => 'datetime',
             'secondary_notified_at' => 'datetime',
+            'general_signatory_secondary_notified_at' => 'datetime',
+            'general_signatory_final_pay_notified_at' => 'datetime',
         ];
     }
 
@@ -860,6 +864,16 @@ class OffboardingRequest extends Model
      * `GeneralSignatoryApprovalController::remind()`, the "Notify Approver"
      * action for resending this General Signatory's own notification
      * email.
+     *
+     * `remarks` is the General Signatory's own optional comment left on the
+     * Approvals page at Submit time (`GeneralSignatoryApprovalController::approve()`),
+     * stored on THIS row's own `remarks` column — same field name/shape as
+     * `buildFinalApprovalRichStep()`'s `remarks` below, so the shared
+     * Offboarding Status/Timeline card markup (`step.remarks`) renders it
+     * identically with no template changes needed. Never null-coalesced
+     * from `approval_remarks`/`OffboardingRequestApprover` or any other
+     * approver's own remarks column — this is exclusively this General
+     * Signatory's own.
      */
     private function buildGeneralSignatoryRichStep(OffboardingRequestGeneralSignatory $generalSignatoryApproval): array
     {
@@ -878,6 +892,7 @@ class OffboardingRequest extends Model
             'approverSignatureUrl' => $generalSignatoryApproval->status === 'approved'
                 ? $clearanceSignatory?->user?->signatureUrl()
                 : null,
+            'remarks' => $generalSignatoryApproval->remarks,
             'declinedAt' => null,
             'declineReason' => null,
             'reminderSentAt' => null,

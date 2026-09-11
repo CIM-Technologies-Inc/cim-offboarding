@@ -10,6 +10,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 /**
  * A General Signatory record is deliberately independent of the Offboarding
@@ -30,18 +31,31 @@ class GeneralSignatoryController extends Controller
     {
         $validated = $request->validate([
             'clearance_signatory_id' => ['required', 'exists:employees,id'],
+            // Core/Secondary/Final Pay — the same Sync-workflow stage
+            // ordering `ChecklistTemplateController` already uses for
+            // checklist templates (see
+            // `ChecklistCompletionService::checkPrimaryGeneralSignatoriesCompletion()`),
+            // reused here rather than duplicated so a General Signatory
+            // stages through the exact same Core -> Secondary -> Final Pay
+            // pipeline.
+            'checklist_classification' => ['required', Rule::in(['primary', 'secondary', 'final_pay'])],
             'tasks' => ['nullable', 'array'],
             'tasks.*.title' => ['nullable', 'string', 'max:255'],
             'tasks.*.signatory_id' => ['nullable', 'exists:employees,id'],
         ]);
 
+        $isFinalPaySignatory = $validated['checklist_classification'] === 'final_pay';
+        $sequenceType = $isFinalPaySignatory ? null : $validated['checklist_classification'];
+
         $eligibleSignatoryIds = $this->eligibleSignatoryIds((int) $validated['clearance_signatory_id']);
         $tasks = $this->nonBlankTasks($validated['tasks'] ?? []);
 
-        DB::transaction(function () use ($validated, $request, $eligibleSignatoryIds, $tasks) {
+        DB::transaction(function () use ($validated, $request, $eligibleSignatoryIds, $tasks, $isFinalPaySignatory, $sequenceType) {
             $generalSignatory = GeneralSignatory::create([
                 'clearance_signatory_id' => $validated['clearance_signatory_id'],
                 'is_active' => true,
+                'sequence_type' => $sequenceType,
+                'is_final_pay_signatory' => $isFinalPaySignatory,
                 'created_by' => $request->user()->id,
             ]);
 
@@ -63,17 +77,23 @@ class GeneralSignatoryController extends Controller
     {
         $validated = $request->validate([
             'clearance_signatory_id' => ['required', 'exists:employees,id'],
+            'checklist_classification' => ['required', Rule::in(['primary', 'secondary', 'final_pay'])],
             'tasks' => ['nullable', 'array'],
             'tasks.*.title' => ['nullable', 'string', 'max:255'],
             'tasks.*.signatory_id' => ['nullable', 'exists:employees,id'],
         ]);
 
+        $isFinalPaySignatory = $validated['checklist_classification'] === 'final_pay';
+        $sequenceType = $isFinalPaySignatory ? null : $validated['checklist_classification'];
+
         $eligibleSignatoryIds = $this->eligibleSignatoryIds((int) $validated['clearance_signatory_id']);
         $tasks = $this->nonBlankTasks($validated['tasks'] ?? []);
 
-        DB::transaction(function () use ($validated, $generalSignatory, $eligibleSignatoryIds, $tasks) {
+        DB::transaction(function () use ($validated, $generalSignatory, $eligibleSignatoryIds, $tasks, $isFinalPaySignatory, $sequenceType) {
             $generalSignatory->update([
                 'clearance_signatory_id' => $validated['clearance_signatory_id'],
+                'sequence_type' => $sequenceType,
+                'is_final_pay_signatory' => $isFinalPaySignatory,
             ]);
 
             // Delete-and-recreate is safe here (unlike

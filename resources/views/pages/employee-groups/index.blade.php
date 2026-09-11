@@ -564,6 +564,18 @@
 
                         <div class="mt-5 space-y-3 text-sm">
                             <div class="flex items-center justify-between border-b border-gray-100 pb-2 dark:border-gray-800">
+                                <span class="text-gray-400">First Name</span>
+                                <span class="font-medium text-gray-700 dark:text-gray-300" x-text="viewingEmployee.firstName || '—'"></span>
+                            </div>
+                            <div class="flex items-center justify-between border-b border-gray-100 pb-2 dark:border-gray-800">
+                                <span class="text-gray-400">Middle Name</span>
+                                <span class="font-medium text-gray-700 dark:text-gray-300" x-text="viewingEmployee.middleName || '—'"></span>
+                            </div>
+                            <div class="flex items-center justify-between border-b border-gray-100 pb-2 dark:border-gray-800">
+                                <span class="text-gray-400">Last Name</span>
+                                <span class="font-medium text-gray-700 dark:text-gray-300" x-text="viewingEmployee.lastName || '—'"></span>
+                            </div>
+                            <div class="flex items-center justify-between border-b border-gray-100 pb-2 dark:border-gray-800">
                                 <span class="text-gray-400">Email</span>
                                 <span class="font-medium text-gray-700 dark:text-gray-300" x-text="viewingEmployee.email || '—'"></span>
                             </div>

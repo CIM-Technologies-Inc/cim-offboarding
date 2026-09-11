@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\ChecklistTemplate;
 use App\Models\EmailTemplate;
+use App\Models\GeneralSignatory;
 use App\Models\OffboardingRequest;
 use App\Models\OffboardingRequestApprover;
 use Illuminate\Support\Facades\DB;
@@ -151,10 +152,14 @@ class ChecklistCompletionService
         // snapshotted onto the request once at creation time, so this
         // always reflects who was actually assigned then, never a later
         // change to the live General Signatory configuration. The Final Pay
-        // Checklist must never even be attached while any of them is still
-        // pending, regardless of how quickly the regular checklists
-        // themselves get approved.
-        if (! $allRegularApproved || ! $this->allGeneralSignatoriesApproved($offboardingRequest)) {
+        // Checklist must never even be attached while any REGULAR (Core/
+        // Secondary) General Signatory is still pending, regardless of how
+        // quickly the regular checklists themselves get approved. This is
+        // deliberately scoped to the regular General Signatory tier only —
+        // the General Signatory track's OWN, independent Final Pay tier
+        // (see `attachFinalPayGeneralSignatoriesIfReady()`) is neither a
+        // precondition for, nor blocked by, this checklist-side gate.
+        if (! $allRegularApproved || ! $this->allRegularGeneralSignatoriesApproved($offboardingRequest)) {
             return;
         }
 
@@ -214,6 +219,184 @@ class ChecklistCompletionService
     }
 
     /**
+     * The General Signatory equivalent of `checkRegularChecklistsCompletion()`
+     * above — same dispatcher shape, same `approval_mode` branch — but for
+     * the independent General Signatory track (see `GeneralSignatory`'s own
+     * docblock for why it's never mixed into `OffboardingRequestApprover`).
+     * Called once, defensively, right after a Sync request is created (see
+     * `OffboardingRequestController::notifyDepartmentHeads()`) and every
+     * time a General Signatory approves (`GeneralSignatoryApprovalController::finalizeApproval()`).
+     */
+    public function checkRegularGeneralSignatoriesCompletion(OffboardingRequest $offboardingRequest): void
+    {
+        if ($offboardingRequest->approval_mode === 'sync') {
+            $this->checkPrimaryGeneralSignatoriesCompletion($offboardingRequest);
+
+            return;
+        }
+
+        $this->attachFinalPayGeneralSignatoriesIfReady($offboardingRequest);
+    }
+
+    /**
+     * Sync-mode-only stage gate, the General Signatory equivalent of
+     * `checkPrimaryChecklistsCompletion()`: once every Core (non-final-pay)
+     * General Signatory approval is approved, attaches + notifies the
+     * Secondary General Signatory(-ies) — reusing
+     * `ChecklistApprovalNotifier::notifyGeneralSignatories()`, the exact
+     * same method used for the initial Core batch at request creation, not
+     * a duplicate. Guarded by `general_signatory_secondary_notified_at`
+     * under a row lock, the General Signatory track's own one-shot-per-
+     * request lock, independent of the checklist track's
+     * `secondary_notified_at`.
+     *
+     * Whether or not there were any Secondary General Signatories to
+     * attach, this always finishes by calling
+     * `attachFinalPayGeneralSignatoriesIfReady()` — a harmless no-op if
+     * Secondary was just attached (nothing on it is approved yet), but the
+     * same "zero configured" self-heal that method itself already relies
+     * on for its own Final Pay tier: a Sync request with zero Secondary
+     * General Signatories configured falls straight through to the Final
+     * Pay tier instead of stalling forever.
+     */
+    private function checkPrimaryGeneralSignatoriesCompletion(OffboardingRequest $offboardingRequest): void
+    {
+        $primaryApprovals = $offboardingRequest->generalSignatoryApprovals()
+            ->where('is_final_pay_signatory', false)
+            ->where('sequence_type', ChecklistTemplate::SEQUENCE_TYPE_PRIMARY);
+
+        // Same deliberately-without-`exists()` vacuous-truth guard as
+        // `checkPrimaryChecklistsCompletion()`: zero Core General
+        // Signatories ever attached must count as the Core stage trivially
+        // PASSED, not blocked forever — the `general_signatory_secondary_notified_at`
+        // lock below still makes this safe to re-evaluate on every call.
+        $allPrimaryApproved = $primaryApprovals->clone()->where('status', '!=', 'approved')->doesntExist();
+
+        if ($allPrimaryApproved) {
+            DB::transaction(function () use ($offboardingRequest) {
+                $locked = OffboardingRequest::whereKey($offboardingRequest->id)
+                    ->whereNull('general_signatory_secondary_notified_at')
+                    ->lockForUpdate()
+                    ->first();
+
+                if (! $locked) {
+                    // Already claimed by a concurrent approval — nothing more to do here.
+                    return;
+                }
+
+                $locked->activities()->create([
+                    'action' => 'primary_general_signatories_approved',
+                    'status' => $locked->status,
+                ]);
+
+                $secondaryGeneralSignatories = GeneralSignatory::where('is_active', true)
+                    ->where('is_final_pay_signatory', false)
+                    ->where('sequence_type', ChecklistTemplate::SEQUENCE_TYPE_SECONDARY)
+                    ->whereNotIn('id', $locked->generalSignatories()->pluck('general_signatories.id'))
+                    ->with(['clearanceSignatory', 'tasks.signatory'])
+                    ->get();
+
+                $locked->update(['general_signatory_secondary_notified_at' => now()]);
+
+                app(ChecklistApprovalNotifier::class)->notifyGeneralSignatories($locked, $secondaryGeneralSignatories);
+
+                if ($secondaryGeneralSignatories->isEmpty()) {
+                    return;
+                }
+
+                $locked->activities()->create([
+                    'action' => 'secondary_general_signatories_notified',
+                    'status' => $locked->status,
+                    'comment' => 'Sent to: '.$secondaryGeneralSignatories
+                        ->pluck('clearanceSignatory.name')
+                        ->filter()
+                        ->implode(', '),
+                ]);
+            });
+
+            // The transaction above updates a separately-fetched `$locked`
+            // instance, not this method's own `$offboardingRequest` — so
+            // its in-memory `general_signatory_secondary_notified_at`
+            // attribute is still stale at this point. Refreshed here so the
+            // fall-through call below (particularly the zero-Secondary-
+            // configured self-heal case) sees the lock as already resolved
+            // instead of incorrectly reading it as still pending.
+            $offboardingRequest->refresh();
+        }
+
+        $this->attachFinalPayGeneralSignatoriesIfReady($offboardingRequest);
+    }
+
+    /**
+     * Once every regular (non-final-pay) General Signatory approval on this
+     * request is approved, attaches + notifies the Final-Pay-tier General
+     * Signatory(-ies), if any — the General Signatory equivalent of
+     * `attachFinalPayChecklistsIfReady()`, shared verbatim by both Async
+     * requests (Core+Secondary already attached together, so this is the
+     * very next gate) and Sync requests (called by
+     * `checkPrimaryGeneralSignatoriesCompletion()` above once Secondary is
+     * also satisfied).
+     *
+     * The extra `general_signatory_secondary_notified_at IS NOT NULL`
+     * check (Sync mode only) closes a race that doesn't exist on the
+     * checklist side: there, an unattached Secondary template simply
+     * produces zero rows to evaluate, so "no unapproved row exists" is
+     * always safely vacuous. Here, a Sync request could have its Core tier
+     * fully approved while Secondary hasn't been attached yet — without
+     * this guard, "no unapproved row exists" would vacuously read true
+     * over the Core-only rows and let the Final Pay tier jump the queue
+     * before Secondary is even attached. Async mode never needs this
+     * guard: Core and Secondary attach together at creation, so there's no
+     * intermediate gap to race.
+     */
+    private function attachFinalPayGeneralSignatoriesIfReady(OffboardingRequest $offboardingRequest): void
+    {
+        if (! $this->allRegularGeneralSignatoriesApproved($offboardingRequest)) {
+            return;
+        }
+
+        DB::transaction(function () use ($offboardingRequest) {
+            $locked = OffboardingRequest::whereKey($offboardingRequest->id)
+                ->whereNull('general_signatory_final_pay_notified_at')
+                ->lockForUpdate()
+                ->first();
+
+            if (! $locked) {
+                // Already claimed by a concurrent approval — nothing more to do here.
+                return;
+            }
+
+            $locked->activities()->create([
+                'action' => 'all_general_signatories_approved',
+                'status' => $locked->status,
+            ]);
+
+            $finalPayGeneralSignatories = GeneralSignatory::where('is_active', true)
+                ->where('is_final_pay_signatory', true)
+                ->whereNotIn('id', $locked->generalSignatories()->pluck('general_signatories.id'))
+                ->with(['clearanceSignatory', 'tasks.signatory'])
+                ->get();
+
+            $locked->update(['general_signatory_final_pay_notified_at' => now()]);
+
+            app(ChecklistApprovalNotifier::class)->notifyGeneralSignatories($locked, $finalPayGeneralSignatories);
+
+            if ($finalPayGeneralSignatories->isEmpty()) {
+                return;
+            }
+
+            $locked->activities()->create([
+                'action' => 'final_pay_general_signatories_notified',
+                'status' => $locked->status,
+                'comment' => 'Sent to: '.$finalPayGeneralSignatories
+                    ->pluck('clearanceSignatory.name')
+                    ->filter()
+                    ->implode(', '),
+            ]);
+        });
+    }
+
+    /**
      * Once every Final Pay Checklist assignment is approved, the whole
      * offboarding process is complete. Guarded the same way as the regular
      * -> final-pay trigger: locked inside a transaction so two final-pay
@@ -245,6 +428,22 @@ class ChecklistCompletionService
         $allFinalPayApproved = $finalPayApprovers->clone()->exists()
             && $finalPayApprovers->clone()->where('status', '!=', 'approved')->doesntExist();
 
+        // Gives the General Signatory track's own Final Pay tier a chance
+        // to attach (or self-heal past, if none is configured) right now —
+        // safe/idempotent, see its own docblock. Without this, a request
+        // whose General Signatory track never independently triggered this
+        // (e.g. zero General Signatories configured at all, so no approval
+        // event ever fires `checkRegularGeneralSignatoriesCompletion()`)
+        // would leave `general_signatory_final_pay_notified_at` null
+        // forever, permanently blocking `allGeneralSignatoriesFullyCleared()`
+        // below.
+        $this->attachFinalPayGeneralSignatoriesIfReady($offboardingRequest);
+
+        // That call updates a separately-fetched instance internally, not
+        // this method's own `$offboardingRequest` — refreshed here so the
+        // check below sees the lock it may have just set.
+        $offboardingRequest->refresh();
+
         // Defense in depth alongside the same check in
         // `checkRegularChecklistsCompletion()` above: the Final Pay
         // Checklist is normally never even attached until every General
@@ -252,7 +451,7 @@ class ChecklistCompletionService
         // the time any Final Pay checklist exists at all — but the request
         // must never be marked `completed` while one is still outstanding,
         // regardless of which path got a Final Pay checklist approved.
-        if (! $allFinalPayApproved || ! $this->allGeneralSignatoriesApproved($offboardingRequest)) {
+        if (! $allFinalPayApproved || ! $this->allGeneralSignatoriesFullyCleared($offboardingRequest)) {
             return;
         }
 
@@ -279,18 +478,57 @@ class ChecklistCompletionService
     }
 
     /**
-     * Whether every General Signatory snapshotted onto this request at
-     * creation time (`ChecklistApprovalNotifier::notifyGeneralSignatories()`)
-     * has approved — trivially true for a request with none at all, so this
-     * never changes behavior for the common case where no General
-     * Signatory is configured. Consulted by both completion gates above
-     * (see their own docblocks) so a still-pending General Signatory always
-     * blocks the Final Pay Checklist from being attached AND blocks the
-     * request from being marked `completed`, no matter which checklist
-     * approval fires last.
+     * Whether every REGULAR (Core/Secondary, non-final-pay) General
+     * Signatory snapshotted onto this request has approved — trivially true
+     * for a request with none at all, so this never changes behavior for
+     * the common case where no General Signatory is configured. For a Sync
+     * request, also requires `general_signatory_secondary_notified_at` to
+     * already be set: without it, "no unapproved row exists" would
+     * vacuously read true over the Core-only rows while Secondary hasn't
+     * even been attached yet, wrongly treating the regular tier as cleared
+     * (see `attachFinalPayGeneralSignatoriesIfReady()`'s own docblock for
+     * the race this closes). Consulted by both the checklist-side
+     * `attachFinalPayChecklistsIfReady()` (gates the Final Pay CHECKLIST)
+     * and this class's own `attachFinalPayGeneralSignatoriesIfReady()`
+     * (gates the General Signatory track's own, independent Final Pay
+     * tier) — the two tracks share this one "regular General Signatory
+     * clearance" precondition, kept otherwise independent of each other.
      */
-    private function allGeneralSignatoriesApproved(OffboardingRequest $offboardingRequest): bool
+    private function allRegularGeneralSignatoriesApproved(OffboardingRequest $offboardingRequest): bool
     {
+        if ($offboardingRequest->approval_mode === 'sync' && $offboardingRequest->general_signatory_secondary_notified_at === null) {
+            return false;
+        }
+
+        return $offboardingRequest->generalSignatoryApprovals()
+            ->where('is_final_pay_signatory', false)
+            ->where('status', '!=', 'approved')
+            ->doesntExist();
+    }
+
+    /**
+     * Whether EVERY General Signatory snapshotted onto this request — every
+     * tier, Core/Secondary/Final Pay alike — has approved, AND the General
+     * Signatory track's own Final Pay tier has already been resolved
+     * (`general_signatory_final_pay_notified_at` is set, whether or not
+     * there turned out to be any Final-Pay-tier signatory to attach).
+     * Without that second condition, a request with a still-pending
+     * Final-Pay-tier General Signatory that simply hasn't been attached YET
+     * would otherwise read as "all approved" (vacuously, since its row
+     * doesn't exist to contradict that) and let `checkFinalPayCompletion()`
+     * below mark the request `completed` prematurely. Consulted only by
+     * `checkFinalPayCompletion()`, which defensively re-runs
+     * `attachFinalPayGeneralSignatoriesIfReady()` immediately beforehand so
+     * this can resolve correctly even for a request whose General
+     * Signatory track was never separately triggered (e.g. zero General
+     * Signatories configured at all).
+     */
+    private function allGeneralSignatoriesFullyCleared(OffboardingRequest $offboardingRequest): bool
+    {
+        if ($offboardingRequest->general_signatory_final_pay_notified_at === null) {
+            return false;
+        }
+
         return $offboardingRequest->generalSignatoryApprovals()
             ->where('status', '!=', 'approved')
             ->doesntExist();

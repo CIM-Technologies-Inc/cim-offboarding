@@ -8,9 +8,18 @@
                             <h4 class="text-xl font-semibold text-gray-800 dark:text-white/90" x-text="viewing.clearanceSignatoryName"></h4>
                             <p class="text-sm text-gray-500 dark:text-gray-400" x-text="viewing.clearanceSignatoryCode"></p>
                         </div>
-                        <span class="shrink-0 rounded-full px-2.5 py-1 text-xs font-medium"
-                            :class="viewing.isActive ? 'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]' : 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'"
-                            x-text="viewing.isActive ? 'Active' : 'Inactive'"></span>
+                        <div class="flex shrink-0 flex-col items-end gap-1.5">
+                            <span class="rounded-full px-2.5 py-1 text-xs font-medium"
+                                :class="viewing.isActive ? 'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]' : 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'"
+                                x-text="viewing.isActive ? 'Active' : 'Inactive'"></span>
+                            <span class="rounded-full px-2.5 py-1 text-xs font-medium"
+                                :class="{
+                                    'bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400': viewing.classification === 'final_pay',
+                                    'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400': viewing.classification === 'secondary',
+                                    'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]': !viewing.classification || viewing.classification === 'primary',
+                                }"
+                                x-text="viewing.classification === 'final_pay' ? 'Final Pay' : (viewing.classification === 'secondary' ? 'Secondary' : 'Core')"></span>
+                        </div>
                     </div>
 
                     <h5 class="mb-2 mt-6 text-sm font-semibold text-gray-800 dark:text-white/90">

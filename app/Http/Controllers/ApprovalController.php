@@ -52,7 +52,7 @@ class ApprovalController extends Controller
      */
     private const MISSING_SIGNATURE_MESSAGE = 'Please upload your e-signature before approving checklist.';
 
-    public function index(): View
+    public function index(Request $request): View
     {
         $user = auth()->user();
         $employee = $user->employee;
@@ -171,6 +171,14 @@ class ApprovalController extends Controller
                     'dueDateReached' => $assignment->hasReachedDueDate(),
 
                     'name' => $request->employee->name,
+                    // Discrete name parts alongside `name` — feeds the
+                    // Approvals page's Search field (see `index.blade.php`),
+                    // which matches First/Last/Middle Name and Employee
+                    // Number individually rather than relying solely on the
+                    // combined `name` string.
+                    'firstName' => $request->employee->firstName,
+                    'lastName' => $request->employee->lastName,
+                    'middleName' => $request->employee->middleName,
                     'employeeCode' => $request->employee->employee_code,
                     'department' => $request->employee->department,
                     'designation' => $request->employee->designation,
@@ -341,11 +349,66 @@ class ApprovalController extends Controller
         $approvals = $this->groupIntoCombinedApprovals($rows, $combineChecklists)
             ->concat($this->buildGeneralSignatoryApprovals($user));
 
+        // Filter dropdown options, dynamically sourced from whatever's
+        // actually on THIS admin/HR user's own queue right now (not a
+        // separate query against every employee/checklist template in the
+        // system) — never hard-coded, and always in sync with what could
+        // possibly match. Computed from the full, unfiltered set below so
+        // the dropdowns never shrink to only the options still matching the
+        // filters currently applied.
+        $departments = $approvals->pluck('department')->filter()->unique()->sort()->values();
+        $checklistTitles = $approvals->pluck('checklistTemplates')->flatten()->filter()->unique()->sort()->values();
+
+        // Status/Department/Checklist Title are applied server-side (GET
+        // query params, same convention as `OffboardeeController::index()`'s
+        // own Status/Department filter) — a pure post-filter over the
+        // already-fully-computed `$approvals` collection above, so none of
+        // the assignment/grouping/permission logic that produced it is ever
+        // touched. The Search field itself stays client-side (Alpine, in
+        // the view) for instant results, same split as the Offboardee page.
+        $statusFilter = (string) $request->query('status', '');
+        $departmentFilter = (string) $request->query('department', '');
+        $checklistFilter = (string) $request->query('checklist', '');
+
+        if ($statusFilter !== '') {
+            // Reuses each card's own already-computed `displayStatus`/
+            // `isOverdue` (see `aggregateDisplayStatus()` and the General
+            // Signatory cards' own hardcoded 'pending') rather than a new
+            // status system — "Completed" maps to `ready_for_approval`
+            // (every item done, awaiting the Department Head's Submit),
+            // the closest this pending-only queue ever gets to "done" since
+            // a genuinely approved assignment leaves the queue entirely;
+            // "Due" maps to the same `isOverdue` flag the card's own badge
+            // already uses.
+            $approvals = $approvals->filter(fn (array $approval) => match ($statusFilter) {
+                'pending' => $approval['displayStatus'] === 'pending',
+                'in_progress' => in_array($approval['displayStatus'], ['in_progress', 'assigned'], true),
+                'completed' => $approval['displayStatus'] === 'ready_for_approval',
+                'due' => $approval['isOverdue'],
+                default => true,
+            });
+        }
+
+        if ($departmentFilter !== '') {
+            $approvals = $approvals->where('department', $departmentFilter);
+        }
+
+        if ($checklistFilter !== '') {
+            $approvals = $approvals->filter(
+                fn (array $approval) => in_array($checklistFilter, $approval['checklistTemplates'], true)
+            );
+        }
+
         return view('pages.approvals.index', [
             'title' => 'Approvals',
-            'approvals' => $approvals,
+            'approvals' => $approvals->values(),
             'combineChecklists' => $combineChecklists,
             'employees' => Employee::where('status', 'active')->orderBy('name')->get(['id', 'name', 'employee_code', 'department']),
+            'departments' => $departments,
+            'checklistTitles' => $checklistTitles,
+            'statusFilter' => $statusFilter,
+            'departmentFilter' => $departmentFilter,
+            'checklistFilter' => $checklistFilter,
         ]);
     }
 
@@ -385,7 +448,7 @@ class ApprovalController extends Controller
             ->where('status', 'pending')
             ->whereHas('offboardingRequest', fn ($q) => $q->where('status', 'pending'))
             ->visibleTo($user)
-            ->with(['offboardingRequest.employee', 'generalSignatory.clearanceSignatory', 'generalSignatory.tasks.signatory'])
+            ->with(['offboardingRequest.employee', 'offboardingRequest.approvers', 'offboardingRequest.generalSignatoryApprovals', 'generalSignatory.clearanceSignatory', 'generalSignatory.tasks.signatory'])
             ->get()
             ->filter(fn (OffboardingRequestGeneralSignatory $assignment) => $assignment->offboardingRequest?->employee);
 
@@ -430,11 +493,37 @@ class ApprovalController extends Controller
                     'kind' => 'general_signatory',
                     'offboardingRequestId' => $request->id,
                     'name' => $request->employee->name,
+                    // Same discrete name parts as the checklist rows above —
+                    // feeds the Approvals page's Search field.
+                    'firstName' => $request->employee->firstName,
+                    'lastName' => $request->employee->lastName,
+                    'middleName' => $request->employee->middleName,
                     'employeeCode' => $request->employee->employee_code,
                     'department' => $request->employee->department,
                     'designation' => $request->employee->designation,
                     'status' => $request->status,
+                    // Always 'pending' — this card only ever shows while
+                    // THIS General Signatory's own action on it is pending
+                    // (see the `where('status', 'pending')` query above),
+                    // matching every other approval card's queue badge.
+                    // Deliberately NOT the request's own overall processing
+                    // status — see `requestStatus`/`requestStatusLabel`
+                    // below for that, a separate field so this queue badge
+                    // (shared by every approval kind on this page) is never
+                    // affected by adding it.
                     'displayStatus' => 'pending',
+                    // The offboarding request's own current overall
+                    // processing status (Pending/In Progress/Overdue/
+                    // Completed/etc.) — see `OffboardingRequest::displayStatus()`,
+                    // the same computed value the Admin/HR Offboarding
+                    // Status page already shows, reused as-is (not
+                    // recomputed) so a General Signatory sees this without
+                    // navigating there. `requestStatusLabel` uses the exact
+                    // same "ucfirst + underscores to spaces" convention
+                    // already applied to this same value elsewhere (see
+                    // `ChecklistApprovalNotifier::notifyOffboardee()`).
+                    'requestStatus' => $request->displayStatus(),
+                    'requestStatusLabel' => ucfirst(str_replace('_', ' ', $request->displayStatus())),
                     // Already a display-ready title, frozen at creation
                     // time — see `OffboardingRequestController::store()`.
                     'reason' => $request->reason,
@@ -540,6 +629,9 @@ class ApprovalController extends Controller
                     'offboardingRequestId' => $first['offboardingRequestId'],
                     'approverEmployeeId' => $first['approverEmployeeId'],
                     'name' => $first['name'],
+                    'firstName' => $first['firstName'],
+                    'lastName' => $first['lastName'],
+                    'middleName' => $first['middleName'],
                     'employeeCode' => $first['employeeCode'],
                     'department' => $first['department'],
                     'designation' => $first['designation'],

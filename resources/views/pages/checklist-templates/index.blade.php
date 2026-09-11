@@ -39,6 +39,9 @@
                         <th class="px-5 py-3 text-left sm:px-6">
                             <p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Status</p>
                         </th>
+                        <th class="px-5 py-3 text-left sm:px-6">
+                            <p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Priority</p>
+                        </th>
                         <th class="px-5 py-3 text-right sm:px-6">
                             <p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Actions</p>
                         </th>
@@ -46,6 +49,24 @@
                 </thead>
                 <tbody>
                     @forelse ($templates as $template)
+                        @php
+                            // Display-only classification — reads the Sync
+                            // workflow's existing `is_final_pay_checklist`/
+                            // `sequence_type` columns (see
+                            // `ChecklistCompletionService::checkPrimaryChecklistsCompletion()`
+                            // for where these actually drive behavior) without
+                            // changing or duplicating that logic here. "Core"
+                            // is this page's own label for a `sequence_type`
+                            // of 'primary' — the underlying value is unchanged.
+                            $priorityLabel = $template->is_final_pay_checklist
+                                ? 'Final Pay'
+                                : ($template->sequence_type === 'secondary' ? 'Secondary' : 'Core');
+                            $priorityClass = match (true) {
+                                $template->is_final_pay_checklist => 'bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400',
+                                $template->sequence_type === 'secondary' => 'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400',
+                                default => 'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]',
+                            };
+                        @endphp
                         <tr class="border-b border-gray-100 dark:border-gray-800">
                             <td class="px-5 py-4 sm:px-6">
                                 <span class="block font-medium text-gray-800 text-theme-sm dark:text-white/90">
@@ -79,6 +100,11 @@
                                         {{ $template->is_active ? 'Active' : 'Inactive' }}
                                     </span>
                                 </form>
+                            </td>
+                            <td class="px-5 py-4 sm:px-6">
+                                <span class="rounded-full px-2.5 py-1 text-xs font-medium {{ $priorityClass }}">
+                                    {{ $priorityLabel }}
+                                </span>
                             </td>
                             <td class="px-5 py-4 text-right sm:px-6">
                                 <div class="flex items-center justify-end gap-2">
@@ -146,7 +172,7 @@
                         </tr>
                     @empty
                         <tr>
-                            <td colspan="7" class="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
+                            <td colspan="8" class="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
                                 No checklist templates yet. Click "New Checklist" to create one.
                             </td>
                         </tr>
@@ -189,6 +215,9 @@
                         <th class="px-5 py-3 text-left sm:px-6">
                             <p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Status</p>
                         </th>
+                        <th class="px-5 py-3 text-left sm:px-6">
+                            <p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Priority</p>
+                        </th>
                         <th class="px-5 py-3 text-right sm:px-6">
                             <p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Actions</p>
                         </th>
@@ -198,6 +227,17 @@
                     @forelse ($generalSignatories as $generalSignatory)
                         @php
                             $assigneeNames = $generalSignatory->tasks->pluck('signatory.name')->filter()->unique()->values();
+                            $gsClassification = $generalSignatory->is_final_pay_signatory
+                                ? 'final_pay'
+                                : ($generalSignatory->sequence_type === 'secondary' ? 'secondary' : 'primary');
+                            $gsPriorityLabel = $generalSignatory->is_final_pay_signatory
+                                ? 'Final Pay'
+                                : ($generalSignatory->sequence_type === 'secondary' ? 'Secondary' : 'Core');
+                            $gsPriorityClass = match (true) {
+                                $generalSignatory->is_final_pay_signatory => 'bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400',
+                                $generalSignatory->sequence_type === 'secondary' => 'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400',
+                                default => 'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]',
+                            };
                         @endphp
                         <tr class="border-b border-gray-100 dark:border-gray-800">
                             <td class="px-5 py-4 sm:px-6">
@@ -230,6 +270,11 @@
                                     </span>
                                 </form>
                             </td>
+                            <td class="px-5 py-4 sm:px-6">
+                                <span class="rounded-full px-2.5 py-1 text-xs font-medium {{ $gsPriorityClass }}">
+                                    {{ $gsPriorityLabel }}
+                                </span>
+                            </td>
                             <td class="px-5 py-4 text-right sm:px-6">
                                 <div class="flex items-center justify-end gap-2" x-data>
                                     <div class="group relative">
@@ -238,6 +283,7 @@
                                                 clearanceSignatoryName: @js($generalSignatory->clearanceSignatory->name ?? '—'),
                                                 clearanceSignatoryCode: @js($generalSignatory->clearanceSignatory->employee_code ?? ''),
                                                 isActive: @js($generalSignatory->is_active),
+                                                classification: @js($gsClassification),
                                                 tasks: @js($generalSignatory->tasks->map(fn ($task) => ['id' => $task->id, 'title' => $task->title, 'signatoryName' => $task->signatory->name ?? null])),
                                             })"
                                             class="flex h-9 w-9 items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100 hover:text-brand-500 dark:text-gray-400 dark:hover:bg-white/[0.03] dark:hover:text-brand-400">
@@ -258,6 +304,7 @@
                                                 record: {
                                                     id: {{ $generalSignatory->id }},
                                                     clearanceSignatoryId: @js($generalSignatory->clearance_signatory_id),
+                                                    classification: @js($gsClassification),
                                                     tasks: @js($generalSignatory->tasks->map(fn ($task) => ['id' => $task->id, 'title' => $task->title, 'signatory_id' => $task->signatory_id])),
                                                 },
                                             })"
@@ -310,7 +357,7 @@
                         </tr>
                     @empty
                         <tr>
-                            <td colspan="5" class="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
+                            <td colspan="6" class="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
                                 No General Signatory records yet. Click "Add General Signatory" to create one.
                             </td>
                         </tr>

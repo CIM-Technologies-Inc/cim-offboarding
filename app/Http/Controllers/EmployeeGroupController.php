@@ -26,7 +26,7 @@ class EmployeeGroupController extends Controller
                 ->get(),
             'employees' => Employee::with('employeeGroup.groupHead')
                 ->orderBy('name')
-                ->get(['id', 'name', 'email', 'employee_code', 'department', 'designation', 'employee_group_id', 'is_task_assignee', 'status']),
+                ->get(['id', 'name', 'firstName', 'lastName', 'middleName', 'email', 'employee_code', 'department', 'designation', 'position', 'employee_group_id', 'is_task_assignee', 'status']),
         ]);
     }
 
@@ -402,10 +402,26 @@ class EmployeeGroupController extends Controller
 
                 $employee->fill([
                     'name' => $row['name'],
+                    // Discrete name parts alongside the combined `name`
+                    // above — same title-cased values already computed for
+                    // it in `validateRows()`, just also kept as their own
+                    // columns. `firstName`/`lastName` are required by
+                    // `validateRows()`, so these are never both blank for a
+                    // valid row; `middleName` is optional and correctly
+                    // stored as null when the file leaves it blank.
+                    'firstName' => $row['firstName'] ?: null,
+                    'lastName' => $row['lastName'] ?: null,
+                    'middleName' => $row['middleName'] ?: null,
                     'email' => $row['email'],
                     'personal_email' => $row['personalEmail'] ?: null,
                     'department' => $row['department'],
                     'designation' => $row['position'] ?: '',
+                    // A separate column from `designation` above (which
+                    // every existing reader — the Employee Directory's own
+                    // "Position" column, Department Head eligibility, etc.
+                    // — keeps reading unchanged) so this new column and its
+                    // established sibling can never drift apart on import.
+                    'position' => $row['position'] ?: null,
                     'sup_one' => $row['supOne'] ?: null,
                     'sup_two' => $row['supTwo'] ?: null,
                     'head' => $row['head'] ?: null,
@@ -577,13 +593,19 @@ class EmployeeGroupController extends Controller
                 $errors[] = "Row {$rowNumber}: headID \"{$values['headID']}\" does not match any employeeNo in this file";
             }
 
-            $nameParts = array_filter([
-                $values['firstName'] !== '' ? Str::title(strtolower($values['firstName'])) : null,
-                $values['middleName'] !== '' ? Str::title(strtolower($values['middleName'])) : null,
-                $values['lastName'] !== '' ? Str::title(strtolower($values['lastName'])) : null,
-            ]);
+            // Title-cased in place (not just for `name` below) so the
+            // discrete `firstName`/`middleName`/`lastName` columns `import()`
+            // saves are consistently formatted the same way `name` always
+            // has been, regardless of how the source file capitalized them.
+            $values['firstName'] = $values['firstName'] !== '' ? Str::title(strtolower($values['firstName'])) : '';
+            $values['middleName'] = $values['middleName'] !== '' ? Str::title(strtolower($values['middleName'])) : '';
+            $values['lastName'] = $values['lastName'] !== '' ? Str::title(strtolower($values['lastName'])) : '';
 
-            $values['name'] = implode(' ', $nameParts);
+            $values['name'] = implode(' ', array_filter([
+                $values['firstName'] ?: null,
+                $values['middleName'] ?: null,
+                $values['lastName'] ?: null,
+            ]));
             $validRows[] = $values;
         }
 

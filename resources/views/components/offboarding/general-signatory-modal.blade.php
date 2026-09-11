@@ -1,6 +1,6 @@
 @props(['employees' => [], 'employeeGroups' => []])
 
-<div x-data="generalSignatoryModal(@js($employees), @js($employeeGroups), @js(old('clearance_signatory_id')), @js(old('tasks', [])), @js(old('_general_signatory_id')), @js($errors->any() ? $errors->first() : null))"
+<div x-data="generalSignatoryModal(@js($employees), @js($employeeGroups), @js(old('clearance_signatory_id')), @js(old('tasks', [])), @js(old('_general_signatory_id')), @js($errors->any() ? $errors->first() : null), @js(old('checklist_classification', 'primary')))"
     @open-general-signatory-modal.window="openModal($event.detail)">
     <x-ui.modal x-data="{ open: false }" @open-general-signatory-modal.window="open = true" :isOpen="false" class="w-full sm:w-[70vw] sm:max-w-[70vw]">
         <div class="relative max-h-[85vh] w-full overflow-y-auto rounded-3xl bg-white p-6 dark:bg-gray-900 lg:p-8" x-cloak>
@@ -54,6 +54,35 @@
                             Task Assignees below are automatically restricted to <span x-text="currentGroupName()"></span>'s group members (Employee Master).
                         </p>
                     </template>
+                </div>
+
+                <div class="mt-6">
+                    <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                        Checklist Priority/Sequence
+                    </label>
+                    <div class="flex flex-wrap items-center gap-x-6 gap-y-2">
+                        <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
+                            <input type="radio" name="checklist_classification" value="primary" required
+                                x-model="classification"
+                                class="h-4 w-4 accent-brand-500" />
+                            Core
+                        </label>
+                        <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
+                            <input type="radio" name="checklist_classification" value="secondary"
+                                x-model="classification"
+                                class="h-4 w-4 accent-brand-500" />
+                            Secondary
+                        </label>
+                        <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
+                            <input type="radio" name="checklist_classification" value="final_pay"
+                                x-model="classification"
+                                class="h-4 w-4 accent-brand-500" />
+                            For Final Pay Checklist
+                        </label>
+                    </div>
+                    <p class="mt-1.5 text-xs text-gray-400">
+                        Determines when this General Signatory is notified — Core first, then Secondary, then Final Pay — following the same Sequential/Parallel Approval Workflow configured for the Offboarding Request.
+                    </p>
                 </div>
 
                 <div class="mt-7">
@@ -144,12 +173,13 @@
 </div>
 
 <script>
-    function generalSignatoryModal(employees, employeeGroups, oldClearanceSignatoryId, oldTasks, oldEditingId, flashError) {
+    function generalSignatoryModal(employees, employeeGroups, oldClearanceSignatoryId, oldTasks, oldEditingId, flashError, oldClassification) {
         return {
             editingId: null,
             clearanceSignatoryId: '',
             clearanceSignatoryQuery: '',
             clearanceSignatoryOpen: false,
+            classification: 'primary',
             tasks: [],
             saving: false,
             employees: employees,
@@ -197,7 +227,7 @@
                 // is live first.
                 this.$nextTick(() => {
                     const detail = oldEditingId
-                        ? { mode: 'edit', record: { id: oldEditingId, clearanceSignatoryId: oldClearanceSignatoryId, tasks: oldTasks || [] } }
+                        ? { mode: 'edit', record: { id: oldEditingId, clearanceSignatoryId: oldClearanceSignatoryId, tasks: oldTasks || [], classification: oldClassification } }
                         : { mode: 'create' };
 
                     this.$dispatch('open-general-signatory-modal', detail);
@@ -205,6 +235,7 @@
                     if (!oldEditingId) {
                         this.clearanceSignatoryId = oldClearanceSignatoryId ? String(oldClearanceSignatoryId) : '';
                         this.clearanceSignatoryQuery = this.clearanceLabelFor(this.clearanceSignatoryId);
+                        this.classification = oldClassification || 'primary';
                         this.tasks = (oldTasks && oldTasks.length ? oldTasks : [{ title: '', signatory_id: '' }]).map((t) => ({
                             id: t.id || null,
                             title: t.title || '',
@@ -230,6 +261,7 @@
                     this.editingId = detail.record.id;
                     this.clearanceSignatoryId = detail.record.clearanceSignatoryId ? String(detail.record.clearanceSignatoryId) : '';
                     this.clearanceSignatoryQuery = this.clearanceLabelFor(this.clearanceSignatoryId);
+                    this.classification = detail.record.classification || 'primary';
                     const source = detail.record.tasks && detail.record.tasks.length ? detail.record.tasks : [{ title: '', signatory_id: '' }];
                     this.tasks = source.map((t) => ({
                         id: t.id || null,
@@ -242,6 +274,7 @@
                     this.editingId = null;
                     this.clearanceSignatoryId = '';
                     this.clearanceSignatoryQuery = '';
+                    this.classification = 'primary';
                     this.tasks = [{ id: null, title: '', signatory_id: '', signatory_query: '', signatory_open: false }];
                 }
                 this.clearanceSignatoryOpen = false;

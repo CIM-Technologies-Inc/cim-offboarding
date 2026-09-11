@@ -68,7 +68,7 @@ class GeneralSignatoryApprovalController extends Controller
      * Signatory (or an admin), same authorization shape as
      * `ApprovalController::authorizeAssignment()`.
      */
-    public function approve(OffboardingRequestGeneralSignatory $generalSignatoryApproval): RedirectResponse
+    public function approve(Request $request, OffboardingRequestGeneralSignatory $generalSignatoryApproval): RedirectResponse
     {
         $this->authorizeAssignment($generalSignatoryApproval);
 
@@ -78,7 +78,13 @@ class GeneralSignatoryApprovalController extends Controller
 
         abort_unless($generalSignatoryApproval->status === 'pending', 422, 'This has already been actioned.');
 
-        DB::transaction(function () use ($generalSignatoryApproval) {
+        // Same shape/limit as `ApprovalController::approve()`'s own
+        // `remarks` input — optional, never required to clear the request.
+        $validated = $request->validate([
+            'remarks' => ['nullable', 'string', 'max:2000'],
+        ]);
+
+        DB::transaction(function () use ($generalSignatoryApproval, $validated) {
             $locked = OffboardingRequestGeneralSignatory::whereKey($generalSignatoryApproval->id)
                 ->where('status', 'pending')
                 ->lockForUpdate()
@@ -86,7 +92,7 @@ class GeneralSignatoryApprovalController extends Controller
 
             abort_if(! $locked, 422, 'This has already been actioned.');
 
-            $this->finalizeApproval($locked, auth()->user());
+            $this->finalizeApproval($locked, auth()->user(), $validated['remarks'] ?? null);
         });
 
         return back()->with('success', $generalSignatoryApproval->offboardingRequest->employee->name . '\'s offboarding request was cleared.');
@@ -291,12 +297,24 @@ class GeneralSignatoryApprovalController extends Controller
         return ['confirm', $assignment];
     }
 
-    private function finalizeApproval(OffboardingRequestGeneralSignatory $assignment, ?User $actor): void
+    /**
+     * `$remarks` is only ever populated from the in-app Submit form
+     * (`approve()`) — the emailed one-click link (`confirmEmailApproval()`)
+     * has no form to collect one, so it always passes null here, leaving
+     * `remarks` unset for that path exactly like every other optional field
+     * this method doesn't receive from the email flow. Stored on THIS
+     * assignment's own row only — every other approver/signatory's remarks
+     * (`OffboardingRequestApprover.approval_remarks`,
+     * `OffboardingRequestFinalApproval.remarks`) live on their own separate
+     * rows and are never touched here.
+     */
+    private function finalizeApproval(OffboardingRequestGeneralSignatory $assignment, ?User $actor, ?string $remarks = null): void
     {
         $assignment->update([
             'status' => 'approved',
             'approved_at' => now(),
             'approved_by' => $actor?->id,
+            'remarks' => $remarks,
         ]);
 
         $offboardingRequest = $assignment->offboardingRequest;
@@ -306,19 +324,23 @@ class GeneralSignatoryApprovalController extends Controller
             'user_id' => $actor?->id,
             'action' => 'general_signatory_approved',
             'status' => $offboardingRequest->status,
-            'comment' => 'Cleared by General Signatory: ' . $signatoryName,
+            'comment' => 'Cleared by General Signatory: ' . $signatoryName . ($remarks ? '. Remarks: ' . $remarks : ''),
         ]);
 
         // A General Signatory can be the LAST outstanding requirement —
         // every regular (and even Final Pay) checklist may already be fully
         // approved while this was still pending, since the two tracks are
-        // actioned independently. Both completion gates below are already
+        // actioned independently. All completion gates below are already
         // idempotent/self-guarding (see `ChecklistCompletionService`'s own
-        // docblocks) and simply no-op if their own checklist-side
-        // precondition isn't ALSO satisfied yet, so it's always safe to
-        // re-check both here rather than only from the checklist side.
+        // docblocks) and simply no-op if their own precondition isn't ALSO
+        // satisfied yet, so it's always safe to re-check them all here
+        // rather than only from the checklist side.
         $completionService = app(ChecklistCompletionService::class);
         $completionService->checkRegularChecklistsCompletion($offboardingRequest);
+        // Advances THIS General Signatory's own Core -> Secondary -> Final
+        // Pay staging — the actual trigger for that track, since it only
+        // ever progresses off a General Signatory's own approval.
+        $completionService->checkRegularGeneralSignatoriesCompletion($offboardingRequest);
         $completionService->checkFinalPayCompletion($offboardingRequest);
     }
 

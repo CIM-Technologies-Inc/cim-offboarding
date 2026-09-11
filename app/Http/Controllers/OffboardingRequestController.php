@@ -6,6 +6,7 @@ use App\Models\ChecklistItemScheduledSend;
 use App\Models\ChecklistTemplate;
 use App\Models\Employee;
 use App\Models\FinalApprover;
+use App\Models\GeneralSignatory;
 use App\Models\OffboardingRequest;
 use App\Models\SeparationType;
 use App\Models\User;
@@ -277,6 +278,12 @@ class OffboardingRequestController extends Controller
                 // it already set from before the reset and never re-attach
                 // Secondary checklists at all.
                 'secondary_notified_at' => null,
+                // Same rationale, for the independent General Signatory
+                // track's own Core -> Secondary -> Final Pay locks (see
+                // `ChecklistCompletionService::checkPrimaryGeneralSignatoriesCompletion()`/
+                // `attachFinalPayGeneralSignatoriesIfReady()`).
+                'general_signatory_secondary_notified_at' => null,
+                'general_signatory_final_pay_notified_at' => null,
                 'remarks' => null,
                 'final_approver_employee_id' => $activeFinalApprover->employee_id,
             ]);
@@ -402,9 +409,36 @@ class OffboardingRequestController extends Controller
         );
 
         // General Signatories are a completely independent, checklist-free
-        // workflow (see `GeneralSignatory`'s own docblock) — every active
-        // one is snapshotted onto this request and notified regardless of
-        // department, Immediate Head, or any of the checklist logic above.
-        app(ChecklistApprovalNotifier::class)->notifyGeneralSignatories($offboardingRequest);
+        // workflow (see `GeneralSignatory`'s own docblock), but stage
+        // through the same Core -> Secondary -> Final Pay pipeline as
+        // checklists once classified — mirrors the checklist template
+        // query/staging immediately above, just against `GeneralSignatory`
+        // instead of `ChecklistTemplate`, and completely independent of
+        // department/Immediate Head (a General Signatory applies
+        // company-wide).
+        $generalSignatoriesQuery = GeneralSignatory::where('is_active', true)
+            ->where('is_final_pay_signatory', false)
+            ->whereNotIn('id', $offboardingRequest->generalSignatories()->pluck('general_signatories.id'))
+            ->with(['clearanceSignatory', 'tasks.signatory']);
+
+        // Sync: only Core is attached/notified now — Secondary and the
+        // Final Pay tier only follow once the required prior stage is
+        // approved (see `ChecklistCompletionService::checkPrimaryGeneralSignatoriesCompletion()`).
+        // Async: Core + Secondary attach/notify together immediately; only
+        // the Final Pay tier is deferred.
+        $generalSignatoriesToAttach = $isSyncMode
+            ? (clone $generalSignatoriesQuery)->where('sequence_type', ChecklistTemplate::SEQUENCE_TYPE_PRIMARY)->get()
+            : $generalSignatoriesQuery->get();
+
+        app(ChecklistApprovalNotifier::class)->notifyGeneralSignatories($offboardingRequest, $generalSignatoriesToAttach);
+
+        if ($isSyncMode) {
+            // Same self-heal rationale as the checklist block above: a
+            // company with zero Core General Signatories configured
+            // advances straight to Secondary (and beyond) rather than
+            // stalling forever waiting for a Core approval that can never
+            // happen.
+            app(ChecklistCompletionService::class)->checkRegularGeneralSignatoriesCompletion($offboardingRequest);
+        }
     }
 }

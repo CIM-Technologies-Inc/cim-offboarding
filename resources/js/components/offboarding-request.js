@@ -1,6 +1,12 @@
 export function offboardingRequestForm(flashSuccess = null, flashError = null) {
   return {
     submitting: false,
+    // Guards the confirmation dialog (see `new-request-modal.blade.php`'s
+    // `@submit` handler) so it only ever intercepts the FIRST submit
+    // attempt — once the admin confirms, this flips true and the form's
+    // own `requestSubmit()` re-fires the native submit, which this same
+    // guard then lets straight through.
+    confirmed: false,
     init() {
       if (flashSuccess) {
         this.notify('success', flashSuccess);

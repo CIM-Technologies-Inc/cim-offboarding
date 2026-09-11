@@ -11,6 +11,8 @@ class GeneralSignatory extends Model
     protected $fillable = [
         'clearance_signatory_id',
         'is_active',
+        'sequence_type',
+        'is_final_pay_signatory',
         'created_by',
     ];
 
@@ -18,6 +20,7 @@ class GeneralSignatory extends Model
     {
         return [
             'is_active' => 'boolean',
+            'is_final_pay_signatory' => 'boolean',
         ];
     }
 

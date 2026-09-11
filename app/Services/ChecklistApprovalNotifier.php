@@ -443,22 +443,32 @@ class ChecklistApprovalNotifier
     }
 
     /**
-     * Notifies every currently-active General Signatory that this
-     * offboarding request now exists, and snapshots them onto the request
-     * (via `generalSignatories()`) so they appear on its Clearance Form as
-     * an additional, checklist-independent signatory — see
-     * `GeneralSignatory`'s own docblock for why this feature deliberately
-     * never touches `ChecklistTemplate`/`OffboardingRequestApprover` at
-     * all: no checklist is ever created just to carry a General Signatory.
-     * Frozen at snapshot time exactly like `checklistTemplates()` is for
-     * regular checklists, so a General Signatory added, edited, or
-     * deactivated later never changes who already appears on an existing
-     * request's Clearance Form — and the pivot row's mere existence is
-     * what guards against ever double-attaching or double-notifying the
-     * same General Signatory for the same request, even if this method
-     * somehow ran twice.
+     * Attaches + notifies the given General Signatories onto this
+     * offboarding request (via `generalSignatories()`) so they appear on
+     * its Clearance Form as additional, checklist-independent signatories —
+     * see `GeneralSignatory`'s own docblock for why this feature
+     * deliberately never touches `ChecklistTemplate`/`OffboardingRequestApprover`
+     * at all: no checklist is ever created just to carry a General
+     * Signatory. The caller decides WHICH General Signatories to pass —
+     * exactly like `attachAndNotify()` takes an explicit `$templates`
+     * collection for checklists — so this method itself has no opinion on
+     * Sync/Async staging; see `OffboardingRequestController::notifyDepartmentHeads()`
+     * and `ChecklistCompletionService::checkPrimaryGeneralSignatoriesCompletion()`/
+     * `attachFinalPayGeneralSignatoriesIfReady()` for where that staging
+     * decision is made.
      *
-     * For each newly-snapshotted General Signatory: ensures they have a
+     * Each attached row snapshots that General Signatory's CURRENT
+     * `sequence_type`/`is_final_pay_signatory` onto the pivot row at this
+     * exact moment — frozen from then on, so a later edit to the General
+     * Signatory's classification never changes the workflow of a request
+     * it's already attached to. `firstOrCreate()`d by the
+     * `(offboarding_request_id, general_signatory_id)` pair (same
+     * uniqueness the schema already enforces), so the same General
+     * Signatory can never be double-attached or double-notified for the
+     * same request even if this method somehow ran twice with overlapping
+     * input.
+     *
+     * For each newly-attached General Signatory: ensures they have a
      * login account — Approver role only if they're a registered Employee
      * Master Group Head with at least one active member, Employee role
      * otherwise (see `User::findOrCreateGeneralSignatory()`); an
@@ -469,21 +479,30 @@ class ChecklistApprovalNotifier
      * Clearance Form snapshot both happen regardless of whether the email
      * template is configured or the recipient has a usable email address;
      * only the email send itself is skipped in that case.
+     *
+     * @param  Collection<int, GeneralSignatory>  $generalSignatories
      */
-    public function notifyGeneralSignatories(OffboardingRequest $offboardingRequest): void
+    public function notifyGeneralSignatories(OffboardingRequest $offboardingRequest, Collection $generalSignatories): void
     {
-        $alreadyAttachedIds = $offboardingRequest->generalSignatories()->pluck('general_signatories.id');
-
-        $generalSignatories = GeneralSignatory::where('is_active', true)
-            ->whereNotIn('id', $alreadyAttachedIds)
-            ->with(['clearanceSignatory', 'tasks.signatory'])
-            ->get();
-
         if ($generalSignatories->isEmpty()) {
             return;
         }
 
-        $offboardingRequest->generalSignatories()->syncWithoutDetaching($generalSignatories->pluck('id'));
+        $generalSignatories->loadMissing('clearanceSignatory', 'tasks.signatory');
+
+        foreach ($generalSignatories as $generalSignatory) {
+            OffboardingRequestGeneralSignatory::firstOrCreate(
+                [
+                    'offboarding_request_id' => $offboardingRequest->id,
+                    'general_signatory_id' => $generalSignatory->id,
+                ],
+                [
+                    'sequence_type' => $generalSignatory->sequence_type,
+                    'is_final_pay_signatory' => $generalSignatory->is_final_pay_signatory,
+                    'status' => 'pending',
+                ]
+            );
+        }
 
         // Same override-first, frozen-snapshot precedence as
         // `notifyDepartmentHeadsOfNewRequest()` above.
@@ -517,12 +536,12 @@ class ChecklistApprovalNotifier
                 continue;
             }
 
-            // The per-request approval-state row `syncWithoutDetaching()`
-            // above just attached — the same row the Approvals page's
-            // Submit button and `GeneralSignatoryApprovalController` both
-            // act on. Only a still-pending assignment gets an Approve
-            // button; one already cleared (e.g. this notification is being
-            // re-sent) gets none, so the email never offers a dead action.
+            // The per-request approval-state row `firstOrCreate()`d above —
+            // the same row the Approvals page's Submit button and
+            // `GeneralSignatoryApprovalController` both act on. Only a
+            // still-pending assignment gets an Approve button; one already
+            // cleared (e.g. this notification is being re-sent) gets none,
+            // so the email never offers a dead action.
             $assignment = OffboardingRequestGeneralSignatory::where('offboarding_request_id', $offboardingRequest->id)
                 ->where('general_signatory_id', $generalSignatory->id)
                 ->first();
