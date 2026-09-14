@@ -2,10 +2,14 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\ChecklistTemplate;
 use App\Models\Employee;
+use App\Models\GeneralSignatory;
 use App\Models\OffboardingRequest;
+use App\Models\OffboardingRequestApprover;
 use App\Models\SeparationType;
 use Barryvdh\DomPDF\Facade\Pdf;
+use Carbon\Carbon;
 use Illuminate\Contracts\View\View;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
@@ -26,31 +30,50 @@ class ReportController extends Controller
 {
     private const TYPES = ['processing_time', 'pending_cases', 'completion_rates'];
 
+    /**
+     * Valid `group_by` values for the Processing Time report only — meaningless
+     * (ignored) for the other two report types. `none` is the original,
+     * ungrouped, one-row-per-case view.
+     */
+    private const GROUP_BY_OPTIONS = ['none', 'offboardee', 'department', 'checklist', 'separation_type'];
+
     public function index(Request $request): View
     {
         $filters = $this->normalizeFilters($request);
 
         $summary = $this->buildSummary($this->filteredQuery($filters));
-        $rows = $this->buildRows($filters['type'], $this->filteredQuery($filters));
+        $rows = $this->buildRows($filters, $this->filteredQuery($filters));
+        $isGrouped = $filters['type'] === 'processing_time' && $filters['group_by'] !== 'none';
 
         return view('pages.reports.index', [
             'title' => 'Reports',
             'filters' => $filters,
             'summary' => $summary,
             'rows' => $rows,
-            'columns' => $this->columnsFor($filters['type']),
+            'columns' => $isGrouped ? $this->columnsForGrouped($filters['group_by']) : $this->columnsFor($filters['type']),
             'typeLabel' => $this->typeLabel($filters['type']),
             'departments' => Employee::whereNotNull('department')->where('department', '!=', '')
                 ->distinct()->orderBy('department')->pluck('department'),
             'separationTypes' => SeparationType::orderBy('title')->pluck('title'),
+            'checklistTitles' => ChecklistTemplate::orderBy('title')->pluck('title'),
+            // Every employee who has ever been a checklist Clearance
+            // Signatory/Department Head (`OffboardingRequestApprover.employee_id`)
+            // OR a General Signatory's own Clearance Signatory
+            // (`GeneralSignatory.clearance_signatory_id`) — the same two
+            // sources `filteredQuery()`'s own `clearance_signatory` filter
+            // below checks, deduped naturally through the `whereIn`.
+            'clearanceSignatories' => Employee::whereIn('id', OffboardingRequestApprover::whereNotNull('employee_id')
+                ->distinct()->pluck('employee_id')->merge(GeneralSignatory::distinct()->pluck('clearance_signatory_id')))
+                ->orderBy('name')->get(['id', 'name']),
         ]);
     }
 
     public function export(Request $request)
     {
         $filters = $this->normalizeFilters($request);
-        $rows = $this->buildRows($filters['type'], $this->filteredQuery($filters));
-        $columns = $this->columnsFor($filters['type']);
+        $rows = $this->buildRows($filters, $this->filteredQuery($filters));
+        $isGrouped = $filters['type'] === 'processing_time' && $filters['group_by'] !== 'none';
+        $columns = $isGrouped ? $this->columnsForGrouped($filters['group_by']) : $this->columnsFor($filters['type']);
         $format = strtolower((string) $request->query('format', 'csv'));
         $filename = 'offboarding-report-'.$filters['type'].'-'.now()->format('Ymd_His');
 
@@ -62,11 +85,12 @@ class ReportController extends Controller
     }
 
     /**
-     * @return array{type: string, date_from: ?string, date_to: ?string, separation_type: ?string, department: ?string, status: ?string}
+     * @return array{type: string, date_from: ?string, date_to: ?string, separation_type: ?string, department: ?string, status: ?string, checklist_title: ?string, clearance_signatory: ?string, offboardee: ?string, employee_number: ?string, group_by: string}
      */
     private function normalizeFilters(Request $request): array
     {
         $type = $request->query('type');
+        $groupBy = $request->query('group_by');
 
         return [
             'type' => in_array($type, self::TYPES, true) ? $type : 'processing_time',
@@ -79,6 +103,14 @@ class ReportController extends Controller
             // uses, so this filter always means exactly what the rest of
             // the app already means by that word.
             'status' => $request->query('status') ?: null,
+            'checklist_title' => $request->query('checklist_title') ?: null,
+            // The clearance signatory/approver's own Employee id — a select
+            // populated from `$clearanceSignatories` below, never a free-text
+            // name (which could match several people).
+            'clearance_signatory' => $request->query('clearance_signatory') ?: null,
+            'offboardee' => $request->query('offboardee') ?: null,
+            'employee_number' => $request->query('employee_number') ?: null,
+            'group_by' => in_array($groupBy, self::GROUP_BY_OPTIONS, true) ? $groupBy : 'none',
         ];
     }
 
@@ -92,7 +124,15 @@ class ReportController extends Controller
     {
         $query = OffboardingRequest::query()
             ->whereHas('employee')
-            ->with(['employee', 'approvers.checklistTemplate', 'approvers.employee']);
+            ->with([
+                'employee', 'approvers.checklistTemplate', 'approvers.employee', 'finalApproval',
+                // Constrained to the one milestone this report actually
+                // reads (`checklist_completion_date` below) — never pulls
+                // every view/reminder/assignment activity row per request
+                // just to find it.
+                'activities' => fn ($q) => $q->where('action', 'all_checklists_approved'),
+                'generalSignatoryApprovals.generalSignatory.clearanceSignatory',
+            ]);
 
         if ($filters['date_from']) {
             $query->whereDate('created_at', '>=', $filters['date_from']);
@@ -123,16 +163,113 @@ class ReportController extends Controller
             default => null,
         };
 
+        if ($filters['checklist_title']) {
+            $query->whereHas(
+                'approvers.checklistTemplate',
+                fn (Builder $q) => $q->where('title', $filters['checklist_title'])
+            );
+        }
+
+        if ($filters['clearance_signatory']) {
+            // Either kind of clearance signatory this app has — a checklist
+            // Department Head/Clearance Signatory (`OffboardingRequestApprover.employee_id`)
+            // or a General Signatory's own Clearance Signatory — same two
+            // sources `index()`'s own `$clearanceSignatories` dropdown is
+            // built from.
+            $query->where(fn (Builder $q) => $q
+                ->whereHas('approvers.employee', fn (Builder $q2) => $q2->where('employees.id', $filters['clearance_signatory']))
+                ->orWhereHas(
+                    'generalSignatoryApprovals.generalSignatory.clearanceSignatory',
+                    fn (Builder $q2) => $q2->where('employees.id', $filters['clearance_signatory'])
+                ));
+        }
+
+        if ($filters['offboardee']) {
+            $query->whereHas('employee', fn (Builder $q) => $q->where('name', 'like', '%'.$filters['offboardee'].'%'));
+        }
+
+        if ($filters['employee_number']) {
+            $query->whereHas(
+                'employee',
+                fn (Builder $q) => $q->where('employee_code', 'like', '%'.$filters['employee_number'].'%')
+            );
+        }
+
         return $query;
     }
 
-    private function buildRows(string $type, Builder $query): Collection
+    private function buildRows(array $filters, Builder $query): Collection
     {
-        return match ($type) {
+        if ($filters['type'] === 'processing_time' && $filters['group_by'] !== 'none') {
+            return $filters['group_by'] === 'checklist'
+                ? $this->buildProcessingTimeByChecklist($query)
+                : $this->buildProcessingTimeGroupedRows($query, $filters['group_by']);
+        }
+
+        return match ($filters['type']) {
             'pending_cases' => $this->buildPendingCasesRows($query),
             'completion_rates' => $this->buildCompletionRatesRows($query),
             default => $this->buildProcessingTimeRows($query),
         };
+    }
+
+    /**
+     * Processing Time grouped by offboardee, department, or separation
+     * type — each group still uses the same whole-request `created_at` ->
+     * `completed_at` span `buildProcessingTimeRows()`/`computeMetrics()`
+     * already use, just aggregated (count/avg/min/max) instead of shown per
+     * case. "By offboardee" is a group of (usually) one, included for
+     * completeness/consistency with the other three dimensions rather than
+     * as a genuinely different code path.
+     */
+    private function buildProcessingTimeGroupedRows(Builder $query, string $groupBy): Collection
+    {
+        $requests = $query->get();
+
+        $grouped = match ($groupBy) {
+            'offboardee' => $requests->groupBy(fn (OffboardingRequest $r) => $r->employee->name.' ('.$r->employee->employee_code.')'),
+            'department' => $requests->groupBy(fn (OffboardingRequest $r) => $r->employee->department ?: 'Unassigned'),
+            default => $requests->groupBy('reason'),
+        };
+
+        return $grouped
+            ->map(fn (Collection $group, string $label) => ['group_label' => $label] + $this->computeMetrics($group))
+            ->values();
+    }
+
+    /**
+     * Processing Time grouped by Checklist Title — a fundamentally
+     * different metric from the other three grouping dimensions above: a
+     * whole-REQUEST creation-to-completion span is meaningless once you're
+     * asking "how long does THIS checklist take", since a request can carry
+     * several checklists resolved at very different times. Sourced from
+     * `OffboardingRequestApprover` directly (each row's own `assigned_at` ->
+     * `approved_at` span), scoped to the same set of requests the current
+     * filters already narrowed down to, and only rows that have actually
+     * been approved (a still-open checklist has no completed span to
+     * measure yet).
+     */
+    private function buildProcessingTimeByChecklist(Builder $query): Collection
+    {
+        $requestIds = $query->pluck('id');
+
+        return OffboardingRequestApprover::whereIn('offboarding_request_id', $requestIds)
+            ->whereNotNull('approved_at')
+            ->with('checklistTemplate')
+            ->get()
+            ->groupBy(fn (OffboardingRequestApprover $a) => $a->checklistTemplate?->title ?? 'Untitled Checklist')
+            ->map(function (Collection $group, string $title) {
+                $hours = $group->map(fn (OffboardingRequestApprover $a) => (int) abs($a->assigned_at->diffInHours($a->approved_at)));
+
+                return [
+                    'checklist_title' => $title,
+                    'count' => $group->count(),
+                    'avg_processing_time' => $this->hoursLabel((int) round($hours->avg())),
+                    'min_processing_time' => $this->hoursLabel($hours->min()),
+                    'max_processing_time' => $this->hoursLabel($hours->max()),
+                ];
+            })
+            ->values();
     }
 
     /**
@@ -150,25 +287,32 @@ class ReportController extends Controller
     {
         return $query->get()->map(function (OffboardingRequest $r) {
             $completedAt = $r->completed_at;
-            // abs() + (int): this Carbon version's diffInDays() returns a
-            // SIGNED, fractional-day float (negative when the earlier date
-            // calls diffInDays() on a later one in some argument orders) —
-            // always want a plain whole-day count here, regardless of call
-            // order.
-            $processingDays = (int) abs($r->created_at->diffInDays($completedAt ?? now()));
+            $duration = $this->formatDuration($r->created_at, $completedAt ?? now());
+
+            $outstanding = $r->approvers->reject(fn ($a) => in_array($a->status, ['approved', 'declined'], true));
+            $checklistDueDate = $outstanding->pluck('due_at')->filter()->sort()->first();
 
             return [
                 'employee_name' => $r->employee->name,
                 'employee_code' => $r->employee->employee_code,
                 'department' => $r->employee->department,
                 'separation_type' => $r->reason,
+                // Labeled "Clearance Start Date" in `columnsFor()` — the
+                // moment a request is created is also the moment checklists
+                // get attached and the clearance process actually begins
+                // (see `OffboardingRequestController::store()`), so this
+                // single value serves both concepts; kept under its
+                // original key since nothing outside this report reads it.
                 'request_date' => $r->created_at->format('M d, Y'),
                 'resignation_date' => $r->notice_date?->format('M d, Y') ?? '—',
                 'last_working_day' => $r->last_working_day->format('M d, Y'),
+                'checklist_due_date' => $checklistDueDate?->format('M d, Y') ?? '—',
+                'checklist_completion_date' => $r->activities->firstWhere('action', 'all_checklists_approved')?->created_at?->format('M d, Y') ?? '—',
+                'final_approval_date' => $r->finalApproval?->approved_at?->format('M d, Y') ?? '—',
                 'completion_date' => $completedAt?->format('M d, Y') ?? '—',
                 'processing_time_label' => $completedAt
-                    ? $processingDays.' day(s)'
-                    : $processingDays.' day(s) so far',
+                    ? $duration['label']
+                    : $duration['label'].' so far',
                 'status' => $this->statusLabel($r->displayStatus()),
             ];
         });
@@ -190,9 +334,21 @@ class ReportController extends Controller
             ->map(function (OffboardingRequest $r) {
                 $outstanding = $r->approvers->reject(fn ($a) => in_array($a->status, ['approved', 'declined'], true));
 
+                // General Signatories are a separate, checklist-independent
+                // approval track (see `GeneralSignatory`'s own docblock) —
+                // folded in here additively so a request with one attached
+                // still-pending shows up as "assigned" to them too, not just
+                // to its checklist approvers. Degrades to exactly today's
+                // checklist-only behavior for any request with none.
+                $outstandingGs = $r->generalSignatoryApprovals->reject(fn ($g) => $g->status === 'approved');
+                $gsNames = $outstandingGs->pluck('generalSignatory.clearanceSignatory.name')->filter()->unique();
+
                 $pendingStage = $outstanding->pluck('checklistTemplate.title')->filter()->unique()->implode(', ');
-                $assignedApprover = $outstanding->pluck('employee.name')->filter()->unique()->implode(', ');
+                $assignedApprover = $outstanding->pluck('employee.name')->filter()->unique()->merge($gsNames)->unique()->implode(', ');
                 $earliestDue = $outstanding->pluck('due_at')->filter()->sort()->first();
+
+                $approvedCount = $r->approvers->where('status', 'approved')->count();
+                $totalCount = $r->approvers->count();
 
                 return [
                     'employee_name' => $r->employee->name,
@@ -203,6 +359,7 @@ class ReportController extends Controller
                     'last_working_day' => $r->last_working_day->format('M d, Y'),
                     'status' => $this->statusLabel($r->displayStatus()),
                     'pending_stage' => $pendingStage ?: '—',
+                    'checklist_status' => "{$approvedCount}/{$totalCount} cleared",
                     'assigned_approver' => $assignedApprover ?: '—',
                     'due_date' => $earliestDue?->format('M d, Y') ?? '—',
                     // abs() because Carbon's diffInDays() is signed here
@@ -234,13 +391,16 @@ class ReportController extends Controller
     }
 
     /**
-     * Shared by the summary cards (over the whole filtered set) and
-     * `buildCompletionRatesRows()` (per separation-type group) so both
-     * always agree on exactly what counts as completed/overdue/pending and
-     * how average processing time is computed.
+     * Shared by the summary cards (over the whole filtered set),
+     * `buildCompletionRatesRows()` (per separation-type group), and
+     * `buildProcessingTimeGroupedRows()` (per offboardee/department/
+     * separation-type group) so all three always agree on exactly what
+     * counts as completed/overdue/pending and how processing time is
+     * computed — average, minimum, AND maximum, all derived from the same
+     * completed subset's `created_at` -> `completed_at` span.
      *
      * @param  Collection<int, OffboardingRequest>  $requests
-     * @return array{total: int, completed: int, pending_in_progress: int, overdue: int, completion_rate: float, avg_processing_days: ?float}
+     * @return array{total: int, completed: int, pending_in_progress: int, overdue: int, completion_rate: float, avg_processing_days: ?float, min_processing_hours: ?int, max_processing_hours: ?int, avg_processing_time: string, min_processing_time: string, max_processing_time: string}
      */
     private function computeMetrics(Collection $requests): array
     {
@@ -252,9 +412,17 @@ class ReportController extends Controller
         )->count();
         $total = $completedCount + $overdueCount + $pendingInProgressCount;
 
+        // abs() + (int): this Carbon version's diffInDays()/diffInHours()
+        // return a SIGNED, fractional value (negative depending on
+        // call-order in some cases) — always want a plain whole count here.
+        $completedHours = $completed->map(fn (OffboardingRequest $r) => (int) abs($r->created_at->diffInHours($r->completed_at)));
+
         $avgProcessingDays = $completedCount > 0
             ? round($completed->avg(fn (OffboardingRequest $r) => (int) abs($r->created_at->diffInDays($r->completed_at))), 1)
             : null;
+        $minHours = $completedCount > 0 ? $completedHours->min() : null;
+        $maxHours = $completedCount > 0 ? $completedHours->max() : null;
+        $avgHours = $completedCount > 0 ? (int) round($completedHours->avg()) : null;
 
         return [
             'total' => $total,
@@ -263,7 +431,39 @@ class ReportController extends Controller
             'overdue' => $overdueCount,
             'completion_rate' => $total > 0 ? round($completedCount / $total * 100, 1) : 0.0,
             'avg_processing_days' => $avgProcessingDays,
+            'min_processing_hours' => $minHours,
+            'max_processing_hours' => $maxHours,
+            'avg_processing_time' => $this->hoursLabel($avgHours),
+            'min_processing_time' => $this->hoursLabel($minHours),
+            'max_processing_time' => $this->hoursLabel($maxHours),
         ];
+    }
+
+    /**
+     * The single day/hour-splitting formatter every processing-time figure
+     * in this controller renders through — a plain integer hour count in,
+     * an "Xd Yh" (or "—" when there's nothing to show yet) label out.
+     */
+    private function hoursLabel(?int $totalHours): string
+    {
+        if ($totalHours === null) {
+            return '—';
+        }
+
+        $days = intdiv($totalHours, 24);
+        $hours = $totalHours % 24;
+
+        return "{$days}d {$hours}h";
+    }
+
+    /**
+     * @return array{hours: int, label: string}
+     */
+    private function formatDuration(Carbon $from, Carbon $to): array
+    {
+        $totalHours = (int) abs($from->diffInHours($to));
+
+        return ['hours' => $totalHours, 'label' => $this->hoursLabel($totalHours)];
     }
 
     private function buildSummary(Builder $query): array
@@ -290,7 +490,8 @@ class ReportController extends Controller
                 'last_working_day' => 'Last Working Day',
                 'status' => 'Current Status',
                 'pending_stage' => 'Pending Stage / Checklist',
-                'assigned_approver' => 'Assigned Approver',
+                'checklist_status' => 'Checklist Status',
+                'assigned_approver' => 'Assigned Signatory / Approver',
                 'due_date' => 'Due Date',
                 'days_pending' => 'Days Pending',
                 'is_overdue' => 'Overdue',
@@ -309,14 +510,55 @@ class ReportController extends Controller
                 'employee_code' => 'Employee No.',
                 'department' => 'Department',
                 'separation_type' => 'Separation Type',
-                'request_date' => 'Request Date',
+                // Same underlying value as when checklists get attached and
+                // the clearance process actually begins — see this key's
+                // own docblock in `buildProcessingTimeRows()`.
+                'request_date' => 'Clearance Start Date',
                 'resignation_date' => 'Resignation Date',
                 'last_working_day' => 'Last Working Day',
-                'completion_date' => 'Completion Date',
+                'checklist_due_date' => 'Checklist Due Date',
+                'checklist_completion_date' => 'Checklist Completion Date',
+                'final_approval_date' => 'Final Approval Date',
+                'completion_date' => 'Offboarding Completion Date',
                 'processing_time_label' => 'Total Processing Time',
                 'status' => 'Current Status',
             ],
         };
+    }
+
+    /**
+     * Column set for the Processing Time report's grouped views (`group_by`
+     * != 'none') — a completely different shape from `columnsFor()`'s
+     * per-case rows, since each row here is now an aggregate over several
+     * cases. Checklist grouping gets its own shape (`checklist_title` +
+     * `count`, no `total`/`completed` split — see
+     * `buildProcessingTimeByChecklist()`'s own docblock for why it isn't
+     * measuring "completion" the way a whole-request span does).
+     */
+    private function columnsForGrouped(string $groupBy): array
+    {
+        if ($groupBy === 'checklist') {
+            return [
+                'checklist_title' => 'Checklist Title',
+                'count' => 'Approved Count',
+                'avg_processing_time' => 'Avg. Processing Time',
+                'min_processing_time' => 'Min. Processing Time',
+                'max_processing_time' => 'Max. Processing Time',
+            ];
+        }
+
+        return [
+            'group_label' => match ($groupBy) {
+                'department' => 'Department',
+                'separation_type' => 'Separation Type',
+                default => 'Offboardee',
+            },
+            'total' => 'Total Cases',
+            'completed' => 'Completed',
+            'avg_processing_time' => 'Avg. Processing Time',
+            'min_processing_time' => 'Min. Processing Time',
+            'max_processing_time' => 'Max. Processing Time',
+        ];
     }
 
     private function typeLabel(string $type): string

@@ -12,6 +12,11 @@
         'separation_type' => $filters['separation_type'],
         'department' => $filters['department'],
         'status' => $filters['status'],
+        'checklist_title' => $filters['checklist_title'],
+        'clearance_signatory' => $filters['clearance_signatory'],
+        'offboardee' => $filters['offboardee'],
+        'employee_number' => $filters['employee_number'],
+        'group_by' => $filters['group_by'] !== 'none' ? $filters['group_by'] : null,
     ]);
 
     $reportTypes = [
@@ -89,6 +94,54 @@
                 </select>
             </div>
 
+            <div>
+                <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">Checklist Title</label>
+                <select name="checklist_title"
+                    class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent px-3 pr-8 text-sm text-gray-700 shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300">
+                    <option value="">All</option>
+                    @foreach ($checklistTitles as $checklistTitle)
+                        <option value="{{ $checklistTitle }}" @selected($filters['checklist_title'] === $checklistTitle)>{{ $checklistTitle }}</option>
+                    @endforeach
+                </select>
+            </div>
+
+            <div>
+                <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">Clearance Signatory / Approver</label>
+                <select name="clearance_signatory"
+                    class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent px-3 pr-8 text-sm text-gray-700 shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300">
+                    <option value="">All</option>
+                    @foreach ($clearanceSignatories as $signatory)
+                        <option value="{{ $signatory->id }}" @selected($filters['clearance_signatory'] === (string) $signatory->id)>{{ $signatory->name }}</option>
+                    @endforeach
+                </select>
+            </div>
+
+            <div>
+                <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">Offboardee</label>
+                <input type="text" name="offboardee" value="{{ $filters['offboardee'] }}" placeholder="Employee name"
+                    class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent px-3 text-sm text-gray-700 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300 dark:placeholder:text-white/30" />
+            </div>
+
+            <div>
+                <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">Employee Number</label>
+                <input type="text" name="employee_number" value="{{ $filters['employee_number'] }}" placeholder="e.g. EMP12345"
+                    class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent px-3 text-sm text-gray-700 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300 dark:placeholder:text-white/30" />
+            </div>
+
+            @if ($filters['type'] === 'processing_time')
+                <div>
+                    <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">Group By</label>
+                    <select name="group_by"
+                        class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent px-3 pr-8 text-sm text-gray-700 shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300">
+                        <option value="none" @selected($filters['group_by'] === 'none')>None (per offboardee case)</option>
+                        <option value="offboardee" @selected($filters['group_by'] === 'offboardee')>Offboardee</option>
+                        <option value="department" @selected($filters['group_by'] === 'department')>Department</option>
+                        <option value="checklist" @selected($filters['group_by'] === 'checklist')>Checklist</option>
+                        <option value="separation_type" @selected($filters['group_by'] === 'separation_type')>Separation Type</option>
+                    </select>
+                </div>
+            @endif
+
             <div class="col-span-1 flex items-end gap-3 sm:col-span-2 lg:col-span-5">
                 <button type="submit" data-turbo-submits-with="Generating..."
                     class="flex items-center justify-center gap-2 rounded-lg bg-[#145a3a] px-5 py-2.5 text-sm font-medium text-white hover:bg-[#0f4630]">
@@ -107,7 +160,7 @@
         $summaryCards = [
             ['label' => 'Total Offboarding Cases', 'value' => $summary['total']],
             ['label' => 'Completed', 'value' => $summary['completed']],
-            ['label' => 'Pending / In Progress', 'value' => $summary['pending_in_progress']],
+            ['label' => 'Pending Cases', 'value' => $summary['pending_in_progress']],
             ['label' => 'Overdue', 'value' => $summary['overdue']],
             ['label' => 'Completion Rate', 'value' => $summary['completion_rate'] . '%'],
             ['label' => 'Avg. Processing Time', 'value' => $summary['avg_processing_days'] !== null ? $summary['avg_processing_days'] . ' day(s)' : '—'],
@@ -121,6 +174,23 @@
             </div>
         @endforeach
     </div>
+
+    {{-- Min/Max processing time — only meaningful for the Processing Time
+         report (the ticket's own dashboard-card list above doesn't include
+         these two, only Avg — see `ReportController::computeMetrics()`'s
+         own docblock). --}}
+    @if ($filters['type'] === 'processing_time')
+        <div class="mb-6 grid grid-cols-2 gap-4 md:gap-6 lg:grid-cols-4">
+            <div class="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-white/[0.03]">
+                <span class="text-xs text-gray-500 dark:text-gray-400">Min. Processing Time</span>
+                <h4 class="mt-2 font-bold text-[#145a3a] text-title-sm dark:text-[#3aa876]">{{ $summary['min_processing_time'] }}</h4>
+            </div>
+            <div class="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-white/[0.03]">
+                <span class="text-xs text-gray-500 dark:text-gray-400">Max. Processing Time</span>
+                <h4 class="mt-2 font-bold text-[#145a3a] text-title-sm dark:text-[#3aa876]">{{ $summary['max_processing_time'] }}</h4>
+            </div>
+        </div>
+    @endif
 
     {{-- Chart --}}
     <!-- <div class="mb-6 grid grid-cols-1 gap-4 md:gap-6 {{ $filters['type'] === 'completion_rates' ? 'lg:grid-cols-2' : '' }}">
@@ -170,7 +240,23 @@
                     @forelse ($rows as $row)
                         <tr class="border-b border-gray-100 last:border-b-0 dark:border-gray-800">
                             @foreach (array_keys($columns) as $key)
-                                <td class="whitespace-nowrap px-5 py-3 text-sm text-gray-600 dark:text-gray-300">{{ $row[$key] ?? '—' }}</td>
+                                <td class="whitespace-nowrap px-5 py-3 text-sm text-gray-600 dark:text-gray-300">
+                                    {{-- Overdue cases visually distinguished from cases still
+                                         within their expected processing period — same orange
+                                         badge convention already used for "Overdue" elsewhere
+                                         (e.g. `pages/offboardees/index.blade.php`). The raw
+                                         'Yes'/'No' value itself is untouched (exports read it
+                                         as plain text, unchanged from before). --}}
+                                    @if ($key === 'is_overdue')
+                                        <span class="rounded-full px-2.5 py-1 text-xs font-medium {{ $row[$key] === 'Yes'
+                                            ? 'bg-orange-50 text-orange-700 dark:bg-orange-500/15 dark:text-orange-400'
+                                            : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300' }}">
+                                            {{ $row[$key] }}
+                                        </span>
+                                    @else
+                                        {{ $row[$key] ?? '—' }}
+                                    @endif
+                                </td>
                             @endforeach
                         </tr>
                     @empty
