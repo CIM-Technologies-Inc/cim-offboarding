@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\ChecklistItem;
 use App\Models\ChecklistTemplate;
 use App\Models\Employee;
 use App\Models\FinalApprover;
@@ -118,7 +119,23 @@ class ClearanceFormController extends Controller
         // Final Approver shown on the Clearance Form is always resolved
         // live from the `FinalApprover` table further down, never from
         // this request's own frozen snapshot relation.
-        $offboardingRequest->loadMissing(['employee', 'immediateHead.user', 'checklistTemplates', 'approvers.employee.user', 'approvers.itemProgress', 'approvers.checklistTemplate', 'generalSignatories.clearanceSignatory.user', 'generalSignatoryApprovals']);
+        $offboardingRequest->loadMissing([
+            'employee', 'immediateHead.user', 'checklistTemplates', 'approvers.employee.user', 'approvers.itemProgress',
+            'approvers.checklistTemplate.items', 'approvers.itemAssignments.assignedEmployee',
+            'generalSignatories.clearanceSignatory.user', 'generalSignatoryApprovals.generalSignatory',
+        ]);
+
+        // The single source of truth every signature-display decision below
+        // consults — see this method's own docblock for why gating per role
+        // in isolation (Immediate Head against only their own checklists,
+        // a Clearance Signatory against only their own template, a General
+        // Signatory against only their own GS approval) is no longer
+        // correct: an employee's signature must stay hidden anywhere it
+        // appears on this form until EVERY checklist responsibility they
+        // hold anywhere on this request — including a plain item-level Task
+        // Assignee role on a checklist someone else owns, and including
+        // General Signatory status — is complete.
+        $employeeClearanceStatuses = $this->buildEmployeeClearanceStatuses($offboardingRequest);
 
         // Logged once (guarded below) so the employee's own timeline can
         // show when their clearance form was first generated — every later
@@ -149,33 +166,30 @@ class ClearanceFormController extends Controller
         // avoid a second, redundant entry).
         //
         // When this SAME person is ALSO the assigned Checklist Clearance
-        // Signatory of an ordinary department checklist on this request
-        // (matched purely by employee — e.g. the Information Services
-        // department head also happens to be this offboardee's Immediate
-        // Head), that row is included here too, so approving either one
-        // via their already-merged combined Approvals-page card (see
-        // `ApprovalController::groupIntoCombinedApprovals()`) is reflected
-        // identically here. Every row is required to be approved before
-        // this row shows as cleared — see the three helpers below — so a
-        // person responsible for more than one checklist here only reads
-        // as cleared once ALL of them are.
+        // Signatory of an ordinary department checklist on this request, a
+        // Task Assignee on any other checklist (including the Final Pay
+        // Checklist), or a General Signatory — matched purely by employee,
+        // e.g. the Information Services department head also happens to be
+        // this offboardee's Immediate Head — every one of those
+        // responsibilities is folded in here too via
+        // `$employeeClearanceStatuses` (see that method's own docblock), so
+        // approving any one of them via their already-merged combined
+        // Approvals-page card (see `ApprovalController::groupIntoCombinedApprovals()`)
+        // is reflected identically here. A person responsible for more than
+        // one thing here only reads as cleared once ALL of them are.
         //
-        // Only when NO row at all is assigned to this employee (they hold
-        // no checklist/approval step here whatsoever) does this stay
-        // empty, and the row below falls back to an unconditional
-        // signature-if-uploaded with no date/remarks.
-        $immediateHeadSyncedApprovers = $immediateHead
-            ? $offboardingRequest->approvers->filter(
-                fn (OffboardingRequestApprover $approver) => $approver->employee_id === $immediateHead->id
-            )
-            : collect();
+        // Only when this employee holds NO responsibility at all anywhere on
+        // this request (absent from `$employeeClearanceStatuses`) does this
+        // fall back to an unconditional signature-if-uploaded with no
+        // date/remarks — see the three helpers below.
+        $immediateHeadStatus = $immediateHead ? ($employeeClearanceStatuses[$immediateHead->id] ?? null) : null;
 
         $immediateHeadRow = $immediateHead ? [
             'designation' => 'Immediate Head',
             'signatory' => $immediateHead->name,
-            'signatureDataUri' => $this->immediateHeadSignatureDataUri($immediateHead, $immediateHeadSyncedApprovers),
-            'date' => $this->immediateHeadApprovedDate($immediateHeadSyncedApprovers),
-            'remarks' => $this->immediateHeadRemarks($immediateHeadSyncedApprovers),
+            'signatureDataUri' => $this->immediateHeadSignatureDataUri($immediateHead, $immediateHeadStatus),
+            'date' => $this->immediateHeadApprovedDate($immediateHeadStatus),
+            'remarks' => $this->immediateHeadRemarks($immediateHeadStatus),
         ] : null;
 
         // Built as "raw" entries first (one per checklist a signatory is
@@ -220,7 +234,7 @@ class ClearanceFormController extends Controller
             })
             ->values();
 
-        $rows = $this->dedupeSignatoryEntries($signatoryEntries);
+        $rows = $this->dedupeSignatoryEntries($signatoryEntries, $employeeClearanceStatuses);
 
         // A General Signatory IS a Checklist Clearance Signatory — its
         // signature/date/remarks are sourced from the same
@@ -246,17 +260,28 @@ class ClearanceFormController extends Controller
         $generalSignatoryApprovalsById = $offboardingRequest->generalSignatoryApprovals->keyBy('general_signatory_id');
 
         $generalSignatoryRows = $offboardingRequest->generalSignatories
-            ->map(function (GeneralSignatory $generalSignatory) use ($generalSignatoryApprovalsById) {
+            ->map(function (GeneralSignatory $generalSignatory) use ($generalSignatoryApprovalsById, $employeeClearanceStatuses) {
                 $clearanceSignatory = $generalSignatory->clearanceSignatory;
                 $approval = $generalSignatoryApprovalsById->get($generalSignatory->id);
-                $isApproved = $approval?->status === 'approved';
+
+                // A General Signatory's own GS approval is only ONE of
+                // potentially several responsibilities this same employee
+                // holds on this request — see `buildEmployeeClearanceStatuses()`.
+                // Falls back to this row's own GS status alone only if the
+                // employee is somehow absent from that map entirely (should
+                // never happen, since this very approval is one of its
+                // inputs — defensive only).
+                $status = $clearanceSignatory ? ($employeeClearanceStatuses[$clearanceSignatory->id] ?? null) : null;
+                $isApproved = $status !== null ? $status['allCleared'] : ($approval?->status === 'approved');
 
                 return [
                     'department' => $clearanceSignatory?->department ?? '—',
                     'signatory' => $clearanceSignatory?->name ?? '—',
                     'signatureDataUri' => $isApproved ? $this->signatureDataUri($clearanceSignatory?->user?->signature_path) : null,
-                    'date' => $isApproved ? $approval?->approved_at?->format('M d, Y') : null,
-                    'remarks' => $approval?->clearanceStatusLabel() ?? 'Pending',
+                    'date' => $isApproved
+                        ? ($status['clearedAt'] ?? $approval?->approved_at)?->format('M d, Y')
+                        : null,
+                    'remarks' => $status['label'] ?? ($approval?->clearanceStatusLabel() ?? 'Pending'),
                 ];
             })
             ->values();
@@ -321,78 +346,60 @@ class ClearanceFormController extends Controller
 
     /**
      * The Immediate Head's signature on the Clearance Form — unconditional
-     * (if uploaded) when they hold no other synced Checklist Clearance
-     * Signatory role on this request, otherwise gated on every synced
-     * department checklist actually being approved, exactly like a normal
-     * checklist row's own signature is gated on `$approver->status ===
-     * 'approved'`. Requiring EVERY synced row to be approved (not just one)
-     * matters only if this person happens to be the signatory of more than
-     * one department checklist here — an edge case, but one where showing a
-     * "cleared" signature while a second department is still pending would
-     * be exactly the same kind of conflicting/misleading record this
-     * synchronization exists to prevent.
+     * (if uploaded) when they hold NO responsibility at all elsewhere on
+     * this request (`$status === null`), otherwise gated on EVERY
+     * responsibility they hold anywhere on it — every checklist they own,
+     * every checklist they're merely a Task Assignee on, and any General
+     * Signatory role — via `buildEmployeeClearanceStatuses()`'s unified
+     * `allCleared` flag. Requiring every single one (not just their
+     * Immediate Head checklist itself) matters whenever this person is ALSO
+     * a department Clearance Signatory, a Task Assignee elsewhere
+     * (including the Final Pay Checklist), or a General Signatory — showing
+     * a "cleared" signature while any one of those is still outstanding
+     * would be exactly the misleading record this unification exists to
+     * prevent.
      *
-     * @param  Collection<int, OffboardingRequestApprover>  $syncedApprovers
+     * @param  ?array{allCleared: bool, label: string, clearedAt: ?\Illuminate\Support\Carbon}  $status
      */
-    private function immediateHeadSignatureDataUri(Employee $immediateHead, Collection $syncedApprovers): ?string
+    private function immediateHeadSignatureDataUri(Employee $immediateHead, ?array $status): ?string
     {
-        if ($syncedApprovers->isEmpty()) {
+        if ($status === null || $status['allCleared']) {
             return $this->signatureDataUri($immediateHead->user?->signature_path);
         }
 
-        if (! $syncedApprovers->every(fn (OffboardingRequestApprover $approver) => $approver->status === 'approved')) {
-            return null;
-        }
-
-        return $this->signatureDataUri($immediateHead->user?->signature_path);
+        return null;
     }
 
     /**
-     * @param  Collection<int, OffboardingRequestApprover>  $syncedApprovers
+     * @param  ?array{allCleared: bool, label: string, clearedAt: ?\Illuminate\Support\Carbon}  $status
      */
-    private function immediateHeadApprovedDate(Collection $syncedApprovers): ?string
+    private function immediateHeadApprovedDate(?array $status): ?string
     {
-        if ($syncedApprovers->isEmpty() || ! $syncedApprovers->every(fn (OffboardingRequestApprover $approver) => $approver->status === 'approved')) {
+        if ($status === null || ! $status['allCleared']) {
             return null;
         }
 
-        $latestApprovedAt = $syncedApprovers
-            ->pluck('approved_at')
-            ->filter()
-            ->sortByDesc(fn ($approvedAt) => $approvedAt->timestamp)
-            ->first();
-
-        return $latestApprovedAt?->format('M d, Y');
+        return $status['clearedAt']?->format('M d, Y');
     }
 
     /**
-     * With no synced department role, the Immediate Head row has no
-     * checklist status of its own to report (matching today's original,
-     * always-blank remarks). With one, its remarks mirror that department's
-     * own `clearanceStatusLabel()` — the same label that row itself shows —
-     * so the two entries can never disagree in wording either. With MORE
-     * than one (this person heads several checklists here), "Cleared" is
-     * only ever shown once every single one of them genuinely is — same
-     * rule `dedupeSignatoryEntries()` applies to a merged department row,
-     * so an outstanding checklist's own real status (Pending, Hold,
-     * Overdue, Declined, In Progress) is never masked by a sibling
-     * checklist that happens to already be cleared.
+     * With no responsibility at all elsewhere on this request, the
+     * Immediate Head row has no checklist status of its own to report
+     * (matching today's original, always-blank remarks). With one or more,
+     * its remarks mirror `buildEmployeeClearanceStatuses()`'s own combined
+     * label for this employee — the same label every other row of theirs on
+     * this form shows too, so no two entries for the same person can ever
+     * disagree in wording. "Cleared" is only ever shown once EVERY one of
+     * their responsibilities genuinely is, so an outstanding checklist's own
+     * real status (Pending, Hold, Overdue, Declined, In Progress) is never
+     * masked by a sibling responsibility that happens to already be
+     * cleared.
      *
-     * @param  Collection<int, OffboardingRequestApprover>  $syncedApprovers
+     * @param  ?array{allCleared: bool, label: string, clearedAt: ?\Illuminate\Support\Carbon}  $status
      */
-    private function immediateHeadRemarks(Collection $syncedApprovers): string
+    private function immediateHeadRemarks(?array $status): string
     {
-        if ($syncedApprovers->isEmpty()) {
-            return '';
-        }
-
-        $labels = $syncedApprovers->map(fn (OffboardingRequestApprover $approver) => $approver->clearanceStatusLabel());
-
-        if ($labels->every(fn (string $label) => $label === 'Cleared')) {
-            return 'Cleared';
-        }
-
-        return $labels->reject(fn (string $label) => $label === 'Cleared')->unique()->implode(', ');
+        return $status['label'] ?? '';
     }
 
     /**
@@ -463,61 +470,165 @@ class ClearanceFormController extends Controller
      * keeps its own row and is never merged with another unassigned entry
      * either; each is genuinely a distinct "Not Assigned" checklist.
      *
-     * Generalizes the exact same "every synced role must be approved before
-     * a signature shows" rule `immediateHeadSignatureDataUri()`/
-     * `immediateHeadApprovedDate()`/`immediateHeadRemarks()` already apply
-     * to the Immediate Head's own (separately-built) row: a signatory
-     * responsible for two checklists only shows as cleared once BOTH are
-     * approved, their combined Remarks column lists every distinct status
-     * they currently hold (e.g. "Cleared, Pending" while only one of their
-     * two checklists is done), and the shown date is the latest of the
-     * merged approvals.
-     *
-     * Deliberately only ever called on checklist-clearance-signatory
-     * entries — General Signatory rows are concatenated in by the caller
-     * AFTER this runs, so a General Signatory always keeps its own row even
-     * if the same person is also a Clearance Signatory elsewhere on this
-     * request, per that feature's own independent workflow.
+     * The show/hide decision itself is delegated to
+     * `$employeeClearanceStatuses` (see `buildEmployeeClearanceStatuses()`)
+     * — the SAME unified per-employee view `immediateHeadSignatureDataUri()`/
+     * `immediateHeadApprovedDate()`/`immediateHeadRemarks()` and the General
+     * Signatory row map also consult, so a signatory responsible for
+     * several checklists — or ALSO the Immediate Head, or ALSO a General
+     * Signatory — only shows as cleared once every single one of those is,
+     * not just the ones this particular `$entries` batch happened to know
+     * about. The `$group`-only computation is kept as a defensive fallback
+     * for the "unassigned" grouping key (no real employee to look up) or if
+     * an employee is somehow absent from the map.
      *
      * @param  Collection<int, array<string, mixed>>  $entries
+     * @param  array<int, array{allCleared: bool, label: string, clearedAt: ?\Illuminate\Support\Carbon}>  $employeeClearanceStatuses
      * @return Collection<int, array{department: string, signatory: string, signatureDataUri: ?string, date: ?string, remarks: string}>
      */
-    private function dedupeSignatoryEntries(Collection $entries): Collection
+    private function dedupeSignatoryEntries(Collection $entries, array $employeeClearanceStatuses): Collection
     {
         return $entries
             ->groupBy(fn (array $entry, int $key) => $entry['employeeId'] ?? 'unassigned-'.$key)
-            ->map(function (Collection $group) {
+            ->map(function (Collection $group) use ($employeeClearanceStatuses) {
                 $first = $group->first();
-                $allApproved = $group->every(fn (array $entry) => $entry['isApproved']);
+                $employeeId = $first['employeeId'] ?? null;
+                $status = $employeeId !== null ? ($employeeClearanceStatuses[$employeeId] ?? null) : null;
 
-                // Never claim "Cleared" credit for a merged row unless
-                // EVERY checklist in the group actually is — a signatory
-                // still outstanding on even one of their checklists must
-                // never show "Cleared" anywhere in their combined Remarks,
-                // even alongside another checklist of theirs that genuinely
-                // is done (e.g. "Cleared, Pending" reads as if they were
-                // already cleared). Each checklist's own real status is
-                // still evaluated independently (via `remarksLabel` above,
-                // never inherited from a sibling checklist); once not
-                // every one is approved, only the non-"Cleared" label(s)
-                // are shown, so an outstanding checklist's genuine status
-                // (Pending, Hold, Overdue, Declined, In Progress) is never
-                // masked by a sibling that happens to already be cleared.
-                $remarks = $allApproved
-                    ? 'Cleared'
-                    : $group->pluck('remarksLabel')->reject(fn (string $label) => $label === 'Cleared')->unique()->implode(', ');
+                if ($status !== null) {
+                    $allApproved = $status['allCleared'];
+                    $remarks = $status['label'];
+                    $clearedAt = $status['clearedAt'];
+                } else {
+                    // Never claim "Cleared" credit for a merged row unless
+                    // EVERY checklist in the group actually is — a
+                    // signatory still outstanding on even one of their
+                    // checklists must never show "Cleared" anywhere in
+                    // their combined Remarks, even alongside another
+                    // checklist of theirs that genuinely is done (e.g.
+                    // "Cleared, Pending" reads as if they were already
+                    // cleared).
+                    $allApproved = $group->every(fn (array $entry) => $entry['isApproved']);
+                    $remarks = $allApproved
+                        ? 'Cleared'
+                        : $group->pluck('remarksLabel')->reject(fn (string $label) => $label === 'Cleared')->unique()->implode(', ');
+                    $clearedAt = $allApproved
+                        ? $group->pluck('approvedAt')->filter()->sortByDesc(fn ($approvedAt) => $approvedAt->timestamp)->first()
+                        : null;
+                }
 
                 return [
                     'department' => $first['department'],
                     'signatory' => $first['signatory'],
                     'signatureDataUri' => $allApproved ? $this->signatureDataUri($first['signatureUser']?->signature_path) : null,
-                    'date' => $allApproved
-                        ? $group->pluck('approvedAt')->filter()->sortByDesc(fn ($approvedAt) => $approvedAt->timestamp)->first()?->format('M d, Y')
-                        : null,
+                    'date' => $allApproved ? $clearedAt?->format('M d, Y') : null,
                     'remarks' => $remarks,
                 ];
             })
             ->values();
+    }
+
+    /**
+     * The single source of truth every signature-display decision on this
+     * form consults — one entry per employee who holds ANY responsibility
+     * anywhere on this request, requiring ALL of them complete before that
+     * employee's signature may show ANYWHERE it appears (their own
+     * checklist row(s), an Immediate Head row, a General Signatory row).
+     *
+     * Collects one "unit" per distinct responsibility:
+     *
+     *   1. For every `OffboardingRequestApprover` where `employee_id` is
+     *      set (a headed checklist, including the Final Pay Checklist and
+     *      the Immediate Head's own checklist) — one unit: that row's own
+     *      overall `status === 'approved'`, exactly the same signal already
+     *      used today for that role alone. This never changes behavior for
+     *      an employee who holds no OTHER responsibility.
+     *   2. For every checklist item, grouped by `effectiveSignatoryFor()`
+     *      (the same per-request-override-aware resolution used
+     *      throughout this app) — one unit per employee OTHER than that
+     *      checklist's own owner, covering whether ALL of THEIR OWN
+     *      assigned items on that specific checklist are checked. This is
+     *      what makes a plain item-level Task Assignee on a checklist they
+     *      don't own — e.g. specific items on the Final Pay Checklist while
+     *      someone else is its registered Clearance Signatory — count
+     *      toward their OTHER signatures being withheld, the exact gap this
+     *      method exists to close. Skipped for the checklist's own owner
+     *      (`(int) $itemEmployeeId === (int) $approver->employee_id`) to
+     *      avoid double-gating the very same checklist twice for the same
+     *      person under two different rules; safe to compare as plain ints
+     *      since employee ids are auto-increment from 1 and never 0/null.
+     *      For a headless "Use Task Assignee as Clearance Signatory"
+     *      checklist (`employee_id` is null), this is the ONLY unit any
+     *      employee gets for it — identical to what `taskAssigneeSignatoryEntries()`
+     *      already computes for display today, just now ALSO feeding this
+     *      shared gating map.
+     *   3. For every `OffboardingRequestGeneralSignatory` — one unit per
+     *      row, attributed to `generalSignatory->clearance_signatory_id` —
+     *      this is what folds General Signatory into the SAME unified
+     *      gating instead of today's fully independent check.
+     *
+     * @return array<int, array{allCleared: bool, label: string, clearedAt: ?\Illuminate\Support\Carbon}>
+     */
+    private function buildEmployeeClearanceStatuses(OffboardingRequest $offboardingRequest): array
+    {
+        /** @var array<int, Collection<int, array{done: bool, label: string, completedAt: mixed}>> $unitsByEmployee */
+        $unitsByEmployee = [];
+
+        $addUnit = function (?int $employeeId, bool $done, string $label, $completedAt) use (&$unitsByEmployee) {
+            if ($employeeId === null) {
+                return;
+            }
+
+            $unitsByEmployee[$employeeId] ??= collect();
+            $unitsByEmployee[$employeeId]->push(['done' => $done, 'label' => $label, 'completedAt' => $completedAt]);
+        };
+
+        foreach ($offboardingRequest->approvers as $approver) {
+            if ($approver->employee_id !== null) {
+                $addUnit($approver->employee_id, $approver->status === 'approved', $approver->clearanceStatusLabel(), $approver->approved_at);
+            }
+
+            $itemsByEmployeeId = ($approver->checklistTemplate?->items ?? collect())
+                ->groupBy(fn (ChecklistItem $item) => $approver->effectiveSignatoryFor($item)?->id)
+                ->forget(null);
+
+            $checkedItemIds = $approver->itemProgress->where('is_checked', true)->pluck('checklist_item_id');
+
+            foreach ($itemsByEmployeeId as $itemEmployeeId => $items) {
+                if ((int) $itemEmployeeId === (int) $approver->employee_id) {
+                    continue;
+                }
+
+                $isFullyCleared = $items->every(fn (ChecklistItem $item) => $checkedItemIds->contains($item->id));
+
+                $lastCheckedAt = $approver->itemProgress
+                    ->whereIn('checklist_item_id', $items->pluck('id'))
+                    ->where('is_checked', true)
+                    ->max('checked_at');
+
+                $addUnit((int) $itemEmployeeId, $isFullyCleared, $isFullyCleared ? 'Cleared' : 'Pending', $lastCheckedAt);
+            }
+        }
+
+        foreach ($offboardingRequest->generalSignatoryApprovals as $gsApproval) {
+            $clearanceSignatoryId = $gsApproval->generalSignatory?->clearance_signatory_id;
+
+            $addUnit($clearanceSignatoryId, $gsApproval->status === 'approved', $gsApproval->clearanceStatusLabel(), $gsApproval->approved_at);
+        }
+
+        return collect($unitsByEmployee)->map(function (Collection $units) {
+            $allCleared = $units->every(fn (array $unit) => $unit['done']);
+
+            return [
+                'allCleared' => $allCleared,
+                'label' => $allCleared
+                    ? 'Cleared'
+                    : $units->pluck('label')->reject(fn (string $label) => $label === 'Cleared')->unique()->implode(', '),
+                'clearedAt' => $allCleared
+                    ? $units->pluck('completedAt')->filter()->sortByDesc(fn ($completedAt) => $completedAt->timestamp)->first()
+                    : null,
+            ];
+        })->all();
     }
 
     /**
