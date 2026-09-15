@@ -321,38 +321,6 @@
                         </div>
                     </div>
 
-                    <div class="col-span-2 lg:col-span-1">
-                        <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
-                            Resignation Date <span class="text-error-500">*</span>
-                        </label>
-                        <x-form.date-picker
-                            id="notice_date"
-                            name="notice_date"
-                            placeholder="Select date"
-                            :defaultDate="old('notice_date')"
-                            :required="true"
-                        />
-                        @error('notice_date')
-                            <p class="mt-1.5 text-xs text-error-500">{{ $message }}</p>
-                        @enderror
-                    </div>
-
-                    <div class="col-span-2 lg:col-span-1">
-                        <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
-                            Last Working Day <span class="text-error-500">*</span>
-                        </label>
-                        <x-form.date-picker
-                            id="last_working_day"
-                            name="last_working_day"
-                            placeholder="Select date"
-                            :defaultDate="old('last_working_day')"
-                            :required="true"
-                        />
-                        @error('last_working_day')
-                            <p class="mt-1.5 text-xs text-error-500">{{ $message }}</p>
-                        @enderror
-                    </div>
-
                     @php
                         $selectedSeparationTypeId = old('separation_type_id', '');
                         $separationTypesJs = $separationTypes->map(fn ($type) => [
@@ -373,6 +341,74 @@
                         applySeparationType() {
                             const type = this.separationTypesById[this.selectedSeparationTypeId];
                             this.noticePeriodDays = type ? type.defaultNoticePeriodDays : '';
+                            // A Resignation Date already on the form means
+                            // Last Working Day already has a value computed
+                            // from the PREVIOUS Notice Period — that default
+                            // is now stale the moment Notice Period changes,
+                            // so it's refreshed here too, exactly like a
+                            // genuine Resignation Date change would (see
+                            // `refreshLastWorkingDay()`). A no-op while
+                            // Resignation Date is still empty.
+                            this.refreshLastWorkingDay();
+                        },
+                        // Last Working Day is disabled (see its own
+                        // `disabledExpression` below) until this has a real
+                        // value — set from `old('notice_date')` so a
+                        // validation-error resubmit reopens with it already
+                        // enabled, matching whatever was actually entered.
+                        resignationDate: @js(old('notice_date') ?: null),
+                        // Y-m-d string in, Y-m-d string out (matches the
+                        // date-picker's own `dateFormat` both ways) — native
+                        // `Date` arithmetic, no library, since this is the
+                        // only place in this form that needs it. Returns
+                        // null whenever either input isn't yet known (no
+                        // Resignation Date, or Notice Period not resolved
+                        // from a selected Separation Type yet), so the
+                        // caller can tell 'nothing to fill in yet' apart
+                        // from a genuine computed date.
+                        computeLastWorkingDay(resignationDateStr) {
+                            const days = parseInt(this.noticePeriodDays, 10);
+
+                            if (! resignationDateStr || Number.isNaN(days)) {
+                                return null;
+                            }
+
+                            const date = new Date(resignationDateStr + 'T00:00:00');
+                            date.setDate(date.getDate() + days);
+
+                            const yyyy = date.getFullYear();
+                            const mm = String(date.getMonth() + 1).padStart(2, '0');
+                            const dd = String(date.getDate()).padStart(2, '0');
+
+                            return `${yyyy}-${mm}-${dd}`;
+                        },
+                        // Recomputes Last Working Day from the CURRENT
+                        // Resignation Date + Notice Period and pushes it to
+                        // that field via the date-picker's own scoped
+                        // `set-date-{id}` event (see date-picker.blade.php).
+                        // The only two callers of this — `applySeparationType()`
+                        // above (Separation Type/Notice Period changed) and
+                        // `onResignationDateChange()` below (Resignation
+                        // Date changed) — are also the ONLY two triggers
+                        // that ever (re)write Last Working Day's value
+                        // anywhere in this form: either one OVERWRITES
+                        // whatever was there (a fresh default per the
+                        // latest inputs, discarding any prior manual edit —
+                        // the explicit spec'd behavior), and a null/empty
+                        // Resignation Date clears it instead of computing a
+                        // bogus date. Nothing else in this form ever
+                        // touches Last Working Day, so a manual edit the
+                        // admin makes afterward is never silently stomped
+                        // on by an unrelated interaction (e.g. picking an
+                        // email template) elsewhere in the modal.
+                        refreshLastWorkingDay() {
+                            window.dispatchEvent(new CustomEvent('set-date-last_working_day', {
+                                detail: this.resignationDate ? this.computeLastWorkingDay(this.resignationDate) : null,
+                            }));
+                        },
+                        onResignationDateChange(dateStr) {
+                            this.resignationDate = dateStr || null;
+                            this.refreshLastWorkingDay();
                         },
                     }">
                         <div class="col-span-2 lg:col-span-1">
@@ -426,9 +462,45 @@
                                 page. The Notification Date will be calculated automatically from today's date.
                             </p> -->
                         </div>
+
+                        <div class="col-span-2 lg:col-span-1" @date-change="onResignationDateChange($event.detail.dateStr)">
+                            <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                                Resignation Date <span class="text-error-500">*</span>
+                            </label>
+                            <x-form.date-picker
+                                id="notice_date"
+                                name="notice_date"
+                                placeholder="Select date"
+                                :defaultDate="old('notice_date')"
+                                :required="true"
+                            />
+                            @error('notice_date')
+                                <p class="mt-1.5 text-xs text-error-500">{{ $message }}</p>
+                            @enderror
+                        </div>
+
+                        <div class="col-span-2 lg:col-span-1">
+                            <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                                Last Working Day <span class="text-error-500">*</span>
+                            </label>
+                            <x-form.date-picker
+                                id="last_working_day"
+                                name="last_working_day"
+                                placeholder="Select date"
+                                :defaultDate="old('last_working_day')"
+                                :required="true"
+                                disabledExpression="!resignationDate"
+                            />
+                            <p class="mt-1.5 text-xs text-gray-400" x-show="!resignationDate" x-cloak>
+                                Select a Resignation Date first.
+                            </p>
+                            @error('last_working_day')
+                                <p class="mt-1.5 text-xs text-error-500">{{ $message }}</p>
+                            @enderror
+                        </div>
                     </div>
 
-                    <div class="col-span-2">
+                    <!-- <div class="col-span-2">
                         <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
                             Checklist Approval Workflow <span class="text-error-500">*</span>
                         </label>
@@ -461,7 +533,7 @@
                         @error('approval_mode')
                             <p class="mt-1.5 text-xs text-error-500">{{ $message }}</p>
                         @enderror
-                    </div>
+                    </div> -->
 
                     <div class="col-span-2" x-data="{ showEmailTemplates: {{ $offboardingRequestHasErrors ? 'true' : 'false' }} }">
                         <button type="button" @click="showEmailTemplates = !showEmailTemplates"

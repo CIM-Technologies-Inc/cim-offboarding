@@ -7,6 +7,16 @@
     'name' => null,
     'dateFormat' => 'Y-m-d',
     'required' => false,
+    // A raw Alpine boolean expression (e.g. "!resignationDate"), evaluated
+    // against the NEAREST ANCESTOR x-data scope — Alpine's nested-scope
+    // merging resolves any variable this expression references from
+    // whichever outer x-data actually owns it, since this component's own
+    // x-data below never defines one by that name itself. Lets a parent
+    // form (see the New Offboarding Request modal's Last Working Day
+    // field) drive this field's enabled/disabled state reactively without
+    // reaching into this component's own isolated state. Null (default) —
+    // never disabled, unchanged from before this prop existed.
+    'disabledExpression' => null,
 ])
 
 <div x-data="{
@@ -34,8 +44,24 @@
             this.flatpickrInstance.destroy();
             this.flatpickrInstance = null;
         }
-    }
-}" x-init="init()" x-destroy="destroy()">
+    },
+    // Lets an ancestor scope set this picker's date programmatically (the
+    // New Offboarding Request modal auto-filling Last Working Day from
+    // Resignation Date + Notice Period) without reaching into this
+    // component's own isolated x-data. Listened for as a window event
+    // scoped to this specific instance's own `id` (see below) so several
+    // date-pickers on the same page never cross-talk. A falsy `dateStr`
+    // clears the field instead of setting a date.
+    setDateExternally(dateStr) {
+        if (this.flatpickrInstance) {
+            this.flatpickrInstance.setDate(dateStr || null, true);
+        }
+    },
+}" x-init="init()" x-destroy="destroy()"
+    @if ($id)
+        @set-date-{{ $id }}.window="setDateExternally($event.detail)"
+    @endif
+>
     @if($label)
         <label for="{{ $id }}" class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
             {{ $label }}
@@ -50,6 +76,10 @@
             name="{{ $name }}"
             placeholder="{{ $placeholder }}"
             class="h-11 w-full rounded-lg border appearance-none px-4 py-2.5 text-sm shadow-theme-xs placeholder:text-gray-400 focus:outline-hidden focus:ring-3 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 bg-transparent text-gray-800 border-gray-300 focus:border-brand-300 focus:ring-brand-500/20 dark:border-gray-700 dark:focus:border-brand-800"
+            @if ($disabledExpression)
+                x-bind:disabled="{{ $disabledExpression }}"
+                x-bind:class="({{ $disabledExpression }}) ? 'cursor-not-allowed bg-gray-50 dark:bg-white/5 dark:text-white/30' : ''"
+            @endif
             autocomplete="off"
             @if ($required) required @endif
         />

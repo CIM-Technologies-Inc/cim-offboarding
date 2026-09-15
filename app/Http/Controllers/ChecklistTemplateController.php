@@ -78,10 +78,6 @@ class ChecklistTemplateController extends Controller
             // at once.
             'checklist_classification' => ['required', Rule::in(['primary', 'secondary', 'final_pay'])],
             'due_in_days' => ['nullable', 'integer', 'min:0', 'max:3650'],
-            'due_date_basis' => ['required', Rule::in([
-                ChecklistTemplate::DUE_DATE_BASIS_RESIGNATION_DATE,
-                ChecklistTemplate::DUE_DATE_BASIS_LAST_WORKING_DAY,
-            ])],
             'items' => ['required', 'array', 'min:1'],
             'items.*.title' => ['required', 'string', 'max:255'],
             'items.*.signatory_id' => ['nullable', 'exists:employees,id'],
@@ -128,7 +124,6 @@ class ChecklistTemplateController extends Controller
                 'is_final_pay_checklist' => $isFinalPayChecklist,
                 'sequence_type' => $sequenceType,
                 'due_in_days' => $validated['due_in_days'] ?: null,
-                'due_date_basis' => $validated['due_date_basis'],
                 'is_active' => true,
                 'created_by' => $request->user()->id,
             ]);
@@ -186,10 +181,6 @@ class ChecklistTemplateController extends Controller
             'department' => ['nullable', 'string', Rule::in($this->departmentOptions($checklistTemplate->department))],
             'checklist_classification' => ['required', Rule::in(['primary', 'secondary', 'final_pay'])],
             'due_in_days' => ['nullable', 'integer', 'min:0', 'max:3650'],
-            'due_date_basis' => ['required', Rule::in([
-                ChecklistTemplate::DUE_DATE_BASIS_RESIGNATION_DATE,
-                ChecklistTemplate::DUE_DATE_BASIS_LAST_WORKING_DAY,
-            ])],
             'items' => ['required', 'array', 'min:1'],
             'items.*.id' => ['nullable', 'integer', Rule::exists('checklist_items', 'id')->where('checklist_template_id', $checklistTemplate->id)],
             'items.*.title' => ['required', 'string', 'max:255'],
@@ -221,7 +212,6 @@ class ChecklistTemplateController extends Controller
                 'is_final_pay_checklist' => $isFinalPayChecklist,
                 'sequence_type' => $sequenceType,
                 'due_in_days' => $validated['due_in_days'] ?: null,
-                'due_date_basis' => $validated['due_date_basis'],
             ]);
 
             $this->reconcileItems($checklistTemplate, $validated['items'] ?? [], $eligibleSignatoryIds);

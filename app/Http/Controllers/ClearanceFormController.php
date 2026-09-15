@@ -4,7 +4,9 @@ namespace App\Http\Controllers;
 
 use App\Models\ChecklistItem;
 use App\Models\ChecklistTemplate;
+use App\Models\DepartmentHead;
 use App\Models\Employee;
+use App\Models\EmployeeGroup;
 use App\Models\FinalApprover;
 use App\Models\GeneralSignatory;
 use App\Models\OffboardingRequest;
@@ -216,7 +218,7 @@ class ClearanceFormController extends Controller
                 // each contributing their own entry below, responsible only
                 // for their own item(s).
                 if ($template->use_task_assignee_as_signatory) {
-                    return $this->taskAssigneeSignatoryEntries($template, $approver);
+                    return $this->taskAssigneeSignatoryEntries($template, $approver, $offboardingRequest);
                 }
 
                 $signatoryEmployee = $approver?->employee;
@@ -229,7 +231,7 @@ class ClearanceFormController extends Controller
                     'signatureUser' => $signatoryEmployee?->user,
                     'isApproved' => $isApproved,
                     'approvedAt' => $isApproved ? $approver?->approved_at : null,
-                    'remarksLabel' => $approver?->clearanceStatusLabel() ?? 'Not Assigned',
+                    'remarksLabel' => $approver?->clearanceStatusLabel(includeOverdue: false) ?? 'Not Assigned',
                 ]];
             })
             ->values();
@@ -391,9 +393,10 @@ class ClearanceFormController extends Controller
      * this form shows too, so no two entries for the same person can ever
      * disagree in wording. "Cleared" is only ever shown once EVERY one of
      * their responsibilities genuinely is, so an outstanding checklist's own
-     * real status (Pending, Hold, Overdue, Declined, In Progress) is never
-     * masked by a sibling responsibility that happens to already be
-     * cleared.
+     * real status (Pending, Hold, Declined, In Progress — never "Overdue"
+     * on this form specifically, see `clearanceStatusLabel()`'s own
+     * docblock) is never masked by a sibling responsibility that happens to
+     * already be cleared.
      *
      * @param  ?array{allCleared: bool, label: string, clearedAt: ?\Illuminate\Support\Carbon}  $status
      */
@@ -424,9 +427,25 @@ class ClearanceFormController extends Controller
      * whole checklist's aggregate state, since each Task Assignee is only
      * responsible for their own work.
      *
+     * The row actually DISPLAYED for each raw Task Assignee is resolved via
+     * `effectiveClearanceSignatoryFor()` — themselves, unchanged, if
+     * already head-level, otherwise their own Immediate Head/Department
+     * Head, since a rank-and-file Task Assignee's own name has no business
+     * appearing as a formal Clearance Signatory. `isApproved`/`approvedAt`
+     * still reflect the RAW assignee's own item completion regardless of
+     * who the row is attributed to — see `buildEmployeeClearanceStatuses()`,
+     * which attributes the same items to the same resolved employee so
+     * both stay consistent. An entry that resolves to this SAME request's
+     * own Immediate Head is dropped entirely — that person's signature is
+     * already shown once via the dedicated Immediate Head row above this
+     * table (see `buildData()`), so keeping it here too would duplicate it;
+     * `buildEmployeeClearanceStatuses()` still attributes the underlying
+     * unit to them either way, so the Immediate Head row's own gating
+     * reflects this completion status correctly even with no row here.
+     *
      * @return array<int, array{employeeId: ?int, department: string, signatory: string, signatureUser: mixed, isApproved: bool, approvedAt: mixed, remarksLabel: string}>
      */
-    private function taskAssigneeSignatoryEntries(ChecklistTemplate $template, ?OffboardingRequestApprover $approver): array
+    private function taskAssigneeSignatoryEntries(ChecklistTemplate $template, ?OffboardingRequestApprover $approver, OffboardingRequest $offboardingRequest): array
     {
         if (! $approver) {
             return [];
@@ -438,8 +457,14 @@ class ClearanceFormController extends Controller
 
         $checkedItemIds = $approver->itemProgress->where('is_checked', true)->pluck('checklist_item_id');
 
-        return $itemsByEmployeeId->map(function ($items, $employeeId) use ($approver, $checkedItemIds) {
-            $employee = Employee::find($employeeId);
+        return $itemsByEmployeeId->map(function ($items, $employeeId) use ($approver, $checkedItemIds, $offboardingRequest) {
+            $assignee = Employee::find($employeeId);
+            $employee = $assignee ? $this->effectiveClearanceSignatoryFor($assignee) : null;
+
+            if ($employee && $employee->id === $offboardingRequest->immediate_head_id) {
+                return null;
+            }
+
             $isFullyCleared = $items->every(fn ($item) => $checkedItemIds->contains($item->id));
 
             $lastCheckedAt = $approver->itemProgress
@@ -456,7 +481,70 @@ class ClearanceFormController extends Controller
                 'approvedAt' => $isFullyCleared ? $lastCheckedAt : null,
                 'remarksLabel' => $isFullyCleared ? 'Cleared' : 'Pending',
             ];
-        })->values()->all();
+        })->filter()->values()->all();
+    }
+
+    /**
+     * Whether `$employee` already holds a head-level role somewhere in the
+     * system, independent of this specific offboarding request — someone
+     * else's Immediate Head (`head_employee_id`), an EmployeeGroup's
+     * registered Group Head, registered in the standalone `DepartmentHead`
+     * registry, or the Clearance Signatory (`department_head_id`) of any
+     * active checklist template. A "Use Task Assignee as Clearance
+     * Signatory" checklist's Task Assignee who already holds one of these
+     * roles is left exactly as today (their own name/signature) — only a
+     * genuine rank-and-file Task Assignee with none of them gets escalated
+     * to their own reporting head by `effectiveClearanceSignatoryFor()`.
+     */
+    private function isHeadLevelEmployee(Employee $employee): bool
+    {
+        return Employee::where('head_employee_id', $employee->id)->exists()
+            || EmployeeGroup::where('group_head_employee_id', $employee->id)->exists()
+            || DepartmentHead::where('employee_id', $employee->id)->exists()
+            || ChecklistTemplate::where('department_head_id', $employee->id)->where('is_active', true)->exists();
+    }
+
+    /**
+     * The employee a "Use Task Assignee as Clearance Signatory" checklist's
+     * raw Task Assignee's responsibility should actually be attributed to
+     * on the Clearance Form: themselves, unchanged, if already head-level
+     * (`isHeadLevelEmployee()`) — otherwise their own Immediate Head
+     * (`Employee::headEmployee()`, resolved from the Employee Master
+     * import's `headID`/`head_employee_id`), falling back to their
+     * Department/Group Head (`Employee::departmentHead()`) when no
+     * Immediate Head is set — the exact same two-step lookup the rest of
+     * the app already uses for this hierarchy. Falls back to the assignee
+     * themselves if NEITHER resolves to anyone, rather than silently
+     * dropping their responsibility from the form; never creates a new
+     * head assignment, only reads the employee's existing configured one.
+     */
+    private function effectiveClearanceSignatoryFor(Employee $assignee): Employee
+    {
+        if ($this->isHeadLevelEmployee($assignee)) {
+            return $assignee;
+        }
+
+        return $assignee->headEmployee ?? $assignee->departmentHead() ?? $assignee;
+    }
+
+    /**
+     * `effectiveClearanceSignatoryFor()` by raw employee id instead of a
+     * loaded `Employee` — the shape `buildEmployeeClearanceStatuses()`
+     * needs when attributing a headless checklist's item-level gating unit
+     * (both for an already-attached approver's items and for unit type 4's
+     * not-yet-attached Final Pay/Secondary item defaults). Null only when
+     * `$employeeId` itself is null or no longer resolves to a real
+     * `Employee` — never for a genuinely resolvable one.
+     */
+    private function effectiveClearanceSignatoryIdFor(?int $employeeId): ?int
+    {
+        if ($employeeId === null) {
+            return null;
+        }
+
+        $employee = Employee::find($employeeId);
+
+        return $employee ? $this->effectiveClearanceSignatoryFor($employee)->id : null;
     }
 
     /**
@@ -499,19 +587,34 @@ class ClearanceFormController extends Controller
                     $allApproved = $status['allCleared'];
                     $remarks = $status['label'];
                     $clearedAt = $status['clearedAt'];
+                } elseif ($employeeId === null) {
+                    // No real employee resolved for this checklist at all
+                    // (e.g. a "Use Task Assignee as Clearance Signatory"
+                    // checklist with nobody currently assigned) — always a
+                    // single-entry group (see the `groupBy` above), so
+                    // there's nothing to consolidate: just that one
+                    // checklist's own remarks, typically "Not Assigned".
+                    $allApproved = $first['isApproved'];
+                    $remarks = $first['remarksLabel'];
+                    $clearedAt = $allApproved ? $first['approvedAt'] : null;
                 } else {
-                    // Never claim "Cleared" credit for a merged row unless
-                    // EVERY checklist in the group actually is — a
-                    // signatory still outstanding on even one of their
-                    // checklists must never show "Cleared" anywhere in
-                    // their combined Remarks, even alongside another
-                    // checklist of theirs that genuinely is done (e.g.
-                    // "Cleared, Pending" reads as if they were already
-                    // cleared).
+                    // Defensive only — every real employee is expected to
+                    // already have an entry in `$employeeClearanceStatuses`
+                    // (it's built from these same assignments), so this
+                    // path should never actually run. Kept consistent with
+                    // that method's own single-consolidated-label rule
+                    // regardless: "Cleared" only once EVERY checklist in the
+                    // group is, "In Progress" once at least one is done but
+                    // at least one other isn't, "Pending" while none are —
+                    // never a comma-joined mix of each checklist's own
+                    // state.
                     $allApproved = $group->every(fn (array $entry) => $entry['isApproved']);
-                    $remarks = $allApproved
-                        ? 'Cleared'
-                        : $group->pluck('remarksLabel')->reject(fn (string $label) => $label === 'Cleared')->unique()->implode(', ');
+                    $anyApproved = $group->contains(fn (array $entry) => $entry['isApproved']);
+                    $remarks = match (true) {
+                        $allApproved => 'Cleared',
+                        $anyApproved => 'In Progress',
+                        default => 'Pending',
+                    };
                     $clearedAt = $allApproved
                         ? $group->pluck('approvedAt')->filter()->sortByDesc(fn ($approvedAt) => $approvedAt->timestamp)->first()
                         : null;
@@ -566,6 +669,30 @@ class ClearanceFormController extends Controller
      *      row, attributed to `generalSignatory->clearance_signatory_id` —
      *      this is what folds General Signatory into the SAME unified
      *      gating instead of today's fully independent check.
+     *   4. For every active, department-applicable `ChecklistTemplate` NOT
+     *      YET attached to this request (no `checklist_assignments` pivot
+     *      row) — one always-incomplete "Pending" unit per its default
+     *      signatory(-ies): every item's own `signatory_id` for a "Use Task
+     *      Assignee as Clearance Signatory" template, or its
+     *      `department_head_id` otherwise. The Final Pay Checklist is
+     *      NEVER attached until every regular checklist and General
+     *      Signatory is approved (see `ChecklistCompletionService::attachFinalPayChecklistsIfReady()`),
+     *      and a Sync request's Secondary tier isn't attached until Primary
+     *      is (`checkPrimaryChecklistsCompletion()`) — but both are real,
+     *      inevitable responsibilities on THIS SAME request, not merely
+     *      hypothetical ones, since `applicableToDepartment()` here is the
+     *      exact same scope that governs whether they'll actually attach.
+     *      Without this, an employee who is, say, the HR Checklist's
+     *      already-approved Clearance Signatory AND the Final Pay
+     *      Checklist's future Task Assignee would read as fully cleared the
+     *      moment the HR Checklist alone is done, since no
+     *      `OffboardingRequestApprover` row exists yet to catch the rest —
+     *      exactly the gap this unit closes.
+     *   5. For every active `GeneralSignatory` NOT YET snapshotted onto this
+     *      request (no matching `offboarding_request_general_signatories`
+     *      row) — the same "inevitable future responsibility" reasoning as
+     *      #4, for a Sync request's not-yet-notified Secondary tier or
+     *      either mode's Final-Pay tier.
      *
      * @return array<int, array{allCleared: bool, label: string, clearedAt: ?\Illuminate\Support\Carbon}>
      */
@@ -585,7 +712,7 @@ class ClearanceFormController extends Controller
 
         foreach ($offboardingRequest->approvers as $approver) {
             if ($approver->employee_id !== null) {
-                $addUnit($approver->employee_id, $approver->status === 'approved', $approver->clearanceStatusLabel(), $approver->approved_at);
+                $addUnit($approver->employee_id, $approver->status === 'approved', $approver->clearanceStatusLabel(includeOverdue: false), $approver->approved_at);
             }
 
             $itemsByEmployeeId = ($approver->checklistTemplate?->items ?? collect())
@@ -606,7 +733,21 @@ class ClearanceFormController extends Controller
                     ->where('is_checked', true)
                     ->max('checked_at');
 
-                $addUnit((int) $itemEmployeeId, $isFullyCleared, $isFullyCleared ? 'Cleared' : 'Pending', $lastCheckedAt);
+                // A "Use Task Assignee as Clearance Signatory" checklist's
+                // raw Task Assignee has their completion attributed to
+                // whoever `taskAssigneeSignatoryEntries()` actually displays
+                // for them — themselves if already head-level, otherwise
+                // their own resolved Immediate/Department Head — so the
+                // gating map and the Clearance Form row agree on who this
+                // responsibility belongs to. A normal checklist's per-item
+                // override keeps going straight to the raw assignee, same
+                // as before — they're an internal task doer there, never
+                // escalated into their own Clearance Form row.
+                $unitEmployeeId = $approver->employee_id === null
+                    ? ($this->effectiveClearanceSignatoryIdFor((int) $itemEmployeeId) ?? (int) $itemEmployeeId)
+                    : (int) $itemEmployeeId;
+
+                $addUnit($unitEmployeeId, $isFullyCleared, $isFullyCleared ? 'Cleared' : 'Pending', $lastCheckedAt);
             }
         }
 
@@ -616,14 +757,63 @@ class ClearanceFormController extends Controller
             $addUnit($clearanceSignatoryId, $gsApproval->status === 'approved', $gsApproval->clearanceStatusLabel(), $gsApproval->approved_at);
         }
 
+        // Not-yet-attached checklists (Final Pay always; a Sync request's
+        // Secondary tier until Primary clears) that WILL apply to this
+        // request once the workflow reaches them — see this method's own
+        // docblock, unit type 4.
+        $attachedTemplateIds = $offboardingRequest->checklistTemplates->pluck('id');
+
+        $pendingTemplates = ChecklistTemplate::where('is_active', true)
+            ->applicableToDepartment($offboardingRequest->employee->department)
+            ->whereNotIn('id', $attachedTemplateIds)
+            ->with('items')
+            ->get();
+
+        foreach ($pendingTemplates as $template) {
+            if ($template->use_task_assignee_as_signatory) {
+                foreach ($template->items as $item) {
+                    $addUnit($this->effectiveClearanceSignatoryIdFor($item->signatory_id) ?? $item->signatory_id, false, 'Pending', null);
+                }
+
+                continue;
+            }
+
+            $addUnit($template->department_head_id, false, 'Pending', null);
+        }
+
+        // Not-yet-snapshotted General Signatories (a Sync request's
+        // Secondary tier, or either mode's Final Pay tier) — unit type 5.
+        $attachedGeneralSignatoryIds = $offboardingRequest->generalSignatories->pluck('id');
+
+        GeneralSignatory::where('is_active', true)
+            ->whereNotIn('id', $attachedGeneralSignatoryIds)
+            ->get()
+            ->each(fn (GeneralSignatory $generalSignatory) => $addUnit($generalSignatory->clearance_signatory_id, false, 'Pending', null));
+
         return collect($unitsByEmployee)->map(function (Collection $units) {
             $allCleared = $units->every(fn (array $unit) => $unit['done']);
+            $anyCleared = $units->contains(fn (array $unit) => $unit['done']);
+
+            // Exactly one consolidated label per employee, never a
+            // comma-joined mix of each individual checklist's own state
+            // (e.g. "Pending, In Progress, Hold") — an employee assigned to
+            // several checklists/tasks must read as a single Clearance
+            // Signatory with a single status: "Cleared" only once every one
+            // of them is done, "In Progress" once at least one is done but
+            // at least one other isn't, "Pending" while none of them are —
+            // regardless of how many individual checklists contribute units,
+            // or how many different fine-grained states (Hold, Declined,
+            // In Progress) those individual checklists are each otherwise
+            // in.
+            $label = match (true) {
+                $allCleared => 'Cleared',
+                $anyCleared => 'In Progress',
+                default => 'Pending',
+            };
 
             return [
                 'allCleared' => $allCleared,
-                'label' => $allCleared
-                    ? 'Cleared'
-                    : $units->pluck('label')->reject(fn (string $label) => $label === 'Cleared')->unique()->implode(', '),
+                'label' => $label,
                 'clearedAt' => $allCleared
                     ? $units->pluck('completedAt')->filter()->sortByDesc(fn ($completedAt) => $completedAt->timestamp)->first()
                     : null,

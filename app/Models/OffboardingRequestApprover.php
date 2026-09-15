@@ -406,13 +406,22 @@ class OffboardingRequestApprover extends Model
     }
 
     /**
-     * This one checklist's current-state label for the Clearance Form's
-     * Remarks column — the per-checklist equivalent of
-     * `OffboardingRequest::displayStatus()`, since the form must show each
-     * department's real current standing even while the request overall is
-     * still pending/in progress, not just once everything is done.
+     * This one checklist's current-state label — the per-checklist
+     * equivalent of `OffboardingRequest::displayStatus()`, since the form
+     * must show each department's real current standing even while the
+     * request overall is still pending/in progress, not just once
+     * everything is done.
+     *
+     * `$includeOverdue = false` (the Clearance Form's own Remarks column —
+     * see `ClearanceFormController`) deliberately never surfaces "Overdue":
+     * that document is meant to read as a plain record of what's cleared
+     * vs. outstanding, not a lateness flag, so it falls through to the same
+     * "In Progress"/"Pending" a non-overdue assignment in the same state
+     * would show. Every other caller (overdue-checklist emails, the
+     * Approvals page's own badges, `EmployeeDashboardController`) keeps the
+     * original unconditional behavior via the default `true`.
      */
-    public function clearanceStatusLabel(): string
+    public function clearanceStatusLabel(bool $includeOverdue = true): string
     {
         if ($this->status === 'approved') {
             return 'Cleared';
@@ -428,7 +437,7 @@ class OffboardingRequestApprover extends Model
             return 'Hold';
         }
 
-        if ($this->isOverdue()) {
+        if ($includeOverdue && $this->isOverdue()) {
             return 'Overdue';
         }
 

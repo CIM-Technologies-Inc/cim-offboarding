@@ -4,8 +4,32 @@
         isApplicationMenuOpen: false,
         toggleApplicationMenu() {
             this.isApplicationMenuOpen = !this.isApplicationMenuOpen;
-        }
-    }">
+        },
+        // This whole header is `data-turbo-permanent` — Turbo Drive
+        // deliberately keeps its EXISTING DOM as-is on every visit rather
+        // than swapping in the freshly fetched page's version, so a
+        // page-specific heading (e.g. the Checklist Edit page's own
+        // Checklist Title) can never be baked in server-side via a plain
+        // push/stack pair the way it could on a non-permanent element —
+        // the stale one from whichever page was open before would simply
+        // never be replaced, and would keep showing after navigating away
+        // entirely. Instead this reads it fresh from a plain (NOT
+        // permanent) `[data-page-header-title]` marker that the fresh
+        // page's own real content DOES carry — present with that page's
+        // title on the one page that wants this (see edit.blade.php),
+        // absent everywhere else — every time Turbo actually renders a new
+        // page, exactly mirroring `sidebar.blade.php`'s own
+        // `initializeActiveMenus()` pattern for the same
+        // permanent-element-needs-fresh-per-page-state problem.
+        pageHeaderTitle: '',
+        init() {
+            this.refreshPageHeaderTitle();
+        },
+        refreshPageHeaderTitle() {
+            this.pageHeaderTitle = document.querySelector('[data-page-header-title]')?.dataset.pageHeaderTitle ?? '';
+        },
+    }"
+    @turbo:load.window="refreshPageHeaderTitle()">
     <div class="flex flex-col items-center justify-between grow xl:flex-row xl:px-6">
         <div
             class="flex items-center justify-between w-full gap-2 px-3 py-3 border-b border-gray-200 dark:border-gray-800 sm:gap-4 xl:justify-normal xl:border-b-0 xl:px-0 lg:py-4">
@@ -28,6 +52,17 @@
                         fill="" />
                 </svg>
             </button>
+
+            <!-- Page-specific title shown beside the sidebar toggle button
+                 (desktop only, matching where that button itself shows) —
+                 see this header's own `pageHeaderTitle`/`refreshPageHeaderTitle()`
+                 above for why this is Alpine-driven rather than server-pushed
+                 HTML. Empty/hidden on every page except the one(s) that carry
+                 a `[data-page-header-title]` marker in their own (non-permanent)
+                 content, e.g. the Checklist Edit page's own Checklist Title
+                 (see resources/views/pages/checklist-templates/edit.blade.php). -->
+            <h2 x-show="pageHeaderTitle" x-text="pageHeaderTitle" x-cloak
+                class="hidden max-w-xs truncate text-lg font-semibold text-gray-800 dark:text-white/90 xl:block lg:max-w-md"></h2>
 
             <!-- Mobile Menu Toggle Button (visible below xl) -->
             <button

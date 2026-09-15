@@ -58,7 +58,7 @@
 
                 <div class="mt-6">
                     <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
-                        Checklist Priority/Sequence
+                        Checklist Priority
                     </label>
                     <div class="flex flex-wrap items-center gap-x-6 gap-y-2">
                         <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
@@ -67,12 +67,12 @@
                                 class="h-4 w-4 accent-brand-500" />
                             Core
                         </label>
-                        <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
+                        <!-- <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
                             <input type="radio" name="checklist_classification" value="secondary"
                                 x-model="classification"
                                 class="h-4 w-4 accent-brand-500" />
                             Secondary
-                        </label>
+                        </label> -->
                         <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
                             <input type="radio" name="checklist_classification" value="final_pay"
                                 x-model="classification"

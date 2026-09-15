@@ -83,41 +83,18 @@
 
             <div class="mt-5">
                 <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
-                    Due Date Basis <span class="text-error-500">*</span>
-                </label>
-                <div class="flex flex-wrap items-center gap-x-6 gap-y-2">
-                    <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
-                        <input type="radio" name="due_date_basis" value="resignation_date" required
-                            @checked(old('due_date_basis', 'resignation_date') === 'resignation_date')
-                            class="h-4 w-4 accent-brand-500" />
-                        After Resignation Date
-                    </label>
-                    <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
-                        <input type="radio" name="due_date_basis" value="last_working_day"
-                            @checked(old('due_date_basis') === 'last_working_day')
-                            class="h-4 w-4 accent-brand-500" />
-                        After Last Working Day
-                    </label>
-                </div>
-                <p class="mt-1.5 text-xs text-gray-400">
-                    Which date the Due (Days) count below starts from.
-                </p>
-            </div>
-
-            <div class="mt-5">
-                <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
-                    Due (Days)
+                    Due Date Extension (Days)
                 </label>
                 <input type="number" name="due_in_days" x-model="dueInDays" min="0" placeholder="e.g. 5"
                     class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
                 <p class="mt-1.5 text-xs text-gray-400">
-                    Days after the selected Due Date Basis before this checklist becomes overdue. Leave blank for no due date.
+                    Days after the offboardee's Last Working Day before this checklist becomes overdue. Leave blank for no due date.
                 </p>
             </div>
 
             <div class="mt-5">
                 <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
-                    Checklist Priority/Sequence <span class="text-error-500">*</span>
+                    Checklist Priority <span class="text-error-500">*</span>
                 </label>
                 <div class="flex flex-wrap items-center gap-x-6 gap-y-2">
                     <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
@@ -126,12 +103,12 @@
                             class="h-4 w-4 accent-brand-500" />
                         Primary/Core Department
                     </label>
-                    <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
+                    <!-- <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
                         <input type="radio" name="checklist_classification" value="secondary"
                             @checked(old('checklist_classification') === 'secondary')
                             class="h-4 w-4 accent-brand-500" />
                         Secondary
-                    </label>
+                    </label> -->
                     <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
                         <input type="radio" name="checklist_classification" value="final_pay"
                             @checked(old('checklist_classification') === 'final_pay')

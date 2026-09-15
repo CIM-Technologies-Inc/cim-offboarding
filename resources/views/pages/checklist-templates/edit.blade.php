@@ -1,6 +1,24 @@
 @extends('layouts.app')
 
 @section('content')
+    {{-- Feeds the header's own `pageHeaderTitle` (see
+         layouts/app-header.blade.php) with THIS checklist's title, shown
+         beside the sidebar toggle button — Checklist Edit page only, per
+         its own explicit requirement. Deliberately a plain marker in this
+         page's normal (non-permanent) content rather than pushed straight
+         into the header: the header is `data-turbo-permanent`, so Turbo
+         Drive carries its existing DOM over unchanged on every navigation
+         instead of re-rendering it — content pushed there would never
+         actually update between two different checklists' Edit pages, nor
+         disappear on navigating away. This element itself, being part of
+         the normal content area, genuinely IS replaced (or removed
+         entirely, on any other page) by Turbo on every visit, which is
+         exactly what `refreshPageHeaderTitle()` re-reads on each
+         `turbo:load` to keep the header in sync. Every other
+         checklist-template page (Create, Index, Show) has no such marker
+         at all, so the header shows nothing there for them. --}}
+    <div data-page-header-title="{{ $template->title }}" hidden></div>
+
     <x-common.page-breadcrumb pageTitle="Edit Checklist Template" />
 
     <div x-data="checklistBuilder(@js(old('title', $template->title)), @js(old('employee_group_id', (string) ($template->employee_group_id ?? ''))), @js((bool) old('is_immediate_head_checklist', $template->is_immediate_head_checklist)), @js((bool) old('use_task_assignee_as_signatory', $template->use_task_assignee_as_signatory)), @js(old('department', $template->department ?? '')), @js(old('due_in_days', (string) ($template->due_in_days ?? ''))), @js(old('items', $template->items->map(fn ($item) => ['id' => $item->id, 'title' => $item->title, 'signatory_id' => (string) $item->signatory_id, 'notify_enabled' => $item->notify_enabled, 'email_template_id' => (string) ($item->email_template_id ?? ''), 'notify_timing' => $item->notify_timing, 'notify_days' => (string) ($item->notify_days ?? '')])->values())), @js($employees->map(fn ($employee) => ['id' => (string) $employee->id, 'name' => $employee->name, 'department' => $employee->department])), @js($employeeGroups), @js($errors->any() ? $errors->first() : null))"
@@ -84,35 +102,12 @@
 
             <div class="mt-5">
                 <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
-                    Due Date Basis <span class="text-error-500">*</span>
-                </label>
-                <div class="flex flex-wrap items-center gap-x-6 gap-y-2">
-                    <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
-                        <input type="radio" name="due_date_basis" value="resignation_date" required
-                            @checked(old('due_date_basis', $template->due_date_basis) === 'resignation_date')
-                            class="h-4 w-4 accent-brand-500" />
-                        After Resignation Date
-                    </label>
-                    <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
-                        <input type="radio" name="due_date_basis" value="last_working_day"
-                            @checked(old('due_date_basis', $template->due_date_basis) === 'last_working_day')
-                            class="h-4 w-4 accent-brand-500" />
-                        After Last Working Day
-                    </label>
-                </div>
-                <p class="mt-1.5 text-xs text-gray-400">
-                    Which date the Due (Days) count below starts from.
-                </p>
-            </div>
-
-            <div class="mt-5">
-                <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
-                    Due (Days)
+                    Due Date Extension (Days)
                 </label>
                 <input type="number" name="due_in_days" x-model="dueInDays" min="0" placeholder="e.g. 5"
                     class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
                 <p class="mt-1.5 text-xs text-gray-400">
-                    Days after the selected Due Date Basis before this checklist becomes overdue. Leave blank for no due date.
+                    Days after the offboardee's Last Working Day before this checklist becomes overdue. Leave blank for no due date.
                 </p>
             </div>
 
@@ -121,7 +116,7 @@
             @endphp
             <div class="mt-5">
                 <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
-                    Checklist Priority/Sequence <span class="text-error-500">*</span>
+                    Checklist Priority <span class="text-error-500">*</span>
                 </label>
                 <div class="flex flex-wrap items-center gap-x-6 gap-y-2">
                     <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
@@ -130,12 +125,12 @@
                             class="h-4 w-4 accent-brand-500" />
                         Primary/Core Department
                     </label>
-                    <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
+                    <!-- <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
                         <input type="radio" name="checklist_classification" value="secondary"
                             @checked(old('checklist_classification', $currentClassification) === 'secondary')
                             class="h-4 w-4 accent-brand-500" />
                         Secondary
-                    </label>
+                    </label> -->
                     <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
                         <input type="radio" name="checklist_classification" value="final_pay"
                             @checked(old('checklist_classification', $currentClassification) === 'final_pay')
