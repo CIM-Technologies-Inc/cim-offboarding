@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 
 class OffboardingRequestApprover extends Model
@@ -538,6 +539,26 @@ class OffboardingRequestApprover extends Model
         ]);
 
         return $extension;
+    }
+
+    /**
+     * This checklist's very first due date, before any "Extend Due" action
+     * ever touched it — distinct from `due_at` (the CURRENT, possibly
+     * already-extended, effective due date) and from any single
+     * extension's own `previous_due_date` (which, for the second or later
+     * extension, is itself already an extended date, not the original
+     * one). Derived from `dueDateExtensions()`'s own oldest row (that
+     * relation is already ordered `created_at` ascending) rather than a
+     * dedicated stored column, since it's always recoverable that way: the
+     * FIRST extension's `previous_due_date` is by definition what `due_at`
+     * held before any extension existed. Falls back to the current
+     * `due_at` itself when the checklist has never been extended — in that
+     * case the "original" and "current" due dates are simply the same
+     * date.
+     */
+    public function originalDueDate(): ?Carbon
+    {
+        return $this->dueDateExtensions->first()?->previous_due_date ?? $this->due_at;
     }
 
     /**

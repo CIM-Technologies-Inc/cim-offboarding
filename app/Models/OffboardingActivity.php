@@ -13,6 +13,7 @@ class OffboardingActivity extends Model
         'offboarding_request_approver_id',
         'offboarding_request_general_signatory_id',
         'offboarding_request_final_approval_id',
+        'checklist_due_date_extension_id',
         'action',
         'status',
         'comment',
@@ -56,6 +57,17 @@ class OffboardingActivity extends Model
     }
 
     /**
+     * Which specific `ChecklistDueDateExtension` row this `due_date_extended`
+     * activity belongs to — lets `label()` build its Timeline sentence from
+     * that row's own structured previous/new due dates rather than
+     * re-parsing them out of this activity's free-text `comment`.
+     */
+    public function checklistDueDateExtension(): BelongsTo
+    {
+        return $this->belongsTo(ChecklistDueDateExtension::class);
+    }
+
+    /**
      * Human-readable summary for the timeline, e.g. "Cleared by John Santos (IT)".
      */
     public function label(): string
@@ -72,11 +84,26 @@ class OffboardingActivity extends Model
             'checklist_viewed' => "Viewed by {$actor}{$suffix}",
             'general_signatory_viewed' => "Viewed by {$actor} (General Signatory)",
             'offboarding_reset' => "Offboarding Request Reset by {$actor}",
+            'offboarding_cancelled' => "Offboarding Request Cancelled by {$actor}",
             'declined' => "Declined by {$actor}{$suffix}",
             'all_checklists_approved' => 'All Offboarding Checklists Cleared',
             'final_pay_notified' => 'Final Pay Checklist Notification Sent',
             'reminder_sent' => "Reminder Sent by {$actor}",
-            'due_date_extended' => "Due Date Extended by {$actor}{$suffix}",
+            // Prefers the linked `ChecklistDueDateExtension` row's own
+            // structured previous/new due dates, matching the exact
+            // sentence spec'd for this Timeline entry; falls back to the
+            // generic form only for a legacy row created before that FK
+            // existed (should never happen for a row created going
+            // forward, since `ApprovalController::extendDue()` always sets
+            // it).
+            'due_date_extended' => $this->checklistDueDateExtension
+                ? sprintf(
+                    'Checklist due date extended from %s to %s by %s.',
+                    $this->checklistDueDateExtension->previous_due_date->format('M d, Y'),
+                    $this->checklistDueDateExtension->new_due_date->format('M d, Y'),
+                    $actor,
+                )
+                : "Due Date Extended by {$actor}{$suffix}",
             'general_signatory_reminder_sent' => "Notification Resent by {$actor}",
             'final_approval_sent' => "Final Approval Requested by {$actor}",
             'final_approval_viewed' => "Final Approval Link Viewed by {$actor}",

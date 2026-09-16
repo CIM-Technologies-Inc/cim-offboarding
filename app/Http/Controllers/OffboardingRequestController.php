@@ -2,8 +2,10 @@
 
 namespace App\Http\Controllers;
 
+use App\Mail\ChecklistSignatoryAnnouncementMail;
 use App\Models\ChecklistItemScheduledSend;
 use App\Models\ChecklistTemplate;
+use App\Models\EmailTemplate;
 use App\Models\Employee;
 use App\Models\FinalApprover;
 use App\Models\GeneralSignatory;
@@ -12,10 +14,13 @@ use App\Models\SeparationType;
 use App\Models\User;
 use App\Services\ChecklistApprovalNotifier;
 use App\Services\ChecklistCompletionService;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Validation\Rule;
 
 class OffboardingRequestController extends Controller
@@ -40,7 +45,14 @@ class OffboardingRequestController extends Controller
             // alter an already-created request (see
             // `ChecklistCompletionService::checkRegularChecklistsCompletion()`
             // for where this actually changes behavior).
-            'approval_mode' => ['required', Rule::in(['sync', 'async'])],
+            // Nullable, not required: the New Offboarding Request modal's
+            // Approval Mode picker is currently commented out (see
+            // `new-request-modal.blade.php`), so nothing is ever submitted
+            // for this field — defaulted to 'async' (Parallel) below once
+            // validation passes. Still validated against the same enum so a
+            // stray/tampered value can't sneak in if the picker is ever
+            // re-enabled.
+            'approval_mode' => ['nullable', Rule::in(['sync', 'async'])],
             // Per-request overrides for the 3 fixed-name email templates
             // that fire at creation time — see the matching Select fields
             // on the New Offboarding Request modal, and
@@ -49,6 +61,10 @@ class OffboardingRequestController extends Controller
             'offboardee_notification_template_id' => ['nullable', 'exists:email_templates,id'],
             'general_signatory_notification_template_id' => ['nullable', 'exists:email_templates,id'],
         ]);
+
+        // Default to Parallel ('async') while the Approval Mode picker
+        // stays commented out — see the note on the validation rule above.
+        $validated['approval_mode'] = $validated['approval_mode'] ?? 'async';
 
         // Every request must have a real, currently-active Final Approver
         // configured system-wide — checked here so a misconfigured system
@@ -330,6 +346,290 @@ class OffboardingRequestController extends Controller
         }
 
         return back()->with('success', "Offboarding request for {$employee->name} has been reset and restarted.");
+    }
+
+    /**
+     * "Cancel Offboarding" — retracts this offboarding request entirely and
+     * permanently deletes every dependent record it ever accumulated
+     * (approvers and everything DB-cascaded off them — item progress,
+     * holds, delegations, item reassignments, approval tokens, pool
+     * members, follow-ups, due date extensions — General Signatory
+     * approvals and their tokens, scheduled email/item sends, and its own
+     * Final Approval process if one was ever started), while the request
+     * ROW ITSELF is deliberately NEVER deleted, only marked `status =
+     * 'cancelled'` with `cancelled_at`/`cancelled_by` recorded — the exact
+     * same "row survives forever, only its status changes" convention a
+     * signatory-declined request already follows (see
+     * `ApprovalController::decline()`), so this admin-initiated
+     * cancellation reads identically on the Offboardee page (still listed,
+     * "Cancelled" badge) instead of the employee simply vanishing from it.
+     * Nothing here ever touches the `Employee` master record beyond the
+     * same `status` flip back to 'active' every other
+     * request-no-longer-active path already makes, nor any checklist
+     * template/General Signatory/Separation Type configuration — those are
+     * shared, independent data this one request's cancellation must never
+     * affect.
+     *
+     * Gated by its own dedicated `offboarding-requests.cancel` permission
+     * at the route level (same reasoning as `reset()` above), and rejected
+     * here too — not just hidden in the view — for a request that's
+     * already `cancelled` or `completed` (a finished request is a locked,
+     * final state; a cancelled one can't be cancelled twice).
+     *
+     * Notification recipients (every Clearance Signatory, General
+     * Signatory, and Task Assignee this request ever had) are resolved
+     * BEFORE the transaction deletes anything, since none of that data
+     * still exists afterward — but the emails themselves are only sent
+     * AFTER the transaction commits successfully, per spec: a rolled-back
+     * cancellation must never notify anyone their request was cancelled.
+     */
+    public function cancel(Request $request, OffboardingRequest $offboardingRequest): RedirectResponse|JsonResponse
+    {
+        abort_if(
+            in_array($offboardingRequest->status, ['cancelled', 'completed'], true),
+            422,
+            $offboardingRequest->status === 'completed'
+                ? 'This offboarding request is already completed and cannot be cancelled.'
+                : 'This offboarding request has already been cancelled.'
+        );
+
+        $offboardingRequest->loadMissing('employee');
+        $employee = $offboardingRequest->employee;
+        $admin = $request->user();
+
+        $recipients = $this->collectCancellationRecipients($offboardingRequest);
+
+        // Snapshotted before deletion for both the audit log below and the
+        // cancellation emails after the transaction commits — none of this
+        // is reliably re-derivable from the request afterward (its own
+        // dependent records are gone, and even the request row's `id`
+        // wouldn't help without the employee snapshot alongside it).
+        $offboardingRequestId = $offboardingRequest->id;
+        $employeeSnapshot = ['name' => $employee->name, 'employeeCode' => $employee->employee_code, 'department' => $employee->department];
+
+        DB::transaction(function () use ($offboardingRequest, $employee, $admin) {
+            // Identical cascade shape to `reset()` above — see its own
+            // comments for exactly what each deletion cascades to.
+            $offboardingRequest->approvers()->delete();
+            $offboardingRequest->generalSignatoryApprovals()->delete();
+            $offboardingRequest->followUps()->delete();
+            $offboardingRequest->scheduledEmailSends()->delete();
+            ChecklistItemScheduledSend::where('offboarding_request_id', $offboardingRequest->id)->delete();
+            $offboardingRequest->checklistTemplates()->detach();
+
+            // Defensive only — a request reaching this point can never
+            // actually have one (Final Approval only ever starts once
+            // `status === 'completed'`, already rejected above), but a
+            // cancellation must never leave one dangling regardless.
+            $offboardingRequest->finalApproval()->delete();
+
+            $offboardingRequest->activities()->delete();
+
+            // Bell-icon notifications (`OffboardingApprovalUpdated`,
+            // `ChecklistOverdueNotification`) embed `offboarding_request_id`
+            // inside their JSON `data` payload rather than a real foreign
+            // key, so they can't be cleaned up via cascade or a plain
+            // `where()` column match — decode each row and compare in PHP
+            // instead. Without this, a stale notification would keep
+            // linking to a now-retracted request (and, via the Offboardee
+            // Page's deep-link fallback, could still surface the employee
+            // there after their card should have disappeared).
+            $staleNotificationIds = DB::table('notifications')
+                ->get(['id', 'data'])
+                ->filter(fn ($row) => (json_decode($row->data, true)['offboarding_request_id'] ?? null) === $offboardingRequest->id)
+                ->pluck('id');
+            DB::table('notifications')->whereIn('id', $staleNotificationIds)->delete();
+
+            $offboardingRequest->update([
+                'status' => 'cancelled',
+                'cancelled_at' => now(),
+                'cancelled_by' => $admin->id,
+                'completed_at' => null,
+                'final_pay_notified_at' => null,
+                'secondary_notified_at' => null,
+                'general_signatory_secondary_notified_at' => null,
+                'general_signatory_final_pay_notified_at' => null,
+            ]);
+
+            $employee->update(['status' => 'active']);
+
+            // The one thing that survives the wipe above — same "never
+            // silent" convention `reset()`'s own final activity follows.
+            $offboardingRequest->activities()->create([
+                'user_id' => $admin->id,
+                'action' => 'offboarding_cancelled',
+                'status' => 'cancelled',
+                'comment' => "Offboarding request cancelled by {$admin->name}; all checklist, clearance, and approval records for this request were removed.",
+            ]);
+        });
+
+        Log::info('Offboarding request cancelled.', [
+            'offboarding_request_id' => $offboardingRequestId,
+            'employee' => $employeeSnapshot['name'] . ' (' . $employeeSnapshot['employeeCode'] . ')',
+            'cancelled_by' => $admin->name,
+            'cancelled_at' => now()->toDateTimeString(),
+            'result' => 'success',
+        ]);
+
+        $this->sendCancellationNotifications($recipients, $employeeSnapshot, $offboardingRequestId, $admin);
+
+        // The Offboardee Page's Cancel Offboarding button submits via
+        // `fetch()` (not a native form post) so it can remove just this one
+        // card and show a success/error toast without a full-page
+        // reload — it sends `Accept: application/json` to opt into this
+        // branch. A non-AJAX caller (there currently isn't one) still gets
+        // the original redirect-with-flash behavior.
+        if ($request->wantsJson()) {
+            return response()->json([
+                'success' => true,
+                'message' => 'Offboarding request has been successfully cancelled.',
+            ]);
+        }
+
+        return back()->with('success', 'Offboarding request has been successfully cancelled.');
+    }
+
+    /**
+     * Every person tied to this specific offboarding request — resolved
+     * entirely from ITS OWN snapshot rows, never from the live checklist
+     * template configuration (a template can be edited/reassigned after
+     * this request was created, which must never leak into who gets told
+     * about ITS cancellation). Covers:
+     *
+     *  - The Offboardee themselves — every checklist, clearance, approval,
+     *    and task activity tied to this request no longer applies to them.
+     *  - The Immediate Head selected on the request (see `immediateHead()`).
+     *  - Each checklist's own Clearance Signatory (a normal, single-owner
+     *    checklist's `employee_id` on its `OffboardingRequestApprover` row).
+     *  - Every Task Assignee on EVERY item of EVERY checklist (via
+     *    `effectiveSignatoryFor()`, which reads THIS request's own
+     *    `itemAssignments` snapshot — not the template's live signatory —
+     *    and regardless of whether they'd already finished their own item:
+     *    a cancelled request needs everyone told, not just whoever was
+     *    still pending).
+     *  - Every General Signatory's own Clearance Signatory.
+     *
+     * Deduplicated by EMPLOYEE ID — matches how `ChecklistApprovalNotifier`
+     * already notifies at creation time: the same PERSON holding more than
+     * one role, or assigned to more than one checklist, gets only ONE
+     * email, but two genuinely different employees are always notified
+     * separately even if their records happen to share an email address
+     * (as this app's own test data deliberately does — one real inbox
+     * standing in for many distinct people while testing). Rows with no
+     * usable email are dropped here rather than in the send loop, so the
+     * recipient count actually reflects who will be emailed.
+     *
+     * @return Collection<int, Employee>
+     */
+    private function collectCancellationRecipients(OffboardingRequest $offboardingRequest): Collection
+    {
+        $offboardingRequest->loadMissing([
+            'employee', 'immediateHead',
+            'approvers.employee', 'approvers.checklistTemplate.items.signatory', 'approvers.itemAssignments.assignedEmployee',
+            'generalSignatoryApprovals.generalSignatory.clearanceSignatory',
+        ]);
+
+        $recipients = collect([$offboardingRequest->employee, $offboardingRequest->immediateHead]);
+
+        foreach ($offboardingRequest->approvers as $approver) {
+            if ($approver->employee_id !== null) {
+                $recipients->push($approver->employee);
+            }
+
+            foreach ($approver->checklistTemplate?->items ?? [] as $item) {
+                $recipients->push($approver->effectiveSignatoryFor($item));
+            }
+        }
+
+        foreach ($offboardingRequest->generalSignatoryApprovals as $gsApproval) {
+            $recipients->push($gsApproval->generalSignatory?->clearanceSignatory);
+        }
+
+        return $recipients
+            ->filter(fn (?Employee $recipient) => $recipient && $recipient->email && filter_var($recipient->email, FILTER_VALIDATE_EMAIL))
+            ->unique('id')
+            ->values();
+    }
+
+    /**
+     * Sends the "Offboarding Request Cancelled" notification to every
+     * resolved recipient — called only after `cancel()`'s transaction has
+     * already committed, per spec ("only after the cancellation and
+     * related database operations have completed successfully"). Mirrors
+     * `remind()`'s own graceful degradation: silently does nothing if the
+     * template is missing/inactive, and a per-recipient send failure is
+     * logged and skipped rather than thrown, since the cancellation itself
+     * already succeeded and must never appear to fail because one email
+     * bounced.
+     *
+     * @param  Collection<int, Employee>  $recipients
+     * @param  array{name: string, employeeCode: ?string, department: ?string}  $employeeSnapshot
+     */
+    private function sendCancellationNotifications(Collection $recipients, array $employeeSnapshot, int $offboardingRequestId, User $admin): void
+    {
+        if ($recipients->isEmpty()) {
+            return;
+        }
+
+        $emailTemplate = EmailTemplate::where('is_active', true)
+            ->where('template_name', 'Offboarding Request Cancelled')
+            ->latest('updated_at')
+            ->first();
+
+        if (! $emailTemplate) {
+            Log::warning('No "Offboarding Request Cancelled" email template found — cancellation notifications were not sent.', [
+                'offboarding_request_id' => $offboardingRequestId,
+            ]);
+
+            return;
+        }
+
+        $cancelledAt = now()->format('M d, Y g:i A');
+        $sent = 0;
+        $failed = 0;
+
+        // Recipients arriving here are already deduplicated by email and
+        // pre-validated (see `collectCancellationRecipients()`) — every one
+        // of them gets attempted regardless of how many others came before,
+        // and one failure never skips or aborts the rest of the list.
+        foreach ($recipients as $recipient) {
+            try {
+                [$subject, $body] = $emailTemplate->render(
+                    approverName: $recipient->name,
+                    offboardeeName: $employeeSnapshot['name'],
+                    employeeNumber: $employeeSnapshot['employeeCode'],
+                    department: $employeeSnapshot['department'],
+                    cancelledBy: $admin->name,
+                    cancelledAt: $cancelledAt,
+                    offboardingRequestId: (string) $offboardingRequestId,
+                );
+
+                Mail::to($recipient->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+                $sent++;
+
+                Log::info('Offboarding cancellation notification sent.', [
+                    'offboarding_request_id' => $offboardingRequestId,
+                    'recipient_employee_id' => $recipient->id,
+                    'recipient' => $recipient->email,
+                ]);
+            } catch (\Throwable $e) {
+                $failed++;
+
+                Log::error('Failed to send offboarding cancellation notification.', [
+                    'offboarding_request_id' => $offboardingRequestId,
+                    'recipient_employee_id' => $recipient->id,
+                    'recipient' => $recipient->email,
+                    'exception' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        Log::info('Offboarding cancellation notifications complete.', [
+            'offboarding_request_id' => $offboardingRequestId,
+            'recipients_total' => $recipients->count(),
+            'sent' => $sent,
+            'failed' => $failed,
+        ]);
     }
 
     /**

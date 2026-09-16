@@ -302,6 +302,15 @@ Route::middleware('permission:offboarding-requests.reset')->group(function () {
     Route::post('/offboarding-requests/{offboardingRequest}/reset', [OffboardingRequestController::class, 'reset'])->name('offboarding-requests.reset');
 });
 
+// Cancel Offboarding Request (Offboardee page) — a destructive admin action
+// that retracts the request and permanently deletes its dependent records
+// (the request row itself survives, marked 'cancelled' — see
+// `OffboardingRequestController::cancel()`'s own docblock). Its own
+// dedicated permission, same reasoning as the reset action above.
+Route::middleware('permission:offboarding-requests.cancel')->group(function () {
+    Route::post('/offboarding-requests/{offboardingRequest}/cancel', [OffboardingRequestController::class, 'cancel'])->name('offboarding-requests.cancel');
+});
+
 // Final Approval (Offboardee page) — emails the active Final Signatory to
 // sign off on a COMPLETED offboarding request. Its own dedicated
 // permission, same reasoning as the reset action above.

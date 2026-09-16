@@ -279,6 +279,36 @@
                                         </template>
                                     </div>
 
+                                    <!-- Due Date Extension History — permanent, non-editable audit trail
+                                         (see ChecklistDueDateExtension) of every "Extend Due" action taken
+                                         on this checklist, oldest first. Absent entirely (not just empty)
+                                         when the checklist has never been extended, so a never-extended
+                                         checklist's card looks exactly as it always has. -->
+                                    <template x-if="step.dueDateExtensions && step.dueDateExtensions.length">
+                                        <div class="mt-2 rounded-lg border border-[#145a3a]/30 bg-[#145a3a]/5 px-3 py-2 text-xs dark:border-[#3aa876]/30 dark:bg-[#3aa876]/10">
+                                            <p class="font-medium text-[#145a3a] dark:text-[#3aa876]">
+                                                Due Date Extended
+                                                <template x-if="step.originalDueDate">
+                                                    <span class="font-normal text-gray-500 dark:text-gray-400">
+                                                        (Originally due: <span x-text="step.originalDueDate"></span>)
+                                                    </span>
+                                                </template>
+                                            </p>
+                                            <ul class="mt-1.5 space-y-1 text-gray-600 dark:text-gray-300">
+                                                <template x-for="(extension, extensionIndex) in step.dueDateExtensions" :key="extensionIndex">
+                                                    <li>
+                                                        <span x-text="extension.previousDueDate"></span>
+                                                        &rarr;
+                                                        <span class="font-medium text-gray-800 dark:text-white/90" x-text="extension.newDueDate"></span>
+                                                        <span class="text-gray-400">(+<span x-text="extension.additionalDays"></span> day<span x-show="extension.additionalDays !== 1">s</span>)</span>
+                                                        by <span class="font-medium text-gray-700 dark:text-gray-300" x-text="extension.extendedBy"></span>
+                                                        <span class="text-gray-400" x-text="'on ' + extension.extendedAt"></span>
+                                                    </li>
+                                                </template>
+                                            </ul>
+                                        </div>
+                                    </template>
+
                                     @include('components.offboarding.partials.checklist-item-status-list')
 
                                     <!-- <template x-if="step.delegatedTo">
@@ -302,7 +332,16 @@
                                         <template x-if="step.reminderSentAt">
                                             <p class="text-xs text-gray-400">Last reminder sent: <span x-text="step.reminderSentAt"></span></p>
                                         </template>
-                                        <div class="flex flex-wrap items-center gap-2">
+                                        <!-- `items-start`, not `items-center` — the "Notify Approver"
+                                             block's own height grows when its "Select Email Template"
+                                             picker panel expands below its button row (see
+                                             `showEmailPicker` further down); `items-center` would then
+                                             re-center every flex item (including "Extend Due" beside it)
+                                             against that new, taller height, visibly floating "Extend Due"
+                                             away from the button row it's meant to stay beside.
+                                             `items-start` keeps every item pinned to the top of this row
+                                             regardless of how tall either sibling becomes. -->
+                                        <div class="flex flex-wrap items-start gap-2">
                                         <template x-if="isAdmin && step.canRemind">
                                             <div x-data="{ confirmed: false, showEmailPicker: false, selectedTemplateId: defaultTemplateIdFor(step) }">
                                                 <div class="flex items-center gap-2">
@@ -332,6 +371,57 @@
                                                             Notify Approver
                                                         </button>
                                                     </form>
+                                                     <template x-if="canExtendDue && step.canExtendDue">
+                                                        <div x-data="{ confirmed: false, additionalDays: '' }">
+                                                            <form method="POST" :action="step.extendDueUrl"
+                                                                @submit="if (!confirmed) {
+                                                                    $event.preventDefault();
+                                                                    Swal.fire({
+                                                                        title: 'Extend Due Date',
+                                                                        html: '&lt;div style=\'text-align:left;font-size:13px;line-height:1.6;\'&gt;'
+                                                                            + '&lt;p&gt;&lt;strong&gt;Checklist:&lt;/strong&gt; ' + (step.department || '') + '&lt;/p&gt;'
+                                                                            + '&lt;p&gt;&lt;strong&gt;Current Due Date:&lt;/strong&gt; ' + (step.dueAt || '&mdash;') + '&lt;/p&gt;'
+                                                                            + '&lt;p style=\'margin-bottom:2px;\'&gt;&lt;strong style=\'color:#145a3a;\'&gt;Before (Configured Extension)&lt;/strong&gt;&lt;/p&gt;'
+                                                                            + '&lt;p style=\'margin:0 0 12px;font-size:22px;font-weight:700;color:#145a3a;\'&gt;' + (step.configuredExtensionDays ? step.configuredExtensionDays + ' day(s)' : 'Not configured') + '&lt;/p&gt;'
+                                                                            + '&lt;/div&gt;',
+                                                                        input: 'number',
+                                                                        inputAttributes: { min: 1, step: 1 },
+                                                                        inputPlaceholder: 'After: additional days to extend',
+                                                                        showCancelButton: true,
+                                                                        confirmButtonText: 'Extend Due Date',
+                                                                        confirmButtonColor: '#145a3a',
+                                                                        cancelButtonColor: '#6b7280',
+                                                                        reverseButtons: true,
+                                                                        inputValidator: (value) => {
+                                                                            const days = Number(value);
+                                                                            if (!value || !Number.isInteger(days) || days &lt; 1) {
+                                                                                return 'Enter a valid positive whole number of days.';
+                                                                            }
+                                                                        }
+                                                                    }).then((result) => {
+                                                                        if (result.isConfirmed) {
+                                                                            additionalDays = result.value;
+                                                                            confirmed = true;
+                                                                            // Alpine flushes the hidden input's
+                                                                            // `:value` binding asynchronously — without
+                                                                            // this, the native form would read that
+                                                                            // input's still-stale (empty) DOM value the
+                                                                            // instant requestSubmit() runs, submitting
+                                                                            // before the assignment above ever reaches
+                                                                            // the DOM.
+                                                                            $nextTick(() => $el.requestSubmit());
+                                                                        }
+                                                                    });
+                                                                }">
+                                                                <input type="hidden" name="_token" :value="csrfToken" />
+                                                                <input type="hidden" name="additional_extension_days" :value="additionalDays" />
+                                                                <button type="submit" :disabled="confirmed" data-turbo-submits-with="Extending..."
+                                                                    class="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
+                                                                    Extend Due
+                                                                </button>
+                                                            </form>
+                                                        </div>
+                                                    </template>
                                                     <button type="button" title="Choose Email Template" @click="showEmailPicker = !showEmailPicker"
                                                         class="rounded-lg border border-gray-300 p-1.5 text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
                                                         <svg width="14" height="14" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -365,57 +455,7 @@
                                                 </div>
                                             </div>
                                         </template>
-                                        <template x-if="canExtendDue && step.canExtendDue">
-                                            <div x-data="{ confirmed: false, additionalDays: '' }">
-                                                <form method="POST" :action="step.extendDueUrl"
-                                                    @submit="if (!confirmed) {
-                                                        $event.preventDefault();
-                                                        Swal.fire({
-                                                            title: 'Extend Due Date',
-                                                            html: '&lt;div style=\'text-align:left;font-size:13px;line-height:1.6;\'&gt;'
-                                                                + '&lt;p&gt;&lt;strong&gt;Checklist:&lt;/strong&gt; ' + (step.department || '') + '&lt;/p&gt;'
-                                                                + '&lt;p&gt;&lt;strong&gt;Current Due Date:&lt;/strong&gt; ' + (step.dueAt || '&mdash;') + '&lt;/p&gt;'
-                                                                + '&lt;p style=\'margin-bottom:2px;\'&gt;&lt;strong style=\'color:#145a3a;\'&gt;Before (Configured Extension)&lt;/strong&gt;&lt;/p&gt;'
-                                                                + '&lt;p style=\'margin:0 0 12px;font-size:22px;font-weight:700;color:#145a3a;\'&gt;' + (step.configuredExtensionDays ? step.configuredExtensionDays + ' day(s)' : 'Not configured') + '&lt;/p&gt;'
-                                                                + '&lt;/div&gt;',
-                                                            input: 'number',
-                                                            inputAttributes: { min: 1, step: 1 },
-                                                            inputPlaceholder: 'After: additional days to extend',
-                                                            showCancelButton: true,
-                                                            confirmButtonText: 'Extend Due Date',
-                                                            confirmButtonColor: '#145a3a',
-                                                            cancelButtonColor: '#6b7280',
-                                                            reverseButtons: true,
-                                                            inputValidator: (value) => {
-                                                                const days = Number(value);
-                                                                if (!value || !Number.isInteger(days) || days &lt; 1) {
-                                                                    return 'Enter a valid positive whole number of days.';
-                                                                }
-                                                            }
-                                                        }).then((result) => {
-                                                            if (result.isConfirmed) {
-                                                                additionalDays = result.value;
-                                                                confirmed = true;
-                                                                // Alpine flushes the hidden input's
-                                                                // `:value` binding asynchronously — without
-                                                                // this, the native form would read that
-                                                                // input's still-stale (empty) DOM value the
-                                                                // instant requestSubmit() runs, submitting
-                                                                // before the assignment above ever reaches
-                                                                // the DOM.
-                                                                $nextTick(() => $el.requestSubmit());
-                                                            }
-                                                        });
-                                                    }">
-                                                    <input type="hidden" name="_token" :value="csrfToken" />
-                                                    <input type="hidden" name="additional_extension_days" :value="additionalDays" />
-                                                    <button type="submit" :disabled="confirmed" data-turbo-submits-with="Extending..."
-                                                        class="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
-                                                        Extend Due
-                                                    </button>
-                                                </form>
-                                            </div>
-                                        </template>
+                                       
                                         </div>
                                     </div>
                                 </div>
@@ -538,7 +578,11 @@
                                             <template x-if="step.reminderSentAt">
                                                 <p class="text-xs text-gray-400">Last reminder sent: <span x-text="step.reminderSentAt"></span></p>
                                             </template>
-                                            <div class="flex flex-wrap items-center gap-2">
+                                            <!-- See the Status tab's identical comment above this same
+                                                 pattern — `items-start` keeps "Extend Due" pinned beside
+                                                 the button row even once the "Select Email Template"
+                                                 picker panel expands the sibling block's height. -->
+                                            <div class="flex flex-wrap items-start gap-2">
                                             <template x-if="isAdmin && step.canRemind">
                                                 <div x-data="{ confirmed: false, showEmailPicker: false, selectedTemplateId: defaultTemplateIdFor(step) }">
                                                     <div class="flex items-center gap-2">
@@ -568,6 +612,56 @@
                                                                 Notify Approver
                                                             </button>
                                                         </form>
+                                                        <template x-if="canExtendDue && step.canExtendDue">
+                                                            <div x-data="{ confirmed: false, additionalDays: '' }">
+                                                                <form method="POST" :action="step.extendDueUrl"
+                                                                    @submit="if (!confirmed) {
+                                                                        $event.preventDefault();
+                                                                        Swal.fire({
+                                                                            title: 'Extend Due Date',
+                                                                            html: '&lt;div style=\'text-align:left;font-size:13px;line-height:1.6;\'&gt;'
+                                                                                + '&lt;p&gt;&lt;strong&gt;Checklist:&lt;/strong&gt; ' + (step.department || '') + '&lt;/p&gt;'
+                                                                                + '&lt;p&gt;&lt;strong&gt;Current Due Date:&lt;/strong&gt; ' + (step.dueAt || '&mdash;') + '&lt;/p&gt;'
+                                                                                + '&lt;p style=\'margin-bottom:2px;\'&gt;&lt;strong style=\'color:#145a3a;\'&gt;Before (Configured Extension):&lt;/strong&gt;&lt;/p&gt;'
+                                                                                + '&lt;p style=\'margin:0 0 12px;font-size:22px;font-weight:700;color:#145a3a;\'&gt;' + (step.configuredExtensionDays ? step.configuredExtensionDays + ' day(s)' : 'Not configured') + '&lt;/p&gt;'
+                                                                                + '&lt;/div&gt;',
+                                                                            input: 'number',
+                                                                            inputAttributes: { min: 1, step: 1 },
+                                                                            inputPlaceholder: 'After: additional days to extend',
+                                                                            showCancelButton: true,
+                                                                            confirmButtonText: 'Extend Due Date',
+                                                                            confirmButtonColor: '#145a3a',
+                                                                            cancelButtonColor: '#6b7280',
+                                                                            reverseButtons: true,
+                                                                            inputValidator: (value) => {
+                                                                                const days = Number(value);
+                                                                                if (!value || !Number.isInteger(days) || days &lt; 1) {
+                                                                                    return 'Enter a valid positive whole number of days.';
+                                                                                }
+                                                                            }
+                                                                        }).then((result) => {
+                                                                            if (result.isConfirmed) {
+                                                                                additionalDays = result.value;
+                                                                                confirmed = true;
+                                                                                // See the Status tab's identical
+                                                                                // comment above this same pattern —
+                                                                                // $nextTick() lets Alpine flush the
+                                                                                // hidden input's `:value` binding to
+                                                                                // the DOM before the native form reads
+                                                                                // it.
+                                                                                $nextTick(() => $el.requestSubmit());
+                                                                            }
+                                                                        });
+                                                                    }">
+                                                                    <input type="hidden" name="_token" :value="csrfToken" />
+                                                                    <input type="hidden" name="additional_extension_days" :value="additionalDays" />
+                                                                    <button type="submit" :disabled="confirmed" data-turbo-submits-with="Extending..."
+                                                                        class="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
+                                                                        Extend Due
+                                                                    </button>
+                                                                </form>
+                                                            </div>
+                                                        </template>
                                                         <button type="button" title="Choose Email Template" @click="showEmailPicker = !showEmailPicker"
                                                             class="rounded-lg border border-gray-300 p-1.5 text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
                                                             <svg width="14" height="14" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -599,56 +693,6 @@
                                                             Will notify using: <span class="font-medium text-gray-700 dark:text-gray-300" x-text="templateNameFor(selectedTemplateId)"></span>
                                                         </p>
                                                     </div>
-                                                </div>
-                                            </template>
-                                            <template x-if="canExtendDue && step.canExtendDue">
-                                                <div x-data="{ confirmed: false, additionalDays: '' }">
-                                                    <form method="POST" :action="step.extendDueUrl"
-                                                        @submit="if (!confirmed) {
-                                                            $event.preventDefault();
-                                                            Swal.fire({
-                                                                title: 'Extend Due Date',
-                                                                html: '&lt;div style=\'text-align:left;font-size:13px;line-height:1.6;\'&gt;'
-                                                                    + '&lt;p&gt;&lt;strong&gt;Checklist:&lt;/strong&gt; ' + (step.department || '') + '&lt;/p&gt;'
-                                                                    + '&lt;p&gt;&lt;strong&gt;Current Due Date:&lt;/strong&gt; ' + (step.dueAt || '&mdash;') + '&lt;/p&gt;'
-                                                                    + '&lt;p style=\'margin-bottom:2px;\'&gt;&lt;strong style=\'color:#145a3a;\'&gt;Before (Configured Extension):&lt;/strong&gt;&lt;/p&gt;'
-                                                                    + '&lt;p style=\'margin:0 0 12px;font-size:22px;font-weight:700;color:#145a3a;\'&gt;' + (step.configuredExtensionDays ? step.configuredExtensionDays + ' day(s)' : 'Not configured') + '&lt;/p&gt;'
-                                                                    + '&lt;/div&gt;',
-                                                                input: 'number',
-                                                                inputAttributes: { min: 1, step: 1 },
-                                                                inputPlaceholder: 'After: additional days to extend',
-                                                                showCancelButton: true,
-                                                                confirmButtonText: 'Extend Due Date',
-                                                                confirmButtonColor: '#145a3a',
-                                                                cancelButtonColor: '#6b7280',
-                                                                reverseButtons: true,
-                                                                inputValidator: (value) => {
-                                                                    const days = Number(value);
-                                                                    if (!value || !Number.isInteger(days) || days &lt; 1) {
-                                                                        return 'Enter a valid positive whole number of days.';
-                                                                    }
-                                                                }
-                                                            }).then((result) => {
-                                                                if (result.isConfirmed) {
-                                                                    additionalDays = result.value;
-                                                                    confirmed = true;
-                                                                    // See the Status tab's identical
-                                                                    // comment above this same pattern —
-                                                                    // $nextTick() lets Alpine flush the
-                                                                    // hidden input's `:value` binding to
-                                                                    // the DOM before the native form reads
-                                                                    // it.
-                                                                    $nextTick(() => $el.requestSubmit());
-                                                                }
-                                                            });
-                                                        }">
-                                                        <input type="hidden" name="_token" :value="csrfToken" />
-                                                        <input type="hidden" name="additional_extension_days" :value="additionalDays" />
-                                                        <button type="submit" :disabled="confirmed" data-turbo-submits-with="Extending..."
-                                                            class="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
-                                                            Extend Due
-                                                        </button>
-                                                    </form>
                                                 </div>
                                             </template>
                                             </div>

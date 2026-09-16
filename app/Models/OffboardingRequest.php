@@ -40,6 +40,8 @@ class OffboardingRequest extends Model
         'secondary_notified_at',
         'general_signatory_secondary_notified_at',
         'general_signatory_final_pay_notified_at',
+        'cancelled_at',
+        'cancelled_by',
     ];
 
     protected function casts(): array
@@ -53,6 +55,7 @@ class OffboardingRequest extends Model
             'secondary_notified_at' => 'datetime',
             'general_signatory_secondary_notified_at' => 'datetime',
             'general_signatory_final_pay_notified_at' => 'datetime',
+            'cancelled_at' => 'datetime',
         ];
     }
 
@@ -140,6 +143,18 @@ class OffboardingRequest extends Model
     public function emailTemplate(): BelongsTo
     {
         return $this->belongsTo(EmailTemplate::class);
+    }
+
+    /**
+     * Which admin/HR user performed "Cancel Offboarding" — null for a
+     * request that's never been cancelled. See
+     * `OffboardingRequestController::cancel()`'s own docblock for why this
+     * (and `cancelled_at`) live directly on the surviving request row
+     * rather than a separate audit table.
+     */
+    public function cancelledBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'cancelled_by');
     }
 
     /**
@@ -563,6 +578,12 @@ class OffboardingRequest extends Model
         $this->loadMissing('generalSignatoryApprovals.generalSignatory.clearanceSignatory');
 
         $remindersByAssignment = $this->activities->where('action', 'reminder_sent')->groupBy('offboarding_request_approver_id');
+        // Every "Extend Due" action taken on each checklist — surfaced as
+        // its own Timeline entry per extension below (never merged/
+        // overwritten, so a checklist extended several times keeps one
+        // separate entry per extension, oldest first thanks to
+        // `$this->activities` already being loaded in `created_at` order).
+        $dueDateExtensionEventsByAssignment = $this->activities->where('action', 'due_date_extended')->groupBy('offboarding_request_approver_id');
         $delegationEventsByAssignment = $this->activities
             ->whereIn('action', ['checklist_assigned', 'checklist_delegate_completed', 'checklist_item_cleared_by_other', 'checklist_item_held', 'checklist_ready_for_approval'])
             ->groupBy('offboarding_request_approver_id');
@@ -578,7 +599,7 @@ class OffboardingRequest extends Model
             ->whereIn('action', ['general_signatory_reminder_sent', 'general_signatory_viewed'])
             ->groupBy('offboarding_request_general_signatory_id');
 
-        $buildRichStep = function (OffboardingRequestApprover $assignment) use ($remindersByAssignment, $delegationEventsByAssignment): array {
+        $buildRichStep = function (OffboardingRequestApprover $assignment) use ($remindersByAssignment, $dueDateExtensionEventsByAssignment, $delegationEventsByAssignment): array {
             $assignment->loadMissing(
                 'checklistTemplate.items',
                 'itemProgress.checkedBy.employee',
@@ -736,6 +757,25 @@ class OffboardingRequest extends Model
                 // configured (e.g. the HR Checklist example in the
                 // feature's own spec).
                 'configuredExtensionDays' => $assignment->checklistTemplate?->due_in_days,
+                // Extend Due history block (Offboarding Status tab) — the
+                // checklist's very first due date (see
+                // `OffboardingRequestApprover::originalDueDate()`'s own
+                // docblock for why this differs from both `dueAt` above and
+                // any single extension's own `previousDueDate` below), plus
+                // the complete, permanent, chronological (oldest-first,
+                // matching `dueDateExtensions()`'s own ordering) list of
+                // every extension ever made — empty when the checklist has
+                // never been extended, so the view can tell "never
+                // extended" apart from "extended, currently 0 rows shown"
+                // by simply checking this array's length.
+                'originalDueDate' => $assignment->originalDueDate()?->format('M d, Y'),
+                'dueDateExtensions' => $assignment->dueDateExtensions->map(fn (ChecklistDueDateExtension $extension) => [
+                    'previousDueDate' => $extension->previous_due_date->format('M d, Y'),
+                    'newDueDate' => $extension->new_due_date->format('M d, Y'),
+                    'additionalDays' => $extension->additional_extension_days,
+                    'extendedBy' => $extension->extendedBy?->name ?? 'Unknown',
+                    'extendedAt' => $extension->created_at->format('M d, Y g:i A'),
+                ])->values(),
                 // Persisted, refresh-proof basis for the completed-status
                 // color (green if approved on/before `due_at`, red if
                 // approved at/after it) — always derived from the row's own
@@ -759,6 +799,20 @@ class OffboardingRequest extends Model
                     'date' => $reminder->created_at->format('M d, Y g:i A'),
                     'done' => true,
                     'comment' => $reminder->comment,
+                ];
+            }
+
+            // One permanent Timeline entry per "Extend Due" action — never
+            // merged or overwritten, so a checklist extended several times
+            // shows one line per extension, in the order they actually
+            // happened (see `$dueDateExtensionEventsByAssignment`'s own
+            // comment above for why that ordering is guaranteed).
+            foreach ($dueDateExtensionEventsByAssignment->get($assignment->id, collect()) as $extensionEvent) {
+                $steps[] = [
+                    'label' => $extensionEvent->label(),
+                    'date' => $extensionEvent->created_at->format('M d, Y g:i A'),
+                    'done' => true,
+                    'comment' => $extensionEvent->comment,
                 ];
             }
 

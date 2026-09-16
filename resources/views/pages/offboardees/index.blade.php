@@ -160,22 +160,26 @@
             <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                 @foreach ($offboardees as $offboardee)
                     @php
+                        // No 'cancelled' entry here: a cancelled request is
+                        // excluded from $offboardees entirely (see
+                        // OffboardeeController::index()), so this card loop
+                        // can never encounter that status.
                         $statusStyles = [
                             'pending' => 'bg-yellow-50 text-yellow-700 dark:bg-yellow-500/15 dark:text-yellow-400',
                             'in_progress' => 'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400',
                             'overdue' => 'bg-orange-50 text-orange-700 dark:bg-orange-500/15 dark:text-orange-400',
                             'completed' => 'bg-success-50 text-success-700 dark:bg-success-500/15 dark:text-success-400',
-                            'cancelled' => 'bg-error-50 text-error-700 dark:bg-error-500/15 dark:text-error-400',
                         ];
                         $statusLabels = [
                             'pending' => 'Pending',
                             'in_progress' => 'In Progress',
                             'overdue' => 'Overdue',
                             'completed' => 'Completed',
-                            'cancelled' => 'Cancelled',
                         ];
                     @endphp
-                    <div @click="$dispatch('open-offboardee-modal', @js($offboardee))"
+                    <div x-data="{ cancelling: false }"
+                        data-offboardee-card="{{ $offboardee['id'] }}"
+                        @click="if (!cancelling) $dispatch('open-offboardee-modal', @js($offboardee))"
                         x-show="search.trim() === '' || @js(Str::lower($offboardee['name'])).includes(search.trim().toLowerCase())"
                         class="group cursor-pointer rounded-2xl border border-gray-200 bg-white p-5 transition-all duration-200 hover:-translate-y-1 hover:border-[#145a3a]/40 hover:shadow-lg dark:border-gray-800 dark:bg-white/[0.03] dark:hover:border-[#3aa876]/40">
                         <div class="flex items-start justify-between">
@@ -203,9 +207,9 @@
                             </div>
                         </div>
 
-                        @can('offboarding-requests.reset')
+                        <!-- @can('offboarding-requests.reset')
                             @if ($offboardee['resetOffboardingUrl'] && $offboardee['hasOffboardingProgress'] && $offboardee['status'] !== 'completed')
-                                <div class="mt-4 border-t border-gray-100 pt-4 dark:border-gray-800" @click.stop="">
+                                <div class="mt-4 border-t border-gray-100 pt-4 dark:border-gray-800" :class="{ 'pointer-events-none opacity-50': cancelling }" @click.stop="">
                                     <form method="POST" action="{{ $offboardee['resetOffboardingUrl'] }}" x-data="{ confirmed: false }"
                                         @submit="if (!confirmed) {
                                             $event.preventDefault();
@@ -222,12 +226,86 @@
                                             }).then((result) => { if (result.isConfirmed) { confirmed = true; $el.requestSubmit(); } });
                                         }">
                                         @csrf
-                                        <button type="submit" data-turbo-submits-with="Resetting..."
-                                            class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-error-200 px-3 py-2 text-xs font-medium text-error-600 hover:bg-error-50 dark:border-error-500/30 dark:text-error-400 dark:hover:bg-error-500/10">
+                                        <button type="submit" :disabled="cancelling" data-turbo-submits-with="Resetting..."
+                                            class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-error-200 px-3 py-2 text-xs font-medium text-error-600 hover:bg-error-50 disabled:cursor-not-allowed dark:border-error-500/30 dark:text-error-400 dark:hover:bg-error-500/10">
                                             <svg width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
                                                 <path d="M4.16667 10C4.16667 6.77834 6.77834 4.16667 10 4.16667C11.6928 4.16667 13.2144 4.88883 14.2765 6.04167H12.5C12.1548 6.04167 11.875 6.32149 11.875 6.66667C11.875 7.01185 12.1548 7.29167 12.5 7.29167H15.8333C16.1785 7.29167 16.4583 7.01185 16.4583 6.66667V3.33333C16.4583 2.98816 16.1785 2.70833 15.8333 2.70833C15.4882 2.70833 15.2083 2.98816 15.2083 3.33333V5.01603C13.912 3.66086 12.0555 2.91667 10 2.91667C6.08798 2.91667 2.91667 6.08798 2.91667 10C2.91667 13.912 6.08798 17.0833 10 17.0833C13.129 17.0833 15.7828 15.0645 16.7367 12.2635C16.8477 11.9367 16.6726 11.5818 16.3458 11.4709C16.019 11.36 15.6641 11.535 15.5532 11.8618C14.7663 14.1729 12.5765 15.8333 10 15.8333C6.77834 15.8333 4.16667 13.2217 4.16667 10Z" fill="currentColor" />
                                             </svg>
                                             Reset Offboarding
+                                        </button>
+                                    </form>
+                                </div>
+                            @endif
+                        @endcan -->
+
+                        @can('offboarding-requests.cancel')
+                            @if ($offboardee['cancelOffboardingUrl'] && $offboardee['status'] !== 'cancelled' && $offboardee['status'] !== 'completed')
+                                <div class="mt-4 border-t border-gray-100 pt-4 dark:border-gray-800" @click.stop="">
+                                    {{-- Deliberately not a native form submit: cancellation must stay on
+                                         THIS page and remove just this one card the instant the server
+                                         confirms success, with no full-page reload — a plain
+                                         `$el.requestSubmit()`/Turbo navigation can't do that. The fetch
+                                         call awaits the full response (DB transaction + notification
+                                         dispatch all complete server-side before it resolves), so the
+                                         loading state below covers the entire cancellation, not just the
+                                         network round trip start. --}}
+                                    <form method="POST" action="{{ $offboardee['cancelOffboardingUrl'] }}"
+                                        @submit.prevent="if (cancelling) return;
+                                            Swal.fire({
+                                                title: 'Cancel Offboarding Request?',
+                                                text: 'Are you sure you want to cancel this offboarding request for ' + @js($offboardee['name']) + '? This action will retract the request and remove all records associated with this offboarding process.',
+                                                icon: 'warning',
+                                                showCancelButton: true,
+                                                confirmButtonText: 'Confirm Cancellation',
+                                                cancelButtonText: 'Cancel',
+                                                confirmButtonColor: '#dc2626',
+                                                cancelButtonColor: '#6b7280',
+                                                reverseButtons: true
+                                            }).then((result) => {
+                                                if (!result.isConfirmed) return;
+                                                cancelling = true;
+                                                fetch($el.action, {
+                                                    method: 'POST',
+                                                    headers: {
+                                                        'Accept': 'application/json',
+                                                        'X-Requested-With': 'XMLHttpRequest',
+                                                        'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                                                    },
+                                                }).then(async (response) => {
+                                                    const data = await response.json().catch(() => ({}));
+                                                    if (!response.ok) {
+                                                        throw new Error(data.message || 'Cancellation failed. Please try again.');
+                                                    }
+                                                    $el.closest('[data-offboardee-card]')?.remove();
+                                                    Swal.fire({
+                                                        icon: 'success',
+                                                        title: 'Cancelled',
+                                                        text: data.message || 'Offboarding request has been successfully cancelled.',
+                                                        confirmButtonColor: '#145a3a',
+                                                    });
+                                                }).catch((error) => {
+                                                    cancelling = false;
+                                                    Swal.fire({
+                                                        icon: 'error',
+                                                        title: 'Cancellation Failed',
+                                                        text: error.message,
+                                                        confirmButtonColor: '#145a3a',
+                                                    });
+                                                });
+                                            });
+                                        ">
+                                        @csrf
+                                        <button type="submit" :disabled="cancelling"
+                                            class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-error-200 px-3 py-2 text-xs font-medium text-error-600 hover:bg-error-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-error-500/30 dark:text-error-400 dark:hover:bg-error-500/10">
+                                            <svg x-show="!cancelling" width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                <path d="M10 17.5C14.1421 17.5 17.5 14.1421 17.5 10C17.5 5.85786 14.1421 2.5 10 2.5C5.85786 2.5 2.5 5.85786 2.5 10C2.5 14.1421 5.85786 17.5 10 17.5Z" stroke="currentColor" stroke-width="1.5" />
+                                                <path d="M7.5 7.5L12.5 12.5M12.5 7.5L7.5 12.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                                            </svg>
+                                            <svg x-show="cancelling" x-cloak class="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+                                            </svg>
+                                            <span x-text="cancelling ? 'Cancelling...' : 'Cancel Offboarding'"></span>
                                         </button>
                                     </form>
                                 </div>

@@ -1592,6 +1592,7 @@ class ApprovalController extends Controller
         $offboardingRequest->activities()->create([
             'user_id' => auth()->id(),
             'offboarding_request_approver_id' => $offboardingRequestApprover->id,
+            'checklist_due_date_extension_id' => $extension->id,
             'action' => 'due_date_extended',
             'status' => $offboardingRequest->status,
             'comment' => sprintf(

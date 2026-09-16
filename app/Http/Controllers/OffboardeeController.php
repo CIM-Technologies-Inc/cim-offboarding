@@ -10,7 +10,7 @@ use Illuminate\View\View;
 
 class OffboardeeController extends Controller
 {
-    private const STATUSES = ['pending', 'in_progress', 'overdue', 'completed', 'cancelled'];
+    private const STATUSES = ['pending', 'in_progress', 'overdue', 'completed'];
 
     public function index(Request $request): View
     {
@@ -24,15 +24,14 @@ class OffboardeeController extends Controller
 
         // `offboarding` (still in progress) and `offboarded` (fully
         // completed — see `ChecklistCompletionService::checkFinalPayCompletion()`)
-        // both belong here: this page is the permanent historical record of
-        // every offboarding case regardless of how far along or how long
-        // finished it is. Only a genuinely `active` employee (never
-        // started, or reverted after a cancelled/deleted request) is
-        // excluded.
-        $employees = Employee::where(function ($query) {
-                $query->whereIn('status', ['offboarding', 'offboarded'])
-                    ->orWhereHas('latestOffboardingRequest', fn ($q) => $q->where('status', 'cancelled'));
-            })
+        // both belong here: this page lists every CURRENT offboarding case
+        // regardless of how far along it is. A cancelled request reverts its
+        // employee straight to `active` (see
+        // `OffboardingRequestController::cancel()`) and is deliberately
+        // NOT included here — cancellation retracts the request entirely,
+        // so the employee must disappear from this listing immediately and
+        // only reappear once a genuinely new request is created for them.
+        $employees = Employee::whereIn('status', ['offboarding', 'offboarded'])
             ->with(['latestOffboardingRequest.checklistTemplates', 'latestOffboardingRequest.approvers.checklistTemplate', 'latestOffboardingRequest.approvers.employee', 'latestOffboardingRequest.approvers.itemProgress', 'latestOffboardingRequest.generalSignatoryApprovals', 'latestOffboardingRequest.immediateHead', 'latestOffboardingRequest.finalApproval.employee'])
             ->orderBy('name')
             ->get();
@@ -104,6 +103,16 @@ class OffboardeeController extends Controller
             // acted on yet never shows a destructive reset action with
             // nothing real to reset.
             'hasOffboardingProgress' => $employee->latestOffboardingRequest?->hasApprovedOrCompletedProgress() ?? false,
+            // Cancel Offboarding — same "generate the URL unconditionally,
+            // gate the button in the view" convention as the Reset URL
+            // above. The button itself is only ever rendered for a request
+            // whose displayed status is neither 'cancelled' nor
+            // 'completed' (see the card partial), gated by the
+            // `offboarding-requests.cancel` permission; the route
+            // independently re-enforces both server-side.
+            'cancelOffboardingUrl' => $employee->latestOffboardingRequest
+                ? route('offboarding-requests.cancel', $employee->latestOffboardingRequest)
+                : null,
             // Final Approval — the button itself is only ever rendered for
             // a request whose real `status` column is 'completed' (see the
             // card partial), gated by the `final-approval.send` permission;

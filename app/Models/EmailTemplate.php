@@ -120,7 +120,10 @@ class EmailTemplate extends Model
      * "{{extended_due_date}}" / "{{clearance_signatory_name}}" for the
      * Checklist Due Date Extended notification sent to a checklist's
      * Clearance Signatory once `OffboardingRequestApprover::extendDue()`
-     * saves — plus the legacy bare-word / single-brace "approver" /
+     * saves, "{{cancelled_by}}" / "{{cancelled_at}}" / "{{offboarding_request_id}}"
+     * for the Offboarding Request Cancelled notification sent once
+     * `OffboardingRequestController::cancel()` commits — plus the legacy
+     * bare-word / single-brace "approver" /
      * "offboardee" / "employee" placeholders still used by the
      * drag-and-drop email template editor. A placeholder with no value
      * available at this call site (e.g. "{{due_date}}" when the caller has
@@ -160,6 +163,9 @@ class EmailTemplate extends Model
         ?string $extensionDays = null,
         ?string $extendedDueDate = null,
         ?string $clearanceSignatoryName = null,
+        ?string $cancelledBy = null,
+        ?string $cancelledAt = null,
+        ?string $offboardingRequestId = null,
     ): array {
         $values = $this->placeholderValues(
             $approverName, $offboardeeName, $creatorName, $employeeNumber, $checklistName,
@@ -169,6 +175,7 @@ class EmailTemplate extends Model
             $assignedSignatories, $checklistProgress, $remainingItems, $followUpSentAt,
             $generalSignatoryTasks, $approveButton,
             $originalDueDate, $extensionDays, $extendedDueDate, $clearanceSignatoryName,
+            $cancelledBy, $cancelledAt, $offboardingRequestId,
         );
 
         return [
@@ -211,6 +218,9 @@ class EmailTemplate extends Model
         ?string $extensionDays = null,
         ?string $extendedDueDate = null,
         ?string $clearanceSignatoryName = null,
+        ?string $cancelledBy = null,
+        ?string $cancelledAt = null,
+        ?string $offboardingRequestId = null,
     ): array {
         return [
             'approver_name' => $approverName,
@@ -243,6 +253,9 @@ class EmailTemplate extends Model
             'extension_days' => $extensionDays ?? '',
             'extended_due_date' => $extendedDueDate ?? '',
             'clearance_signatory_name' => $clearanceSignatoryName ?? '',
+            'cancelled_by' => $cancelledBy ?? '',
+            'cancelled_at' => $cancelledAt ?? '',
+            'offboarding_request_id' => $offboardingRequestId ?? '',
             'offboarding_link' => '<a href="' . route('login') . '">CIM Offboarding</a>',
             'approver' => $approverName,
             'offboardee' => $offboardeeName,
@@ -259,7 +272,8 @@ class EmailTemplate extends Model
             . '|department|position|days_overdue|pending_items|checklist_status|date_hired|separation_date|reason|offboarding_link'
             . '|request_date|offboarding_status|username|temporary_password|checklist_summary'
             . '|department_head_name|assigned_signatories|checklist_progress|remaining_items|follow_up_sent_at|general_signatory_tasks|approve_button'
-            . '|original_due_date|extension_days|extended_due_date|clearance_signatory_name)\s*\}\}'
+            . '|original_due_date|extension_days|extended_due_date|clearance_signatory_name'
+            . '|cancelled_by|cancelled_at|offboarding_request_id)\s*\}\}'
             . '|\{\s*(approver|offboardee|employee)\s*\}'
             . '|\b(approver|offboardee|employee)\b/i';
 
