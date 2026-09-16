@@ -116,7 +116,11 @@ class EmailTemplate extends Model
      * pre-rendered "Approve" `<a>` button linking the General Signatory's
      * one-click approval, or an empty string once they've already approved
      * (so a template referencing this token never shows a stale/dead
-     * button) — plus the legacy bare-word / single-brace "approver" /
+     * button), "{{original_due_date}}" / "{{extension_days}}" /
+     * "{{extended_due_date}}" / "{{clearance_signatory_name}}" for the
+     * Checklist Due Date Extended notification sent to a checklist's
+     * Clearance Signatory once `OffboardingRequestApprover::extendDue()`
+     * saves — plus the legacy bare-word / single-brace "approver" /
      * "offboardee" / "employee" placeholders still used by the
      * drag-and-drop email template editor. A placeholder with no value
      * available at this call site (e.g. "{{due_date}}" when the caller has
@@ -152,6 +156,10 @@ class EmailTemplate extends Model
         ?string $followUpSentAt = null,
         ?string $generalSignatoryTasks = null,
         ?string $approveButton = null,
+        ?string $originalDueDate = null,
+        ?string $extensionDays = null,
+        ?string $extendedDueDate = null,
+        ?string $clearanceSignatoryName = null,
     ): array {
         $values = $this->placeholderValues(
             $approverName, $offboardeeName, $creatorName, $employeeNumber, $checklistName,
@@ -160,6 +168,7 @@ class EmailTemplate extends Model
             $username, $temporaryPassword, $checklistSummary, $departmentHeadName,
             $assignedSignatories, $checklistProgress, $remainingItems, $followUpSentAt,
             $generalSignatoryTasks, $approveButton,
+            $originalDueDate, $extensionDays, $extendedDueDate, $clearanceSignatoryName,
         );
 
         return [
@@ -198,6 +207,10 @@ class EmailTemplate extends Model
         ?string $followUpSentAt,
         ?string $generalSignatoryTasks,
         ?string $approveButton,
+        ?string $originalDueDate = null,
+        ?string $extensionDays = null,
+        ?string $extendedDueDate = null,
+        ?string $clearanceSignatoryName = null,
     ): array {
         return [
             'approver_name' => $approverName,
@@ -226,6 +239,10 @@ class EmailTemplate extends Model
             'follow_up_sent_at' => $followUpSentAt ?? '',
             'general_signatory_tasks' => $generalSignatoryTasks ?? '',
             'approve_button' => $approveButton ?? '',
+            'original_due_date' => $originalDueDate ?? '',
+            'extension_days' => $extensionDays ?? '',
+            'extended_due_date' => $extendedDueDate ?? '',
+            'clearance_signatory_name' => $clearanceSignatoryName ?? '',
             'offboarding_link' => '<a href="' . route('login') . '">CIM Offboarding</a>',
             'approver' => $approverName,
             'offboardee' => $offboardeeName,
@@ -241,7 +258,8 @@ class EmailTemplate extends Model
         $pattern = '/\{\{\s*(approver_name|offboardee_name|employee_name|employee_number|checklist_name|due_date'
             . '|department|position|days_overdue|pending_items|checklist_status|date_hired|separation_date|reason|offboarding_link'
             . '|request_date|offboarding_status|username|temporary_password|checklist_summary'
-            . '|department_head_name|assigned_signatories|checklist_progress|remaining_items|follow_up_sent_at|general_signatory_tasks|approve_button)\s*\}\}'
+            . '|department_head_name|assigned_signatories|checklist_progress|remaining_items|follow_up_sent_at|general_signatory_tasks|approve_button'
+            . '|original_due_date|extension_days|extended_due_date|clearance_signatory_name)\s*\}\}'
             . '|\{\s*(approver|offboardee|employee)\s*\}'
             . '|\b(approver|offboardee|employee)\b/i';
 

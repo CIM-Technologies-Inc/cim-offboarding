@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Mail\ChecklistSignatoryAnnouncementMail;
 use App\Models\ChecklistApprovalToken;
+use App\Models\ChecklistDueDateExtension;
 use App\Models\ChecklistItemAssignment;
 use App\Models\ChecklistItemProgress;
 use App\Models\ChecklistTemplate;
@@ -21,6 +22,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Notifications\DatabaseNotification;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
@@ -1541,6 +1543,144 @@ class ApprovalController extends Controller
         return redirect()
             ->route('offboardees.index', ['offboardee' => $offboardee->id])
             ->with('success', 'Reminder sent to ' . implode(', ', $sentNames) . '.');
+    }
+
+    /**
+     * "Extend Due" — pushes a checklist's due date forward once it's
+     * actually been reached, from the Offboarding Status page's own
+     * dedicated button (see `OffboardingRequestApprover::canExtendDue()`/
+     * `extendDue()`, which does the actual date math and writes the
+     * permanent audit row). Gated by its own dedicated permission
+     * (`checklists.extend-due`, see the matching route middleware) rather
+     * than folding into `approvals.approve`, so an Admin can grant/revoke
+     * this specific ability independently — the same "own dedicated
+     * permission" reasoning `reset()`/`FinalApprovalController::send()`
+     * already follow for their own admin-gated actions. Checked again here
+     * (not just at the route) for the same defense-in-depth reason
+     * `remind()` above re-checks `isAdmin()`.
+     */
+    public function extendDue(Request $request, OffboardingRequestApprover $offboardingRequestApprover): RedirectResponse
+    {
+        abort_unless(auth()->user()->can('checklists.extend-due'), 403);
+
+        abort_unless(
+            $offboardingRequestApprover->canExtendDue(),
+            422,
+            'This checklist has not yet reached its current due date — it cannot be extended.'
+        );
+
+        $validated = $request->validate([
+            'additional_extension_days' => ['required', 'integer', 'min:1'],
+            'reason' => ['nullable', 'string', 'max:1000'],
+        ]);
+
+        $previousDueDate = $offboardingRequestApprover->due_at;
+
+        $extension = $offboardingRequestApprover->extendDue(
+            $validated['additional_extension_days'],
+            auth()->id(),
+            $validated['reason'] ?? null,
+        );
+
+        // The same "no longer meaningfully overdue" cleanup `approve()`
+        // already does — a checklist just granted a fresh future due date
+        // shouldn't keep showing a stale unread "overdue" notification.
+        $this->resolveOverdueNotifications($offboardingRequestApprover);
+
+        $offboardingRequest = $offboardingRequestApprover->offboardingRequest;
+
+        $offboardingRequest->activities()->create([
+            'user_id' => auth()->id(),
+            'offboarding_request_approver_id' => $offboardingRequestApprover->id,
+            'action' => 'due_date_extended',
+            'status' => $offboardingRequest->status,
+            'comment' => sprintf(
+                'Due date extended from %s to %s (+%d day%s)',
+                $previousDueDate->format('M d, Y'),
+                $extension->new_due_date->format('M d, Y'),
+                $validated['additional_extension_days'],
+                $validated['additional_extension_days'] === 1 ? '' : 's',
+            ),
+        ]);
+
+        // Only reached once the extension is genuinely saved above (an
+        // earlier abort_unless/validation failure returns before this
+        // point, so a rejected attempt never sends this) — a best-effort
+        // notice, not part of the extension's own success: a mail failure
+        // here is logged and swallowed rather than surfaced as an error,
+        // since the due date itself is already correctly extended and
+        // saved regardless of whether this email goes out.
+        try {
+            $this->notifyClearanceSignatoriesOfExtension($offboardingRequestApprover, $previousDueDate, $extension);
+        } catch (\Throwable $e) {
+            Log::error('Failed to send checklist due date extension notification.', [
+                'offboarding_request_approver_id' => $offboardingRequestApprover->id,
+                'exception' => $e->getMessage(),
+            ]);
+        }
+
+        return redirect()
+            ->route('offboardees.index', ['offboardee' => $offboardingRequest->employee_id])
+            ->with('success', 'Due date extended to ' . $extension->new_due_date->format('M d, Y') . '.');
+    }
+
+    /**
+     * Emails every Clearance Signatory actually responsible for this
+     * checklist — the assigned employee for a normal, single-owner
+     * checklist, or every Task Assignee still holding at least one
+     * unchecked item on a "Use Task Assignee as Clearance Signatory"
+     * checklist (`pendingTaskAssigneeEmployees()`, the same recipient set
+     * `remindTaskAssignees()` above already uses for the equivalent
+     * "Notify Approver" case) — informing them the due date moved and they
+     * must finish before the new one. Silently does nothing if the
+     * "Checklist Due Date Extended" template is missing/inactive or a
+     * recipient has no usable email, exactly like `remind()`'s own
+     * graceful degradation, since this is a secondary notice about an
+     * already-successful extension, never a reason to fail the request.
+     */
+    private function notifyClearanceSignatoriesOfExtension(
+        OffboardingRequestApprover $offboardingRequestApprover,
+        Carbon $previousDueDate,
+        ChecklistDueDateExtension $extension,
+    ): void {
+        $emailTemplate = EmailTemplate::where('is_active', true)
+            ->where('template_name', 'Checklist Due Date Extended')
+            ->latest('updated_at')
+            ->first();
+
+        if (! $emailTemplate) {
+            return;
+        }
+
+        $recipients = $offboardingRequestApprover->checklistTemplate?->use_task_assignee_as_signatory
+            ? $offboardingRequestApprover->pendingTaskAssigneeEmployees()
+            : collect([$offboardingRequestApprover->employee])->filter();
+
+        if ($recipients->isEmpty()) {
+            return;
+        }
+
+        $offboardingRequest = $offboardingRequestApprover->offboardingRequest;
+        $offboardee = $offboardingRequest->employee;
+
+        foreach ($recipients as $recipient) {
+            if (! $recipient->email || ! filter_var($recipient->email, FILTER_VALIDATE_EMAIL)) {
+                continue;
+            }
+
+            [$subject, $body] = $emailTemplate->render(
+                approverName: $recipient->name,
+                offboardeeName: $offboardee->name,
+                employeeNumber: $offboardee->employee_code,
+                checklistName: $offboardingRequestApprover->checklistTemplate?->title,
+                originalDueDate: $previousDueDate->format('M d, Y'),
+                extensionDays: (string) $extension->additional_extension_days,
+                extendedDueDate: $extension->new_due_date->format('M d, Y'),
+                clearanceSignatoryName: $recipient->name,
+            );
+
+            Mail::to($recipient->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+        }
     }
 
     /**

@@ -718,6 +718,24 @@ class OffboardingRequest extends Model
                 'delegateCompletedAt' => $assignment->delegate_completed_at?->format('M d, Y g:i A'),
                 'dueAt' => $assignment->due_at?->format('M d, Y g:i A'),
                 'isOverdue' => $assignment->isOverdue(),
+                // "Extend Due" button (Offboarding Status page) — see
+                // `OffboardingRequestApprover::canExtendDue()`. Gating the
+                // button itself is BOTH this AND the Blade view's own
+                // `@can('checklists.extend-due')`/permission check — this
+                // key alone only ever controls whether it's currently
+                // ACTIONABLE (due date reached, checklist unresolved), not
+                // who's allowed to see it at all.
+                'canExtendDue' => $assignment->canExtendDue(),
+                'extendDueUrl' => route('approvals.extend-due', $assignment->id),
+                // The checklist template's own configured "Due Date
+                // Extension (Days)" — the Extend Due modal's read-only
+                // "Before" field, purely informational (see
+                // `OffboardingRequestApprover::extendDue()`'s own
+                // docblock for why this never itself drives the
+                // calculation). Null when the template has none
+                // configured (e.g. the HR Checklist example in the
+                // feature's own spec).
+                'configuredExtensionDays' => $assignment->checklistTemplate?->due_in_days,
                 // Persisted, refresh-proof basis for the completed-status
                 // color (green if approved on/before `due_at`, red if
                 // approved at/after it) — always derived from the row's own

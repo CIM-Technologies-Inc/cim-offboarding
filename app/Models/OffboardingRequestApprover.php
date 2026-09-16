@@ -77,6 +77,16 @@ class OffboardingRequestApprover extends Model
         return $this->hasMany(ChecklistDelegation::class)->orderBy('assigned_at');
     }
 
+    /**
+     * Every "Extend Due" action ever taken on this checklist, oldest first
+     * — see `ChecklistDueDateExtension`'s own docblock and `extendDue()`
+     * below, the only place these rows are created.
+     */
+    public function dueDateExtensions(): HasMany
+    {
+        return $this->hasMany(ChecklistDueDateExtension::class)->orderBy('created_at');
+    }
+
     public function itemAssignments(): HasMany
     {
         return $this->hasMany(ChecklistItemAssignment::class);
@@ -456,6 +466,78 @@ class OffboardingRequestApprover extends Model
     public function daysOverdue(): int
     {
         return $this->isOverdue() ? (int) now()->diffInDays($this->due_at) : 0;
+    }
+
+    /**
+     * Whether the "Extend Due" button should be available right now — this
+     * checklist has a due date, hasn't already been resolved (approved/
+     * declined — extending a finished checklist's due date is meaningless),
+     * and that due date has actually been reached (not merely "coming up
+     * soon"). Deliberately `>=` (matching `hasReachedDueDate()`, not
+     * `isOverdue()`'s strict `>`), so the button becomes available the
+     * MOMENT the due date is reached, not only once it's already passed —
+     * per the feature's own "reached or passed" wording. Every subsequent
+     * extension re-derives this from the SAME `due_at` column
+     * `extendDue()` below just updated, so once a checklist reaches its
+     * newly extended due date without being completed, this naturally
+     * flips true again with no separate "already extended" bookkeeping
+     * needed.
+     */
+    public function canExtendDue(): bool
+    {
+        return $this->due_at !== null
+            && ! in_array($this->status, ['approved', 'declined'], true)
+            && now()->greaterThanOrEqualTo($this->due_at);
+    }
+
+    /**
+     * Records one permanent `ChecklistDueDateExtension` row (see its own
+     * docblock) and pushes `due_at` forward by `$additionalDays` from its
+     * CURRENT value — never from the original due date — so consecutive
+     * extensions compound correctly (due Jun 10, +5 -> Jun 15, +3 -> Jun
+     * 18, exactly the spec'd example). `configured_extension_days` on the
+     * created row is a pure snapshot of the checklist template's own
+     * `due_in_days` for reference/history — it plays no part in this
+     * calculation itself, only `$additionalDays` (the admin-entered
+     * "After" value) does.
+     *
+     * `overdue_notified_at` is deliberately cleared here: it exists purely
+     * to fire the overdue-checklist email exactly once per assignment (see
+     * `NotifyOverdueChecklists`), and a checklist just granted a fresh due
+     * date in the future must be eligible for that email again if IT also
+     * passes without completion — leaving the old timestamp in place would
+     * permanently suppress any further overdue notice for this checklist.
+     *
+     * Caller (`ApprovalController::extendDue()`) is responsible for
+     * authorizing the request and validating `$additionalDays` is a
+     * positive integer; this method trusts both are already true and does
+     * not re-check `canExtendDue()` itself, so it stays reusable for a
+     * future non-HTTP caller (e.g. a console command) without duplicating
+     * that gate.
+     */
+    public function extendDue(int $additionalDays, ?int $extendedByUserId, ?string $reason = null): ChecklistDueDateExtension
+    {
+        $previousDueDate = $this->due_at;
+        $newDueDate = $previousDueDate->copy()->addDays($additionalDays);
+
+        $extension = $this->dueDateExtensions()->create([
+            'offboarding_request_id' => $this->offboarding_request_id,
+            'checklist_template_id' => $this->checklist_template_id,
+            'checklist_title' => $this->checklistTemplate?->title,
+            'previous_due_date' => $previousDueDate,
+            'configured_extension_days' => $this->checklistTemplate?->due_in_days,
+            'additional_extension_days' => $additionalDays,
+            'new_due_date' => $newDueDate,
+            'extended_by' => $extendedByUserId,
+            'reason' => $reason,
+        ]);
+
+        $this->update([
+            'due_at' => $newDueDate,
+            'overdue_notified_at' => null,
+        ]);
+
+        return $extension;
     }
 
     /**

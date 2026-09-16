@@ -76,6 +76,7 @@ class OffboardingActivity extends Model
             'all_checklists_approved' => 'All Offboarding Checklists Cleared',
             'final_pay_notified' => 'Final Pay Checklist Notification Sent',
             'reminder_sent' => "Reminder Sent by {$actor}",
+            'due_date_extended' => "Due Date Extended by {$actor}{$suffix}",
             'general_signatory_reminder_sent' => "Notification Resent by {$actor}",
             'final_approval_sent' => "Final Approval Requested by {$actor}",
             'final_approval_viewed' => "Final Approval Link Viewed by {$actor}",

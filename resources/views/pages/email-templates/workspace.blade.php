@@ -226,6 +226,8 @@
                                 <code>@{{department}}</code>, <code>@{{position}}</code>, <code>@{{days_overdue}}</code>, <code>@{{checklist_status}}</code>, <code>@{{pending_items}}</code> (a table of each checklist item's status and due date).
                                 For a "Notify Approver" follow-up on a checklist (e.g. once it's ready for approval):
                                 <code>@{{checklist_summary}}</code> (a table of each item's Checked By/Date/Remarks) and <code>@{{approve_button}}</code> (a one-click Approve button, valid whenever the recipient is that checklist's Clearance Signatory).
+                                For the "Checklist Due Date Extended" notification (sent automatically once an Extend Due request is saved):
+                                <code>@{{clearance_signatory_name}}</code>, <code>@{{original_due_date}}</code>, <code>@{{extension_days}}</code>, and <code>@{{extended_due_date}}</code>.
                             </p>
                         </div>
                     </div>

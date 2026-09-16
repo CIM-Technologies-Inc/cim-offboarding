@@ -309,6 +309,15 @@ Route::middleware('permission:final-approval.send')->group(function () {
     Route::post('/offboarding-requests/{offboardingRequest}/final-approval', [FinalApprovalController::class, 'send'])->name('final-approval.send');
 });
 
+// Extend Due (Offboarding Status page) — pushes a checklist's due date
+// forward once it's reached, only available past that due date. Its own
+// dedicated permission, same reasoning as the reset/final-approval actions
+// above, so an Admin can grant/revoke it independently of the general
+// approve/decline/remind permission below.
+Route::middleware('permission:checklists.extend-due')->group(function () {
+    Route::post('/approvals/{offboardingRequestApprover}/extend-due', [ApprovalController::class, 'extendDue'])->name('approvals.extend-due');
+});
+
 // approver reminders (HR/Admin only) — part of "acting on" an approval.
 Route::middleware('permission:approvals.approve')->group(function () {
     Route::post('/approvals/{offboardingRequestApprover}/remind', [ApprovalController::class, 'remind'])->name('approvals.remind');
