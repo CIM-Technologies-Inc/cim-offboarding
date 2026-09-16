@@ -1626,6 +1626,105 @@ class ApprovalController extends Controller
     }
 
     /**
+     * "Extend Due" — bulk equivalent of `extendDue()` above, from the
+     * Offboardee Page's own button rather than a single checklist row on
+     * the Offboarding Status page. Applies the SAME number of days to
+     * EVERY still-applicable checklist (any approver row not already
+     * `approved`/`declined`, AND that actually has a due date at all — see
+     * below) on this request, each computed from ITS OWN current due date
+     * via the same `OffboardingRequestApprover::extendDue()` — never a
+     * single shared date — so checklists that were already at different
+     * due dates before stay at different (but each +N days) dates after,
+     * exactly per spec. Only reachable once EVERY applicable checklist has
+     * individually reached its own due date (mirrors `canExtendDue()` —
+     * see the `abort_unless` below), so this can never partially apply to
+     * some checklists while skipping others that aren't eligible yet.
+     *
+     * A checklist template with no `due_in_days` configured (a normal,
+     * common config in this app — several fixed-name templates ship with
+     * none) never gets a `due_at` at all, so it can never "reach" a due
+     * date it doesn't have — it's excluded from the applicable set
+     * entirely rather than permanently blocking every other checklist's
+     * bulk extension. There must still be at least one genuinely
+     * applicable (due-date-bearing, unresolved) checklist for the button
+     * to ever be usable at all.
+     *
+     * Wrapped in a single transaction: either every applicable checklist's
+     * due date (and its own audit-trail `ChecklistDueDateExtension` row and
+     * Timeline activity) gets extended, or — on any failure — none of them
+     * do, per spec ("do not partially update the checklists"). The
+     * per-recipient notification emails fire only after that transaction
+     * commits, same non-fatal best-effort handling as `extendDue()`'s own.
+     */
+    public function extendAllDue(Request $request, OffboardingRequest $offboardingRequest): RedirectResponse|JsonResponse
+    {
+        abort_unless(auth()->user()->can('checklists.extend-due'), 403);
+
+        $offboardingRequest->loadMissing('approvers.checklistTemplate');
+
+        $applicableApprovers = $offboardingRequest->approvers
+            ->reject(fn (OffboardingRequestApprover $approver) => in_array($approver->status, ['approved', 'declined'], true))
+            ->filter(fn (OffboardingRequestApprover $approver) => $approver->due_at !== null);
+
+        abort_unless(
+            $applicableApprovers->isNotEmpty() && $applicableApprovers->every(fn (OffboardingRequestApprover $approver) => $approver->canExtendDue()),
+            422,
+            'Not every checklist on this offboarding request has reached its due date yet — due dates cannot be bulk-extended.'
+        );
+
+        $validated = $request->validate([
+            'additional_extension_days' => ['required', 'integer', 'min:1'],
+        ]);
+
+        $extensions = DB::transaction(function () use ($applicableApprovers, $validated, $offboardingRequest) {
+            return $applicableApprovers->map(function (OffboardingRequestApprover $approver) use ($validated, $offboardingRequest) {
+                $previousDueDate = $approver->due_at;
+                $extension = $approver->extendDue($validated['additional_extension_days'], auth()->id());
+
+                $this->resolveOverdueNotifications($approver);
+
+                $offboardingRequest->activities()->create([
+                    'user_id' => auth()->id(),
+                    'offboarding_request_approver_id' => $approver->id,
+                    'checklist_due_date_extension_id' => $extension->id,
+                    'action' => 'due_date_extended',
+                    'status' => $offboardingRequest->status,
+                    'comment' => sprintf(
+                        'Due date extended from %s to %s (+%d day%s)',
+                        $previousDueDate->format('M d, Y'),
+                        $extension->new_due_date->format('M d, Y'),
+                        $validated['additional_extension_days'],
+                        $validated['additional_extension_days'] === 1 ? '' : 's',
+                    ),
+                ]);
+
+                return [$approver, $previousDueDate, $extension];
+            });
+        });
+
+        foreach ($extensions as [$approver, $previousDueDate, $extension]) {
+            try {
+                $this->notifyClearanceSignatoriesOfExtension($approver, $previousDueDate, $extension);
+            } catch (\Throwable $e) {
+                Log::error('Failed to send checklist due date extension notification.', [
+                    'offboarding_request_approver_id' => $approver->id,
+                    'exception' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        $message = 'Extended due dates for ' . $extensions->count() . ' checklist' . ($extensions->count() === 1 ? '' : 's') . '.';
+
+        if ($request->wantsJson()) {
+            return response()->json(['success' => true, 'message' => $message]);
+        }
+
+        return redirect()
+            ->route('offboardees.index', ['offboardee' => $offboardingRequest->employee_id])
+            ->with('success', $message);
+    }
+
+    /**
      * Emails every Clearance Signatory actually responsible for this
      * checklist — the assigned employee for a normal, single-owner
      * checklist, or every Task Assignee still holding at least one

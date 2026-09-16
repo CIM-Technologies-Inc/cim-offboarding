@@ -177,9 +177,9 @@
                             'completed' => 'Completed',
                         ];
                     @endphp
-                    <div x-data="{ cancelling: false }"
+                    <div x-data="{ cancelling: false, extending: false }"
                         data-offboardee-card="{{ $offboardee['id'] }}"
-                        @click="if (!cancelling) $dispatch('open-offboardee-modal', @js($offboardee))"
+                        @click="if (!cancelling && !extending) $dispatch('open-offboardee-modal', @js($offboardee))"
                         x-show="search.trim() === '' || @js(Str::lower($offboardee['name'])).includes(search.trim().toLowerCase())"
                         class="group cursor-pointer rounded-2xl border border-gray-200 bg-white p-5 transition-all duration-200 hover:-translate-y-1 hover:border-[#145a3a]/40 hover:shadow-lg dark:border-gray-800 dark:bg-white/[0.03] dark:hover:border-[#3aa876]/40">
                         <div class="flex items-start justify-between">
@@ -306,6 +306,88 @@
                                                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
                                             </svg>
                                             <span x-text="cancelling ? 'Cancelling...' : 'Cancel Offboarding'"></span>
+                                        </button>
+                                    </form>
+                                </div>
+                            @endif
+                        @endcan
+
+                        @can('checklists.extend-due')
+                            @if ($offboardee['extendAllDueUrl'] && $offboardee['canBulkExtendDue'])
+                                <div class="border-t border-gray-100 pt-4 dark:border-gray-800" :class="{ 'pointer-events-none opacity-50': cancelling }" @click.stop="">
+                                    {{-- Same fetch-based (not native form submit) convention as Cancel
+                                         Offboarding above — the loading state must cover the ENTIRE
+                                         bulk extension (every checklist's due date pushed forward, its
+                                         own audit row + Timeline entry, and the extension emails), not
+                                         just the network round trip start. --}}
+                                    <form method="POST" action="{{ $offboardee['extendAllDueUrl'] }}"
+                                        @submit.prevent="if (extending) return;
+                                            Swal.fire({
+                                                title: 'Extend Due Dates',
+                                                html: '&lt;p style=\'text-align:left;font-size:13px;line-height:1.6;\'&gt;All applicable checklists have reached their due date. Please specify the number of days you want to extend the due dates.&lt;/p&gt;'
+                                                    + '&lt;label style=\'display:block;text-align:left;font-size:12px;color:#6b7280;margin:12px 0 4px;\'&gt;Extension Days&lt;/label&gt;',
+                                                input: 'number',
+                                                inputAttributes: { min: 1, step: 1 },
+                                                inputPlaceholder: 'e.g. 7',
+                                                showCancelButton: true,
+                                                confirmButtonText: 'Extend Due',
+                                                cancelButtonText: 'Cancel',
+                                                confirmButtonColor: '#145a3a',
+                                                cancelButtonColor: '#6b7280',
+                                                reverseButtons: true,
+                                                inputValidator: (value) => {
+                                                    const days = Number(value);
+                                                    if (!value || !Number.isInteger(days) || days &lt; 1) {
+                                                        return 'Enter a valid positive whole number of days.';
+                                                    }
+                                                }
+                                            }).then((result) => {
+                                                if (!result.isConfirmed) return;
+                                                extending = true;
+                                                fetch($el.action, {
+                                                    method: 'POST',
+                                                    headers: {
+                                                        'Accept': 'application/json',
+                                                        'X-Requested-With': 'XMLHttpRequest',
+                                                        'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                                                        'Content-Type': 'application/json',
+                                                    },
+                                                    body: JSON.stringify({ additional_extension_days: Number(result.value) }),
+                                                }).then(async (response) => {
+                                                    const data = await response.json().catch(() => ({}));
+                                                    if (!response.ok) {
+                                                        throw new Error(data.message || 'Extending due dates failed. Please try again.');
+                                                    }
+                                                    extending = false;
+                                                    Swal.fire({
+                                                        icon: 'success',
+                                                        title: 'Due Dates Extended',
+                                                        text: data.message || 'Due dates have been successfully extended.',
+                                                        confirmButtonColor: '#145a3a',
+                                                    }).then(() => window.location.reload());
+                                                }).catch((error) => {
+                                                    extending = false;
+                                                    Swal.fire({
+                                                        icon: 'error',
+                                                        title: 'Extension Failed',
+                                                        text: error.message,
+                                                        confirmButtonColor: '#145a3a',
+                                                    });
+                                                });
+                                            });
+                                        ">
+                                        @csrf
+                                        <button type="submit" :disabled="extending"
+                                            class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-gray-300 px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
+                                            <svg x-show="!extending" width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                <path d="M10 5.83334V10L12.9167 12.9167" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                                                <path d="M17.5 10C17.5 14.1421 14.1421 17.5 10 17.5C5.85786 17.5 2.5 14.1421 2.5 10C2.5 5.85786 5.85786 2.5 10 2.5C14.1421 2.5 17.5 5.85786 17.5 10Z" stroke="currentColor" stroke-width="1.5" />
+                                            </svg>
+                                            <svg x-show="extending" x-cloak class="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+                                            </svg>
+                                            <span x-text="extending ? 'Extending...' : 'Extend Due'"></span>
                                         </button>
                                     </form>
                                 </div>

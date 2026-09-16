@@ -113,6 +113,30 @@ class OffboardeeController extends Controller
             'cancelOffboardingUrl' => $employee->latestOffboardingRequest
                 ? route('offboarding-requests.cancel', $employee->latestOffboardingRequest)
                 : null,
+            // Extend Due (bulk) — same "generate the URL unconditionally,
+            // gate the button in the view" convention as the other action
+            // URLs above. `canBulkExtendDue` mirrors
+            // `ApprovalController::extendAllDue()`'s own `abort_unless`
+            // check exactly: every still-applicable checklist (not yet
+            // approved/declined, AND actually carrying a due date — a
+            // template with no `due_in_days` configured never gets a
+            // `due_at` and is excluded rather than permanently blocking
+            // the button) must have individually reached its own due date,
+            // computed here from THIS request's actual
+            // `OffboardingRequestApprover` rows, never the checklist
+            // template configuration.
+            'canBulkExtendDue' => (function () use ($employee) {
+                $applicable = $employee->latestOffboardingRequest?->approvers
+                    ?->reject(fn ($approver) => in_array($approver->status, ['approved', 'declined'], true))
+                    ?->filter(fn ($approver) => $approver->due_at !== null);
+
+                return $applicable !== null
+                    && $applicable->isNotEmpty()
+                    && $applicable->every(fn ($approver) => $approver->canExtendDue());
+            })(),
+            'extendAllDueUrl' => $employee->latestOffboardingRequest
+                ? route('offboarding-requests.extend-all-due', $employee->latestOffboardingRequest)
+                : null,
             // Final Approval — the button itself is only ever rendered for
             // a request whose real `status` column is 'completed' (see the
             // card partial), gated by the `final-approval.send` permission;

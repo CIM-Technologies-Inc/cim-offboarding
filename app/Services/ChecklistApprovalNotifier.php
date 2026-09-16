@@ -139,14 +139,19 @@ class ChecklistApprovalNotifier
 
             $dueAtBasisDate = $offboardingRequest->last_working_day;
 
+            // A template with no `due_in_days` configured at all (several
+            // fixed-name templates ship without one) still gets a due
+            // date — it defaults to the offboardee's own Last Working Day
+            // itself (i.e. +0 days), never left blank, so every checklist
+            // always has SOME due date to be checked against/extended.
             $assignment = $offboardingRequest->approvers()->firstOrCreate(
                 ['checklist_template_id' => $template->id],
                 [
                     'employee_id' => $approverEmployeeId,
                     'status' => 'pending',
                     'assigned_at' => now(),
-                    'due_at' => ($template->due_in_days && $dueAtBasisDate)
-                        ? $dueAtBasisDate->copy()->addDays($template->due_in_days)
+                    'due_at' => $dueAtBasisDate
+                        ? $dueAtBasisDate->copy()->addDays($template->due_in_days ?? 0)
                         : null,
                 ]
             );
@@ -305,11 +310,13 @@ class ChecklistApprovalNotifier
             // several checklists at once (e.g. their own department
             // checklist AND the Immediate Head one) still sees which due
             // date belongs to which — a template with no `due_in_days`
-            // configured shows "No due date" in that same position rather
-            // than silently shortening the list out of alignment.
+            // configured defaults to the offboardee's own Last Working Day
+            // (+0 days), same fallback `attachAndNotify()` persists onto
+            // the actual `due_at` column, never a separate "No due date"
+            // placeholder.
             $dueDates = $templatesForApprover->map(function (ChecklistTemplate $template) use ($offboardingRequest) {
-                return ($template->due_in_days && $offboardingRequest->last_working_day)
-                    ? $offboardingRequest->last_working_day->copy()->addDays($template->due_in_days)->format('M d, Y')
+                return $offboardingRequest->last_working_day
+                    ? $offboardingRequest->last_working_day->copy()->addDays($template->due_in_days ?? 0)->format('M d, Y')
                     : 'No due date';
             });
 
@@ -845,8 +852,8 @@ class ChecklistApprovalNotifier
         $byApprover = [];
 
         foreach ($templates as $template) {
-            $dueAt = ($template->due_in_days && $offboardingRequest->last_working_day)
-                ? $offboardingRequest->last_working_day->copy()->addDays($template->due_in_days)->format('M d, Y')
+            $dueAt = $offboardingRequest->last_working_day
+                ? $offboardingRequest->last_working_day->copy()->addDays($template->due_in_days ?? 0)->format('M d, Y')
                 : null;
             $assignment = $assignmentByTemplateId[$template->id] ?? null;
 
