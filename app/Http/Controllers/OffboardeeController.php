@@ -12,6 +12,18 @@ class OffboardeeController extends Controller
 {
     private const STATUSES = ['pending', 'in_progress', 'overdue', 'completed'];
 
+    /**
+     * Thin null-safe wrapper around `OffboardingRequest::extendDueApplicableApprovers()`
+     * for an employee that may not have a request at all — see that
+     * method's own docblock for what "applicable" means. Kept here (rather
+     * than inlining `?->extendDueApplicableApprovers()` everywhere below)
+     * purely so every `extendDue*` field reads identically.
+     */
+    private function extendDueApplicableApprovers(Employee $employee)
+    {
+        return $employee->latestOffboardingRequest?->extendDueApplicableApprovers();
+    }
+
     public function index(Request $request): View
     {
         $statusFilter = in_array($request->query('status'), self::STATUSES, true)
@@ -58,6 +70,14 @@ class OffboardeeController extends Controller
             'designation' => $employee->designation,
             'status' => $employee->latestOffboardingRequest?->displayStatus() ?? 'pending',
             'lastWorkingDay' => $employee->latestOffboardingRequest?->last_working_day?->format('M d, Y'),
+            // Original + extended Last Working Day display — `lastWorkingDay`
+            // above stays the CURRENT effective value (what Extend Due
+            // itself reads/recalculates from); these two let the Offboardee
+            // Status modal show the immutable original date alongside the
+            // latest extension instead of silently overwriting it. See
+            // `OffboardingRequest::isLastWorkingDayExtended()`.
+            'originalLastWorkingDay' => $employee->latestOffboardingRequest?->original_last_working_day?->format('M d, Y'),
+            'isLastWorkingDayExtended' => $employee->latestOffboardingRequest?->isLastWorkingDayExtended() ?? false,
             'immediateHead' => $employee->latestOffboardingRequest?->immediateHead?->name,
             // Separation Type + Notice Period feature — SAVED/frozen values
             // only, never re-resolved from live Separation Type Management
@@ -113,26 +133,60 @@ class OffboardeeController extends Controller
             'cancelOffboardingUrl' => $employee->latestOffboardingRequest
                 ? route('offboarding-requests.cancel', $employee->latestOffboardingRequest)
                 : null,
-            // Extend Due (bulk) — same "generate the URL unconditionally,
-            // gate the button in the view" convention as the other action
-            // URLs above. `canBulkExtendDue` mirrors
+            // Extend Due (bulk, the ONLY Extend Due entry point — there is
+            // no more per-checklist button) — same "generate the URL
+            // unconditionally, gate the button in the view" convention as
+            // the other action URLs above. `canBulkExtendDue` mirrors
             // `ApprovalController::extendAllDue()`'s own `abort_unless`
-            // check exactly: every still-applicable checklist (not yet
-            // approved/declined, AND actually carrying a due date — a
+            // check exactly: AT LEAST ONE still-applicable checklist (not
+            // yet approved/declined, AND actually carrying a due date — a
             // template with no `due_in_days` configured never gets a
-            // `due_at` and is excluded rather than permanently blocking
-            // the button) must have individually reached its own due date,
-            // computed here from THIS request's actual
-            // `OffboardingRequestApprover` rows, never the checklist
-            // template configuration.
+            // `due_at` and is excluded rather than counting toward this at
+            // all) must have reached its own due date, computed here from
+            // THIS request's actual `OffboardingRequestApprover` rows,
+            // never the checklist template configuration.
             'canBulkExtendDue' => (function () use ($employee) {
-                $applicable = $employee->latestOffboardingRequest?->approvers
-                    ?->reject(fn ($approver) => in_array($approver->status, ['approved', 'declined'], true))
-                    ?->filter(fn ($approver) => $approver->due_at !== null);
+                $applicable = $this->extendDueApplicableApprovers($employee);
 
                 return $applicable !== null
                     && $applicable->isNotEmpty()
-                    && $applicable->every(fn ($approver) => $approver->canExtendDue());
+                    && $applicable->contains(fn ($approver) => $approver->canExtendDue());
+            })(),
+            // One calendar day AFTER the offboardee's CURRENT Last Working
+            // Day — "Extend Due" now extends the Last Working Day itself
+            // (every applicable checklist's due date is then recalculated
+            // from it using its own template's `due_in_days` offset — see
+            // `ApprovalController::extendAllDue()`), so the picker's floor
+            // is the current Last Working Day, not any one checklist's own
+            // due date. Flatpickr's `minDate` is inclusive of the given
+            // day, so this is what actually makes the current Last Working
+            // Day itself unselectable in the calendar UI (not just rejected
+            // after the fact) — the server independently re-checks the same
+            // constraint.
+            'extendDueMinSelectableDateIso' => $employee->latestOffboardingRequest?->last_working_day
+                ?->copy()->addDay()->format('Y-m-d'),
+            // Per-checklist breakdown for the Extend Due modal — every
+            // applicable checklist (same set `canBulkExtendDue` above uses)
+            // with its OWN due date and whether it specifically has reached
+            // it, so the modal can show WHICH checklist(s) triggered the
+            // button rather than only a single combined date (a request can
+            // easily have some checklists still not due yet alongside
+            // others already overdue — one summary value can't distinguish
+            // that, and showing "Last Working Day" next to it isn't enough
+            // either, since a checklist's own due date is Last Working Day
+            // + its template's `due_in_days` offset and routinely differs
+            // from it).
+            'extendDueChecklists' => (function () use ($employee) {
+                $applicable = $this->extendDueApplicableApprovers($employee);
+
+                return $applicable
+                    ?->map(fn ($approver) => [
+                        'title' => $approver->checklistTemplate?->title,
+                        'dueDate' => $approver->due_at?->format('M d, Y'),
+                        'hasReachedDueDate' => $approver->canExtendDue(),
+                    ])
+                    ->values()
+                    ->all() ?? [];
             })(),
             'extendAllDueUrl' => $employee->latestOffboardingRequest
                 ? route('offboarding-requests.extend-all-due', $employee->latestOffboardingRequest)

@@ -28,3 +28,12 @@ Schedule::command('app:send-scheduled-email-templates')->dailyAt('08:00');
 // minutes after the template-level job purely to avoid same-minute
 // contention.
 Schedule::command('app:send-scheduled-checklist-item-notifications')->dailyAt('08:10');
+
+// Per-CHECKLIST reminder — independent of both jobs above, and of every
+// other checklist on the same request: timed off THIS checklist's own
+// current due date (`OffboardingRequestApprover::due_at`, already kept
+// current by Extend Due), not the offboardee's Last Working Day directly.
+// The only one of these three with a real "Time to Send" field, so it runs
+// far more often than daily — same reasoning as `app:notify-overdue-checklists`
+// above.
+Schedule::command('app:send-checklist-reminders')->everyFifteenMinutes();

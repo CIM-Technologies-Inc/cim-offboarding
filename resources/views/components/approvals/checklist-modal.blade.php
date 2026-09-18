@@ -304,7 +304,12 @@
                 <div class="shrink-0 p-6 pb-0 lg:p-8 lg:pb-0">
                     <h4 class="text-xl font-semibold text-gray-800 dark:text-white/90" x-text="selected.name"></h4>
 
-                    <template x-if="!selected.isPrimaryApprover">
+                    <template x-if="selected.isMonitoring">
+                        <p class="mb-1 text-sm font-medium text-[#145a3a] dark:text-[#3aa876]">
+                            Monitoring — Task Assignee's Checklist
+                        </p>
+                    </template>
+                    <template x-if="!selected.isPrimaryApprover && !selected.isMonitoring">
                         <p class="mb-1 text-sm text-[#145a3a] dark:text-[#3aa876]">
                             Assigned Department Head: <span x-text="selected.assignedByName"></span>
                         </p>
@@ -317,19 +322,22 @@
                         </p>
                     </template>
 
+                    <p class="mb-5 text-sm text-gray-500 dark:text-gray-400" x-show="selected.isMonitoring">
+                        You're viewing this checklist because one of your own people is a Task Assignee on it. Items below are tracked here for your reference only — each Task Assignee remains responsible for completing their own item(s).
+                    </p>
                     <p class="mb-5 text-sm text-gray-500 dark:text-gray-400" x-show="selected.isDelegate">
                         Check the box for each item, add a remark if needed, then click Done to confirm it (or Save Progress to save several at once). Use Hold instead if you're blocked and need to explain why. The Clearance Signatory will review your work before giving final approval.
                     </p>
-                    <p class="mb-5 text-sm text-gray-500 dark:text-gray-400" x-show="!selected.isPrimaryApprover && !selected.isDelegate">
+                    <p class="mb-5 text-sm text-gray-500 dark:text-gray-400" x-show="!selected.isPrimaryApprover && !selected.isDelegate && !selected.isMonitoring">
                         Check the box for each item assigned to you, add a remark if needed, then click Done to confirm it. Use Hold instead if you're blocked and need to explain why.
                     </p>
-                    <p class="mb-5 text-sm text-gray-500 dark:text-gray-400" x-show="selected.isPrimaryApprover && !selected.usesPerItemApprovers">
-                        Check items and add remarks as needed, then click Submit to approve this offboarding request.
+                    <p class="mb-5 text-sm text-gray-500 dark:text-gray-400" x-show="selected.isPrimaryApprover && !selected.usesPerItemApprovers && !selected.allItemsCompleted">
+                        Check the box for each item below and add a remark if needed — every item must be checked before you can Submit.
                     </p>
                     <p class="mb-5 text-sm text-gray-500 dark:text-gray-400" x-show="selected.isPrimaryApprover && selected.usesPerItemApprovers && !selected.allItemsCompleted">
-                        Each item is normally completed by its own assigned signatory, but as Department Head you can check any item directly yourself.
+                        Each item is normally completed by its own assigned signatory, but as Department Head you can check any item directly yourself. Every item must be checked before you can Submit.
                     </p>
-                    <p class="mb-5 text-sm font-medium text-[#145a3a] dark:text-[#3aa876]" x-show="selected.isPrimaryApprover && selected.usesPerItemApprovers && selected.allItemsCompleted">
+                    <p class="mb-5 text-sm font-medium text-[#145a3a] dark:text-[#3aa876]" x-show="selected.isPrimaryApprover && selected.allItemsCompleted">
                         All checklist items have been checked and this checklist is ready for your final approval. Review the details below, then click Submit.
                     </p>
 
@@ -484,11 +492,13 @@
                             </button>
 
                             <!-- Save Progress: delegates (no Submit authority of their own — this is their only way to persist work for
-                                 the Department Head to review), and the Department Head themselves on a per-item-approver checklist (lets
-                                 them check an item assigned to someone else — e.g. an unavailable signatory — without forcing every other
-                                 item to already be done first). Legacy checklists keep the Department Head's original Submit-only experience,
-                                 since Submit there already saves and approves in one action. A checklist item signatory only ever sees Done. -->
-                            <template x-if="(selected.isDelegate || (selected.isPrimaryApprover && selected.usesPerItemApprovers)) && selected.checklistItems && selected.checklistItems.length">
+                                 the Department Head to review), and the Department Head themselves on ANY checklist with items — every
+                                 checklist now requires all items checked before Submit enables (see
+                                 `OffboardingRequestApprover::requiresAllItemsCompletedBeforeApproval()`), so the Department Head needs a way
+                                 to persist partial progress (check some items now, the rest later) on a "legacy" single-approver checklist
+                                 exactly like they already could on a per-item-approver one — without this, checking 3 of 5 items and closing
+                                 the modal before Submit is even enabled would lose that work. A checklist item signatory only ever sees Done. -->
+                            <template x-if="(selected.isDelegate || selected.isPrimaryApprover) && selected.checklistItems && selected.checklistItems.length">
                                 <button type="submit" :formaction="selected.saveProgressUrl" :disabled="processing" data-turbo-submits-with="Saving..."
                                     :class="processing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50 dark:hover:bg-white/5'"
                                     class="flex items-center justify-center gap-1.5 rounded-lg border border-gray-300 px-4 py-2.5 text-sm font-medium text-gray-700 dark:border-gray-700 dark:text-gray-300">
@@ -506,34 +516,25 @@
                                             $event.preventDefault();
                                             Swal.fire({
                                                 title: 'This checklist has reached its due date.',
-                                                text: 'Would you like to add remarks explaining the reason for the delay?',
+                                                text: 'A reason is required explaining why this checklist was not completed before its due date.',
                                                 icon: 'warning',
-                                                showDenyButton: true,
+                                                input: 'textarea',
+                                                inputLabel: 'Remarks',
+                                                inputPlaceholder: 'Explain the reason for the delay...',
+                                                inputValidator: (value) => {
+                                                    if (!value || !value.trim()) {
+                                                        return 'A remark is required to approve an overdue checklist.';
+                                                    }
+                                                },
                                                 showCancelButton: true,
-                                                confirmButtonText: 'Add Remarks',
-                                                denyButtonText: 'Continue Without Remarks',
+                                                confirmButtonText: 'Approve',
                                                 cancelButtonText: 'Cancel',
                                                 confirmButtonColor: '#145a3a',
-                                                denyButtonColor: '#6b7280',
+                                                cancelButtonColor: '#6b7280',
                                                 reverseButtons: true,
                                             }).then((result) => {
                                                 if (result.isConfirmed) {
-                                                    Swal.fire({
-                                                        title: 'Add Remarks',
-                                                        input: 'textarea',
-                                                        inputPlaceholder: 'Explain the reason for the delay...',
-                                                        showCancelButton: true,
-                                                        confirmButtonText: 'Submit',
-                                                        confirmButtonColor: '#145a3a',
-                                                        cancelButtonColor: '#6b7280',
-                                                    }).then((remarkResult) => {
-                                                        if (remarkResult.isConfirmed) {
-                                                            approvalRemarks = (remarkResult.value || '').trim();
-                                                            remarksResolved = true;
-                                                            $nextTick(() => $el.click());
-                                                        }
-                                                    });
-                                                } else if (result.isDenied) {
+                                                    approvalRemarks = (result.value || '').trim();
                                                     remarksResolved = true;
                                                     $nextTick(() => $el.click());
                                                 }

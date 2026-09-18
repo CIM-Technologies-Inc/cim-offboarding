@@ -33,6 +33,19 @@ class ChecklistTemplate extends Model
         'is_active',
         'created_by',
         'due_in_days',
+        // "Schedule Email/Notification" at the CHECKLIST level — timed off
+        // this checklist's own due date on a given request
+        // (`OffboardingRequestApprover::due_at`), independent of the
+        // request-wide `EmailTemplate`-level schedule and the per-item
+        // `ChecklistItem` one. See `app:send-checklist-reminders`.
+        'notification_enabled',
+        'notification_email_template_id',
+        'notification_days_before',
+        'notification_time',
+        'notification_type',
+        'notification_repeat',
+        'notification_repeat_interval_days',
+        'notification_max_reminders',
     ];
 
     protected function casts(): array
@@ -43,12 +56,23 @@ class ChecklistTemplate extends Model
             'is_immediate_head_checklist' => 'boolean',
             'use_task_assignee_as_signatory' => 'boolean',
             'due_in_days' => 'integer',
+            'notification_enabled' => 'boolean',
+            'notification_days_before' => 'integer',
+            'notification_time' => 'datetime:H:i',
+            'notification_repeat' => 'boolean',
+            'notification_repeat_interval_days' => 'integer',
+            'notification_max_reminders' => 'integer',
         ];
     }
 
     public function items(): HasMany
     {
         return $this->hasMany(ChecklistItem::class)->orderBy('sort_order');
+    }
+
+    public function notificationEmailTemplate(): BelongsTo
+    {
+        return $this->belongsTo(EmailTemplate::class, 'notification_email_template_id');
     }
 
     public function creator(): BelongsTo

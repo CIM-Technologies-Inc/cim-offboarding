@@ -177,9 +177,32 @@
                             'completed' => 'Completed',
                         ];
                     @endphp
-                    <div x-data="{ cancelling: false, extending: false }"
+                    <div x-data="{
+                            cancelling: false,
+                            extending: false,
+                            // Reactive copies of the server-rendered Extend Due
+                            // fields — initialized from the same page-load data
+                            // as everything else on this card, but updated in
+                            // place (not via a page reload) after a successful
+                            // extension, so both the visible Last Working Day
+                            // text and a SUBSEQUENT click of Extend Due (which
+                            // re-reads these, not the original server-rendered
+                            // literals) reflect the new state immediately.
+                            lastWorkingDay: @js($offboardee['lastWorkingDay'] ?? '—'),
+                            canBulkExtendDue: @js($offboardee['canBulkExtendDue']),
+                            extendDueChecklists: @js($offboardee['extendDueChecklists'] ?? []),
+                            extendDueMinSelectableDateIso: @js($offboardee['extendDueMinSelectableDateIso'] ?? null),
+                            // Original vs. latest-extended Last Working Day —
+                            // same reactive-copy convention as the fields
+                            // above, kept in sync after a successful
+                            // extension so the Status modal (opened via the
+                            // dispatch below) shows the current state
+                            // without a page reload.
+                            originalLastWorkingDay: @js($offboardee['originalLastWorkingDay'] ?? '—'),
+                            isLastWorkingDayExtended: @js($offboardee['isLastWorkingDayExtended'] ?? false),
+                        }"
                         data-offboardee-card="{{ $offboardee['id'] }}"
-                        @click="if (!cancelling && !extending) $dispatch('open-offboardee-modal', @js($offboardee))"
+                        @click="if (!cancelling && !extending) $dispatch('open-offboardee-modal', { ...@js($offboardee), lastWorkingDay, originalLastWorkingDay, isLastWorkingDayExtended })"
                         x-show="search.trim() === '' || @js(Str::lower($offboardee['name'])).includes(search.trim().toLowerCase())"
                         class="group cursor-pointer rounded-2xl border border-gray-200 bg-white p-5 transition-all duration-200 hover:-translate-y-1 hover:border-[#145a3a]/40 hover:shadow-lg dark:border-gray-800 dark:bg-white/[0.03] dark:hover:border-[#3aa876]/40">
                         <div class="flex items-start justify-between">
@@ -203,7 +226,7 @@
                             </div>
                             <div class="flex items-center justify-between text-xs">
                                 <span class="text-gray-400">Last Working Day</span>
-                                <span class="font-medium text-gray-700 dark:text-gray-300">{{ $offboardee['lastWorkingDay'] ?? '—' }}</span>
+                                <span class="font-medium text-gray-700 dark:text-gray-300" x-text="lastWorkingDay"></span>
                             </div>
                         </div>
 
@@ -305,7 +328,7 @@
                                                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                                                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
                                             </svg>
-                                            <span x-text="cancelling ? 'Cancelling...' : 'Cancel Offboarding'"></span>
+                                            <span x-text="cancelling ? 'Retracting...' : 'Retract Offboarding'"></span>
                                         </button>
                                     </form>
                                 </div>
@@ -313,8 +336,8 @@
                         @endcan
 
                         @can('checklists.extend-due')
-                            @if ($offboardee['extendAllDueUrl'] && $offboardee['canBulkExtendDue'])
-                                <div class="border-t border-gray-100 pt-4 dark:border-gray-800" :class="{ 'pointer-events-none opacity-50': cancelling }" @click.stop="">
+                            @if ($offboardee['extendAllDueUrl'])
+                                <div class="border-t border-gray-100 pt-4 dark:border-gray-800" x-show="canBulkExtendDue" :class="{ 'pointer-events-none opacity-50': cancelling }" @click.stop="">
                                     {{-- Same fetch-based (not native form submit) convention as Cancel
                                          Offboarding above — the loading state must cover the ENTIRE
                                          bulk extension (every checklist's due date pushed forward, its
@@ -322,24 +345,125 @@
                                          just the network round trip start. --}}
                                     <form method="POST" action="{{ $offboardee['extendAllDueUrl'] }}"
                                         @submit.prevent="if (extending) return;
+                                            let extendDueFlatpickr = null;
+                                            // Per-checklist breakdown — replaces a single combined 'Current Due
+                                            // Date' value with each applicable checklist's OWN due date and a
+                                            // Due/Not Due badge, so it's clear exactly WHICH checklist(s)
+                                            // triggered the button rather than only the latest date across all
+                                            // of them (a request can have some checklists already overdue
+                                            // alongside others that aren't yet). Reads the CARD's own reactive
+                                            // `extendDueChecklists` (a bare identifier — Alpine resolves this
+                                            // via its own `with()` scope chaining, same as `extending`/
+                                            // `cancelling` elsewhere on this card; an explicit `this.x` or a
+                                            // `const self = this` capture does NOT reliably reach the
+                                            // component's reactive data from inside an event-handler
+                                            // expression like this one, and silently reads `undefined`
+                                            // instead) so a second click after a successful extension shows
+                                            // fresh data without a page reload.
+                                            const extendDueChecklistRows = (extendDueChecklists || []).map((c) => (
+                                                '&lt;div style=\'display:flex;justify-content:space-between;align-items:center;gap:12px;padding:6px 0;border-bottom:1px solid #f3f4f6;font-size:13px;\'&gt;'
+                                                + '&lt;span&gt;' + c.title + '&lt;/span&gt;'
+                                                + '&lt;span style=\'display:flex;align-items:center;gap:8px;flex-shrink:0;\'&gt;'
+                                                + '&lt;span style=\'color:' + (c.hasReachedDueDate ? '#dc2626' : '#374151') + ';\'&gt;' + c.dueDate + '&lt;/span&gt;'
+                                                + '&lt;span style=\'background:' + (c.hasReachedDueDate ? '#fee2e2' : '#f3f4f6') + ';color:' + (c.hasReachedDueDate ? '#dc2626' : '#6b7280') + ';font-size:11px;font-weight:600;padding:2px 8px;border-radius:9999px;white-space:nowrap;\'&gt;' + (c.hasReachedDueDate ? 'Due' : 'Not Due') + '&lt;/span&gt;'
+                                                + '&lt;/span&gt;'
+                                                + '&lt;/div&gt;'
+                                            )).join('');
                                             Swal.fire({
                                                 title: 'Extend Due Dates',
-                                                html: '&lt;p style=\'text-align:left;font-size:13px;line-height:1.6;\'&gt;All applicable checklists have reached their due date. Please specify the number of days you want to extend the due dates.&lt;/p&gt;'
-                                                    + '&lt;label style=\'display:block;text-align:left;font-size:12px;color:#6b7280;margin:12px 0 4px;\'&gt;Extension Days&lt;/label&gt;',
-                                                input: 'number',
-                                                inputAttributes: { min: 1, step: 1 },
-                                                inputPlaceholder: 'e.g. 7',
+                                                html: '&lt;div style=\'text-align:left;border-bottom:1px solid #e5e7eb;padding-bottom:10px;margin-bottom:10px;\'&gt;'
+                                                    + '&lt;p style=\'font-size:15px;font-weight:700;margin:0 0 2px;\'&gt;' + @js($offboardee['name'] ?? '—') + '&lt;/p&gt;'
+                                                    + '&lt;p style=\'font-size:12px;color:#6b7280;margin:0;\'&gt;' + @js($offboardee['designation'] ?? '—') + ' &middot; ' + @js($offboardee['department'] ?? '—') + '&lt;/p&gt;'
+                                                    + '&lt;/div&gt;'
+                                                    + '&lt;p style=\'text-align:left;font-size:13px;line-height:1.6;\'&gt;'
+                                                    + 'At least one checklist has reached its due date. Select the new Last Working Day — every checklist still awaiting approval will have its own due date recalculated from it, using its configured Due Date Extension (Days).&lt;/p&gt;'
+                                                    + '&lt;p style=\'text-align:left;font-size:12px;color:#6b7280;margin:10px 0 2px;\'&gt;Current Last Working Day&lt;/p&gt;'
+                                                    + '&lt;p style=\'text-align:left;font-size:15px;font-weight:700;margin:0 0 10px;\'&gt;' + (lastWorkingDay || '—') + '&lt;/p&gt;'
+                                                    + '&lt;p style=\'text-align:left;font-size:12px;color:#6b7280;margin:0 0 2px;\'&gt;Checklist Due Dates&lt;/p&gt;'
+                                                    + '&lt;div style=\'margin-bottom:12px;\'&gt;' + (extendDueChecklistRows || '&lt;p style=\'font-size:12px;color:#9ca3af;margin:4px 0;\'&gt;No applicable checklists.&lt;/p&gt;') + '&lt;/div&gt;'
+                                                    + '&lt;label style=\'display:block;text-align:left;font-size:12px;color:#6b7280;margin:0 0 4px;\'&gt;Extend Last Working Day&lt;/label&gt;'
+                                                    + '&lt;input id=\'extend-due-date-input\' type=\'text\' class=\'swal2-input\' style=\'margin:0;width:100%;\' placeholder=\'Select date\' autocomplete=\'off\' readonly /&gt;'
+                                                    + '&lt;div id=\'extend-due-date-spacer\' style=\'height:0;transition:height 0.15s ease;\'&gt;&lt;/div&gt;'
+                                                    // Hidden until the first click of the Extend Due button (see
+                                                    // `preConfirm` below) — asking for a reason before a date is
+                                                    // even picked reads as premature, so it only appears once
+                                                    // there's actually something to justify.
+                                                    + '&lt;div id=\'extend-due-reason-wrapper\' style=\'display:none;\'&gt;'
+                                                    + '&lt;label style=\'display:block;text-align:left;font-size:12px;color:#6b7280;margin:12px 0 4px;\'&gt;Reason for Extension&lt;/label&gt;'
+                                                    + '&lt;textarea id=\'extend-due-reason-input\' class=\'swal2-textarea\' style=\'margin:0;width:100%;box-sizing:border-box;\' rows=\'3\' placeholder=\'Explain why the Last Working Day is being extended...\'&gt;&lt;/textarea&gt;'
+                                                    + '&lt;/div&gt;',
+                                                didOpen: () => {
+                                                    // flatpickr's `static: true` calendar is `position: absolute`,
+                                                    // so — unlike a normal in-flow element — it contributes NOTHING
+                                                    // to its container's height: the modal never grows for it, and
+                                                    // the calendar just renders past the popup's bottom edge, either
+                                                    // getting clipped or forcing `.swal2-html-container`'s own
+                                                    // overflow:auto to kick in as a cramped inner scrollbar. The
+                                                    // spacer div right after the input is a normal in-flow element
+                                                    // that DOES count — onOpen/onClose below resize it to exactly
+                                                    // match the calendar's own rendered height, so the modal grows
+                                                    // to make room for it (pushing Cancel/Extend Due down) the
+                                                    // instant it opens, and shrinks back the instant it closes.
+                                                    const spacer = document.getElementById('extend-due-date-spacer');
+                                                    // flatpickr parses a STRING `minDate` using this same instance's
+                                                    // own `dateFormat` ('M d, Y') — a plain 'Y-m-d' string like
+                                                    // '2026-09-22' fails that parse silently (logs 'Invalid date
+                                                    // provided' and disables nothing at all), so it's converted to a
+                                                    // real JS Date object here instead, which bypasses string
+                                                    // parsing entirely. Reads the CARD's reactive
+                                                    // `extendDueMinSelectableDateIso`, same reasoning as
+                                                    // `extendDueChecklistRows` above.
+                                                    const minSelectableIso = extendDueMinSelectableDateIso;
+                                                    extendDueFlatpickr = flatpickr(document.getElementById('extend-due-date-input'), {
+                                                        dateFormat: 'M d, Y',
+                                                        static: true,
+                                                        monthSelectorType: 'static',
+                                                        minDate: minSelectableIso ? new Date(minSelectableIso + 'T00:00:00') : null,
+                                                        onOpen: (selectedDates, dateStr, instance) => {
+                                                            spacer.style.height = instance.calendarContainer.offsetHeight + 'px';
+                                                        },
+                                                        onClose: () => {
+                                                            spacer.style.height = '0px';
+                                                        },
+                                                    });
+                                                },
+                                                willClose: () => {
+                                                    if (extendDueFlatpickr) { extendDueFlatpickr.destroy(); extendDueFlatpickr = null; }
+                                                },
                                                 showCancelButton: true,
                                                 confirmButtonText: 'Extend Due',
                                                 cancelButtonText: 'Cancel',
                                                 confirmButtonColor: '#145a3a',
                                                 cancelButtonColor: '#6b7280',
                                                 reverseButtons: true,
-                                                inputValidator: (value) => {
-                                                    const days = Number(value);
-                                                    if (!value || !Number.isInteger(days) || days &lt; 1) {
-                                                        return 'Enter a valid positive whole number of days.';
+                                                preConfirm: () => {
+                                                    const selected = extendDueFlatpickr?.selectedDates?.[0];
+                                                    if (!selected) {
+                                                        Swal.showValidationMessage('Extend the Last Working Day.');
+                                                        return false;
                                                     }
+                                                    // Two-step confirm: the Reason field stays hidden until a
+                                                    // date is actually picked and this button is clicked once —
+                                                    // that first click only reveals it (and stops here, without
+                                                    // submitting), so it's never shown before there's a date to
+                                                    // justify. A second click, with the reason now visible and
+                                                    // filled in, actually submits.
+                                                    const reasonWrapper = document.getElementById('extend-due-reason-wrapper');
+                                                    const reasonInput = document.getElementById('extend-due-reason-input');
+                                                    if (reasonWrapper.style.display === 'none') {
+                                                        reasonWrapper.style.display = '';
+                                                        reasonInput.focus();
+                                                        return false;
+                                                    }
+                                                    const reason = (reasonInput.value || '').trim();
+                                                    if (!reason) {
+                                                        Swal.showValidationMessage('A reason is required to extend the Last Working Day.');
+                                                        return false;
+                                                    }
+                                                    const y = selected.getFullYear();
+                                                    const m = String(selected.getMonth() + 1).padStart(2, '0');
+                                                    const d = String(selected.getDate()).padStart(2, '0');
+                                                    return { date: y + '-' + m + '-' + d, reason: reason };
                                                 }
                                             }).then((result) => {
                                                 if (!result.isConfirmed) return;
@@ -352,19 +476,39 @@
                                                         'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
                                                         'Content-Type': 'application/json',
                                                     },
-                                                    body: JSON.stringify({ additional_extension_days: Number(result.value) }),
+                                                    body: JSON.stringify({ new_last_working_day: result.value.date, reason: result.value.reason }),
                                                 }).then(async (response) => {
                                                     const data = await response.json().catch(() => ({}));
                                                     if (!response.ok) {
-                                                        throw new Error(data.message || 'Extending due dates failed. Please try again.');
+                                                        // A 422 validation failure (e.g. the picked date turned
+                                                        // out to be no longer later than the request's CURRENT
+                                                        // Last Working Day — this can genuinely happen if it was
+                                                        // changed elsewhere since the page loaded) carries its
+                                                        // specific field message under `data.errors`, not
+                                                        // `data.message` (that's just Laravel's own generic
+                                                        // wrapper text) — prefer the first real field error
+                                                        // when present.
+                                                        const fieldError = data.errors ? Object.values(data.errors)[0]?.[0] : null;
+                                                        throw new Error(fieldError || data.message || 'Extending the Last Working Day failed. Please try again.');
                                                     }
                                                     extending = false;
+                                                    // Reactive update — no page reload. The card's own state
+                                                    // (Last Working Day text, whether Extend Due stays visible,
+                                                    // and the data a SUBSEQUENT click of it would show) all come
+                                                    // straight from this response, matching
+                                                    // `OffboardeeController::index()`'s own fields exactly.
+                                                    if (data.lastWorkingDay !== undefined) lastWorkingDay = data.lastWorkingDay;
+                                                    if (data.originalLastWorkingDay !== undefined) originalLastWorkingDay = data.originalLastWorkingDay;
+                                                    if (data.isLastWorkingDayExtended !== undefined) isLastWorkingDayExtended = data.isLastWorkingDayExtended;
+                                                    if (data.canBulkExtendDue !== undefined) canBulkExtendDue = data.canBulkExtendDue;
+                                                    if (data.extendDueChecklists !== undefined) extendDueChecklists = data.extendDueChecklists;
+                                                    if (data.extendDueMinSelectableDateIso !== undefined) extendDueMinSelectableDateIso = data.extendDueMinSelectableDateIso;
                                                     Swal.fire({
                                                         icon: 'success',
-                                                        title: 'Due Dates Extended',
-                                                        text: data.message || 'Due dates have been successfully extended.',
+                                                        title: 'Last Working Day Extended',
+                                                        text: data.message || 'Last Working Day extended and checklist due dates recalculated.',
                                                         confirmButtonColor: '#145a3a',
-                                                    }).then(() => window.location.reload());
+                                                    });
                                                 }).catch((error) => {
                                                     extending = false;
                                                     Swal.fire({

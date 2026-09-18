@@ -318,21 +318,15 @@ Route::middleware('permission:final-approval.send')->group(function () {
     Route::post('/offboarding-requests/{offboardingRequest}/final-approval', [FinalApprovalController::class, 'send'])->name('final-approval.send');
 });
 
-// Extend Due (Offboarding Status page) — pushes a checklist's due date
-// forward once it's reached, only available past that due date. Its own
-// dedicated permission, same reasoning as the reset/final-approval actions
-// above, so an Admin can grant/revoke it independently of the general
+// Extend Due (Offboardee page) — the single bulk button that sets every
+// still-applicable checklist's due date to one admin-picked date, only
+// available once at least one of them has reached its own due date. There
+// is no per-checklist Extend Due anymore (removed from the Offboarding
+// Status/Timeline tabs) — this is the only entry point. Its own dedicated
+// permission, same reasoning as the reset/final-approval actions above, so
+// an Admin can grant/revoke it independently of the general
 // approve/decline/remind permission below.
 Route::middleware('permission:checklists.extend-due')->group(function () {
-    Route::post('/approvals/{offboardingRequestApprover}/extend-due', [ApprovalController::class, 'extendDue'])->name('approvals.extend-due');
-
-    // Bulk equivalent (Offboardee page) — extends EVERY still-applicable
-    // checklist on the request in one action, only available once all of
-    // them have individually reached their own due date. Same permission
-    // as the single-checklist version above; deliberately not a new one,
-    // per spec ("users who currently have the appropriate permission for
-    // extending checklist due dates should also have permission to use
-    // this Extend Due action").
     Route::post('/offboarding-requests/{offboardingRequest}/extend-all-due', [ApprovalController::class, 'extendAllDue'])->name('offboarding-requests.extend-all-due');
 });
 

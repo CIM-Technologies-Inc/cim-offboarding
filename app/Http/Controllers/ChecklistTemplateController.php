@@ -85,6 +85,7 @@ class ChecklistTemplateController extends Controller
             'items.*.email_template_id' => ['nullable', 'required_if:items.*.notify_enabled,1', 'exists:email_templates,id'],
             'items.*.notify_timing' => ['nullable', 'required_if:items.*.notify_enabled,1', Rule::in(['before', 'after'])],
             'items.*.notify_days' => ['nullable', 'required_if:items.*.notify_enabled,1', 'integer', 'min:1'],
+            ...$this->notificationScheduleRules(),
         ]);
 
         $isFinalPayChecklist = $validated['checklist_classification'] === 'final_pay';
@@ -112,8 +113,9 @@ class ChecklistTemplateController extends Controller
         // Department Checklist restriction — see the form's own matching
         // disabled-field treatment.
         $department = $useTaskAssigneeAsSignatory ? null : ($validated['department'] ?? null);
+        $notificationSchedule = $this->normalizeNotificationSchedule($validated);
 
-        DB::transaction(function () use ($validated, $request, $isImmediateHeadChecklist, $useTaskAssigneeAsSignatory, $employeeGroupId, $departmentHeadId, $department, $eligibleSignatoryIds, $isFinalPayChecklist, $sequenceType) {
+        DB::transaction(function () use ($validated, $request, $isImmediateHeadChecklist, $useTaskAssigneeAsSignatory, $employeeGroupId, $departmentHeadId, $department, $eligibleSignatoryIds, $isFinalPayChecklist, $sequenceType, $notificationSchedule) {
             $template = ChecklistTemplate::create([
                 'title' => $validated['title'],
                 'employee_group_id' => $employeeGroupId,
@@ -126,6 +128,7 @@ class ChecklistTemplateController extends Controller
                 'due_in_days' => $validated['due_in_days'] ?: null,
                 'is_active' => true,
                 'created_by' => $request->user()->id,
+                ...$notificationSchedule,
             ]);
 
             foreach ($validated['items'] ?? [] as $index => $item) {
@@ -189,6 +192,7 @@ class ChecklistTemplateController extends Controller
             'items.*.email_template_id' => ['nullable', 'required_if:items.*.notify_enabled,1', 'exists:email_templates,id'],
             'items.*.notify_timing' => ['nullable', 'required_if:items.*.notify_enabled,1', Rule::in(['before', 'after'])],
             'items.*.notify_days' => ['nullable', 'required_if:items.*.notify_enabled,1', 'integer', 'min:1'],
+            ...$this->notificationScheduleRules(),
         ]);
 
         $isFinalPayChecklist = $validated['checklist_classification'] === 'final_pay';
@@ -200,8 +204,9 @@ class ChecklistTemplateController extends Controller
         $departmentHeadId = $employeeGroupId ? EmployeeGroup::find($employeeGroupId)?->group_head_employee_id : null;
         $eligibleSignatoryIds = $this->eligibleSignatoryIds($employeeGroupId);
         $department = $useTaskAssigneeAsSignatory ? null : ($validated['department'] ?? null);
+        $notificationSchedule = $this->normalizeNotificationSchedule($validated);
 
-        DB::transaction(function () use ($validated, $request, $checklistTemplate, $isImmediateHeadChecklist, $useTaskAssigneeAsSignatory, $employeeGroupId, $departmentHeadId, $department, $eligibleSignatoryIds, $isFinalPayChecklist, $sequenceType) {
+        DB::transaction(function () use ($validated, $request, $checklistTemplate, $isImmediateHeadChecklist, $useTaskAssigneeAsSignatory, $employeeGroupId, $departmentHeadId, $department, $eligibleSignatoryIds, $isFinalPayChecklist, $sequenceType, $notificationSchedule) {
             $checklistTemplate->update([
                 'title' => $validated['title'],
                 'employee_group_id' => $employeeGroupId,
@@ -212,6 +217,7 @@ class ChecklistTemplateController extends Controller
                 'is_final_pay_checklist' => $isFinalPayChecklist,
                 'sequence_type' => $sequenceType,
                 'due_in_days' => $validated['due_in_days'] ?: null,
+                ...$notificationSchedule,
             ]);
 
             $this->reconcileItems($checklistTemplate, $validated['items'] ?? [], $eligibleSignatoryIds);
@@ -461,6 +467,67 @@ class ChecklistTemplateController extends Controller
             'email_template_id' => (int) $item['email_template_id'],
             'notify_timing' => $item['notify_timing'],
             'notify_days' => (int) $item['notify_days'],
+        ];
+    }
+
+    /**
+     * Validation rules for the CHECKLIST-level "Schedule Email/Notification"
+     * section — distinct field names from the per-item `notify_*` ones
+     * above, since a checklist can have both independently. Shared by
+     * `store()` and `update()`.
+     */
+    private function notificationScheduleRules(): array
+    {
+        return [
+            'notification_enabled' => ['nullable', 'boolean'],
+            'notification_email_template_id' => ['nullable', 'required_if:notification_enabled,1', 'exists:email_templates,id'],
+            'notification_days_before' => ['nullable', 'required_if:notification_enabled,1', 'integer', 'min:1', 'max:365'],
+            'notification_time' => ['nullable', 'date_format:H:i'],
+            'notification_type' => ['nullable', Rule::in(['email', 'system', 'both'])],
+            'notification_repeat' => ['nullable', 'boolean'],
+            'notification_repeat_interval_days' => ['nullable', 'required_if:notification_repeat,1', 'integer', 'min:1', 'max:365'],
+            'notification_max_reminders' => ['nullable', 'required_if:notification_repeat,1', 'integer', 'min:1', 'max:100'],
+        ];
+    }
+
+    /**
+     * Discards whichever checklist-level schedule fields don't apply —
+     * same "silent clear rather than reject" convention as
+     * `normalizeNotifyConfig()` above. `notification_type` is reset to its
+     * column default `'email'`, never null, when disabled — that column is
+     * NOT NULL at the database level (see the
+     * `add_notification_schedule_to_checklist_templates_table` migration),
+     * unlike every other field here.
+     *
+     * @param  array<string, mixed>  $validated
+     * @return array<string, mixed>
+     */
+    private function normalizeNotificationSchedule(array $validated): array
+    {
+        if (empty($validated['notification_enabled'])) {
+            return [
+                'notification_enabled' => false,
+                'notification_email_template_id' => null,
+                'notification_days_before' => null,
+                'notification_time' => null,
+                'notification_type' => 'email',
+                'notification_repeat' => false,
+                'notification_repeat_interval_days' => null,
+                'notification_max_reminders' => null,
+            ];
+        }
+
+        $repeat = ! empty($validated['notification_repeat']);
+
+        return [
+            'notification_enabled' => true,
+            'notification_email_template_id' => (int) $validated['notification_email_template_id'],
+            'notification_days_before' => (int) $validated['notification_days_before'],
+            'notification_time' => $validated['notification_time'] ?: null,
+            'notification_type' => $validated['notification_type'] ?: 'email',
+            'notification_repeat' => $repeat,
+            'notification_repeat_interval_days' => $repeat ? (int) $validated['notification_repeat_interval_days'] : null,
+            'notification_max_reminders' => $repeat ? (int) $validated['notification_max_reminders'] : null,
         ];
     }
 }

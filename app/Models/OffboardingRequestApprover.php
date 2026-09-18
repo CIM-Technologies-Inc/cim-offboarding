@@ -93,6 +93,11 @@ class OffboardingRequestApprover extends Model
         return $this->hasMany(ChecklistItemAssignment::class);
     }
 
+    public function reminderLogs(): HasMany
+    {
+        return $this->hasMany(ChecklistReminderLog::class);
+    }
+
     public function followUps(): HasMany
     {
         return $this->hasMany(ChecklistFollowUp::class)->orderByDesc('sent_at');
@@ -171,7 +176,97 @@ class OffboardingRequestApprover extends Model
                     ->where('employee_group_id', $employee->employee_group_id)
                     ->where(fn ($qh) => $qh->whereNull('department_head_id')->orWhere('department_head_id', '!=', $employee->id)));
             }
+
+            // Group Head/Department Head MONITORING visibility — a "Use Task
+            // Assignee as Clearance Signatory" checklist has no owning
+            // employee of its own (`employee_id` is null; its Task
+            // Assignees ARE the signatories), so without this clause the
+            // Group Head/Department Head of one of those Task Assignees
+            // would have no way to track their own employee's progress on
+            // it. Read-only by construction, not by any extra check here:
+            // `employee_id` stays null and this employee owns no item, so
+            // `ApprovalController::authorizeAssignment()` and
+            // `ChecklistDelegationController::authorizeItemAction()` both
+            // already reject them from approving/checking/taking over
+            // anything — this clause only ever affects whether the row is
+            // fetched at all. See `Employee::subordinateEmployeeIds()` and
+            // `monitoringDepartmentHeads()` below.
+            $subordinateEmployeeIds = $employee->subordinateEmployeeIds();
+
+            if ($subordinateEmployeeIds->isNotEmpty()) {
+                $q->orWhere(function (Builder $qMonitor) use ($subordinateEmployeeIds) {
+                    $qMonitor->whereHas('checklistTemplate', fn ($qt) => $qt->where('use_task_assignee_as_signatory', true))
+                        ->where(function (Builder $qAssignee) use ($subordinateEmployeeIds) {
+                            $qAssignee->whereHas('checklistTemplate.items', fn ($qi) => $qi->whereIn('signatory_id', $subordinateEmployeeIds))
+                                ->orWhereHas('itemAssignments', fn ($qi) => $qi->where('status', 'active')->whereIn('assigned_employee_id', $subordinateEmployeeIds));
+                        });
+                });
+            }
         });
+    }
+
+    /**
+     * For a "Use Task Assignee as Clearance Signatory" checklist, the
+     * distinct Group Head(s)/Department Head(s) actually responsible for
+     * monitoring it — one entry per real Task Assignee's own head, deduped
+     * by id (several Task Assignees sharing the same head only ever
+     * produce one entry — see `Employee::subordinateEmployeeIds()`'s own
+     * exclusion of anyone who is themselves a head). Empty for any other
+     * kind of checklist, or once every item has been reassigned to a Task
+     * Assignee who is themselves a Group Head/Department Head.
+     *
+     * @return Collection<int, Employee>
+     */
+    public function monitoringDepartmentHeads(): Collection
+    {
+        if (! $this->checklistTemplate?->use_task_assignee_as_signatory) {
+            return collect();
+        }
+
+        $this->loadMissing('checklistTemplate.items', 'itemAssignments.assignedEmployee');
+
+        return $this->checklistTemplate->items
+            ->map(fn (ChecklistItem $item) => $this->effectiveSignatoryFor($item))
+            ->filter()
+            ->unique('id')
+            ->reject(fn (Employee $assignee) => $assignee->isDepartmentHead())
+            ->map(fn (Employee $assignee) => $assignee->departmentHead())
+            ->filter()
+            ->unique('id')
+            ->values();
+    }
+
+    /**
+     * Every distinct employee who should be reminded about THIS checklist
+     * on THIS request — the single recipient list `app:send-checklist-
+     * reminders` sends to, built entirely from relationships already
+     * established elsewhere rather than any new resolution logic:
+     *   - the Clearance/Department Head (`employee`), for a normal
+     *     checklist that has one
+     *   - every real Task Assignee (`effectiveSignatoryFor()` per item),
+     *     for a "Use Task Assignee as Clearance Signatory" checklist
+     *   - each such Task Assignee's own Group Head/Department Head, via
+     *     `monitoringDepartmentHeads()` (read-only monitoring access)
+     * Deduped by id and filtered to a valid email — this alone is what
+     * guarantees one reminder per person even when someone reaches this
+     * list through more than one of the above (e.g. a Task Assignee who is
+     * ALSO the request's overall Department Head elsewhere).
+     *
+     * @return Collection<int, Employee>
+     */
+    public function reminderRecipients(): Collection
+    {
+        $this->loadMissing('employee', 'checklistTemplate.items', 'itemAssignments.assignedEmployee');
+
+        return collect([$this->employee])
+            ->merge($this->checklistTemplate?->use_task_assignee_as_signatory
+                ? $this->checklistTemplate->items->map(fn (ChecklistItem $item) => $this->effectiveSignatoryFor($item))
+                : [])
+            ->merge($this->monitoringDepartmentHeads())
+            ->filter()
+            ->unique('id')
+            ->filter(fn (Employee $employee) => $employee->email && filter_var($employee->email, FILTER_VALIDATE_EMAIL))
+            ->values();
     }
 
     public function department(): ?string
@@ -292,19 +387,22 @@ class OffboardingRequestApprover extends Model
 
     /**
      * True when the Submit button must stay disabled — and an approve()
-     * request must be rejected — until every checklist item is checked,
-     * even though a single approver with no distinct item-level signatories
-     * would otherwise be free to submit at any time (today's default,
-     * unchanged behavior). Two independent triggers: genuine per-item
-     * approvers (`usesPerItemApprovers()`), and an Immediate Head checklist,
-     * which always requires full completion before submission regardless of
-     * whether it happens to use per-item signatories — the Immediate Head
-     * is a single approver here, just like a Department Head, but must
-     * still check off every item before they're allowed to submit.
+     * request must be rejected — until every checklist item is checked.
+     * Applies unconditionally, regardless of whether this checklist has
+     * genuine per-item Task Assignees (`usesPerItemApprovers()`) or is a
+     * single-approver checklist with no distinct item-level signatories: a
+     * Clearance Signatory who is effectively their own Task Assignee for
+     * every item must still check each one off before Submit is allowed —
+     * checking one's own items is exactly how they get counted "done"
+     * (`allItemsCompleted()` doesn't care WHO checked an item, only that it
+     * was). A checklist with no items at all is trivially satisfied —
+     * `allItemsCompleted()` itself already treats an empty list as
+     * complete — so this never blocks a checklist that has nothing to
+     * check in the first place.
      */
     public function requiresAllItemsCompletedBeforeApproval(): bool
     {
-        return $this->usesPerItemApprovers() || (bool) $this->checklistTemplate?->is_immediate_head_checklist;
+        return true;
     }
 
     /**
@@ -493,14 +591,13 @@ class OffboardingRequestApprover extends Model
 
     /**
      * Records one permanent `ChecklistDueDateExtension` row (see its own
-     * docblock) and pushes `due_at` forward by `$additionalDays` from its
-     * CURRENT value — never from the original due date — so consecutive
-     * extensions compound correctly (due Jun 10, +5 -> Jun 15, +3 -> Jun
-     * 18, exactly the spec'd example). `configured_extension_days` on the
-     * created row is a pure snapshot of the checklist template's own
-     * `due_in_days` for reference/history — it plays no part in this
-     * calculation itself, only `$additionalDays` (the admin-entered
-     * "After" value) does.
+     * docblock) and sets `due_at` to the given `$newDueDate` — an explicit
+     * date picked by the admin (Offboardee Page's bulk "Extend Due"
+     * button), not a relative day offset. `additional_extension_days` on
+     * the created row is a DERIVED value (the gap between the previous due
+     * date and this new one) kept purely for the existing history
+     * display's "+N days" wording — it plays no part in the calculation
+     * itself, unlike before this became date-based.
      *
      * `overdue_notified_at` is deliberately cleared here: it exists purely
      * to fire the overdue-checklist email exactly once per assignment (see
@@ -509,17 +606,16 @@ class OffboardingRequestApprover extends Model
      * passes without completion — leaving the old timestamp in place would
      * permanently suppress any further overdue notice for this checklist.
      *
-     * Caller (`ApprovalController::extendDue()`) is responsible for
-     * authorizing the request and validating `$additionalDays` is a
-     * positive integer; this method trusts both are already true and does
-     * not re-check `canExtendDue()` itself, so it stays reusable for a
-     * future non-HTTP caller (e.g. a console command) without duplicating
-     * that gate.
+     * Caller (`ApprovalController::extendAllDue()`) is responsible for
+     * authorizing the request and validating `$newDueDate` is genuinely
+     * later than every applicable checklist's current due date; this
+     * method trusts that's already true and does not re-check
+     * `canExtendDue()` itself, so it stays reusable for a future non-HTTP
+     * caller (e.g. a console command) without duplicating that gate.
      */
-    public function extendDue(int $additionalDays, ?int $extendedByUserId, ?string $reason = null): ChecklistDueDateExtension
+    public function extendDueTo(Carbon $newDueDate, ?int $extendedByUserId, ?string $reason = null): ChecklistDueDateExtension
     {
         $previousDueDate = $this->due_at;
-        $newDueDate = $previousDueDate->copy()->addDays($additionalDays);
 
         $extension = $this->dueDateExtensions()->create([
             'offboarding_request_id' => $this->offboarding_request_id,
@@ -527,7 +623,7 @@ class OffboardingRequestApprover extends Model
             'checklist_title' => $this->checklistTemplate?->title,
             'previous_due_date' => $previousDueDate,
             'configured_extension_days' => $this->checklistTemplate?->due_in_days,
-            'additional_extension_days' => $additionalDays,
+            'additional_extension_days' => $previousDueDate ? $previousDueDate->diffInDays($newDueDate) : null,
             'new_due_date' => $newDueDate,
             'extended_by' => $extendedByUserId,
             'reason' => $reason,

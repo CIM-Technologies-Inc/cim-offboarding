@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
+use Illuminate\Support\Collection;
 
 class Employee extends Model
 {
@@ -124,6 +125,65 @@ class Employee extends Model
     public function departmentHead(): ?Employee
     {
         return $this->employeeGroup?->groupHead ?? DepartmentHead::headFor($this->department);
+    }
+
+    /**
+     * True when this employee is registered as SOME group's/department's
+     * head — either the admin-curated Employee Master group registry
+     * (`employee_groups.group_head_employee_id`) or the legacy standalone
+     * `department_heads` table. Used by "Use Task Assignee as Clearance
+     * Signatory" monitoring visibility (see `subordinateEmployeeIds()` and
+     * `OffboardingRequestApprover::monitoringDepartmentHeads()`) to skip
+     * granting monitoring access when a Task Assignee is themselves already
+     * a Group Head/Department Head — there's nobody above them to notify
+     * for that purpose.
+     */
+    public function isDepartmentHead(): bool
+    {
+        return EmployeeGroup::where('group_head_employee_id', $this->id)->exists()
+            || DepartmentHead::where('employee_id', $this->id)->exists();
+    }
+
+    /**
+     * Reverse of `departmentHead()`: every employee (by id) this employee is
+     * the Group Head/Department Head of — via an Employee Master group's
+     * `group_head_employee_id`, or (only for an employee not covered by any
+     * such group) the legacy per-department `department_heads` registry,
+     * mirroring `departmentHead()`'s own "group first, legacy fallback"
+     * precedence exactly. Never includes an employee who is themselves
+     * registered as SOME group's/department's head (see `isDepartmentHead()`)
+     * — that person doesn't answer to anyone through this mechanism.
+     *
+     * Powers `OffboardingRequestApprover::scopeVisibleTo()`'s Group Head/
+     * Department Head monitoring visibility for "Use Task Assignee as
+     * Clearance Signatory" checklists — see that method and
+     * `monitoringDepartmentHeads()` for the feature this supports.
+     *
+     * @return Collection<int, int>
+     */
+    public function subordinateEmployeeIds(): Collection
+    {
+        $groupIds = EmployeeGroup::where('group_head_employee_id', $this->id)->pluck('id');
+
+        $viaGroup = static::whereIn('employee_group_id', $groupIds)->pluck('id');
+
+        $legacyDepartments = DepartmentHead::where('employee_id', $this->id)->pluck('department');
+
+        $viaLegacy = $legacyDepartments->isEmpty()
+            ? collect()
+            : static::whereIn('department', $legacyDepartments)
+                ->where(function ($query) {
+                    $query->whereNull('employee_group_id')
+                        ->orWhereHas('employeeGroup', fn ($groupQuery) => $groupQuery->whereNull('group_head_employee_id'));
+                })
+                ->pluck('id');
+
+        $everyDepartmentHeadId = EmployeeGroup::whereNotNull('group_head_employee_id')
+            ->pluck('group_head_employee_id')
+            ->merge(DepartmentHead::pluck('employee_id'))
+            ->unique();
+
+        return $viaGroup->merge($viaLegacy)->unique()->diff($everyDepartmentHeadId)->values();
     }
 
     /**

@@ -152,6 +152,12 @@ class OffboardingRequestController extends Controller
                 'status' => 'pending',
                 'created_by' => $request->user()->id,
                 'final_approver_employee_id' => $activeFinalApprover->employee_id,
+                // Frozen once, here, at creation — "Extend Due" (see
+                // `ApprovalController::extendAllDue()`) only ever updates
+                // `last_working_day` itself, never this column, so it stays
+                // the one immutable baseline the Offboardee page compares
+                // against to detect/display an extension.
+                'original_last_working_day' => $validated['last_working_day'],
                 'reason' => $separationType->title,
                 'separation_type_description' => $separationType->description,
                 'notice_period_days' => $noticePeriodDays,

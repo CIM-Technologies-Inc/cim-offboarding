@@ -104,6 +104,14 @@ class OffboardingActivity extends Model
                     $actor,
                 )
                 : "Due Date Extended by {$actor}{$suffix}",
+            // The one Timeline entry per "Extend Due" click (as distinct
+            // from the several per-checklist `due_date_extended` entries
+            // that same click also creates — see
+            // `ApprovalController::extendAllDue()`) — the specific
+            // previous/new Last Working Day dates live in this row's own
+            // `comment`, set by the controller, same convention `declined`
+            // above already follows for its own `decline_reason`.
+            'last_working_day_extended' => "Last Working Day Extended by {$actor}",
             'general_signatory_reminder_sent' => "Notification Resent by {$actor}",
             'final_approval_sent' => "Final Approval Requested by {$actor}",
             'final_approval_viewed' => "Final Approval Link Viewed by {$actor}",

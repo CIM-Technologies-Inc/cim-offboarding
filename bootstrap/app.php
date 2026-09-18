@@ -103,6 +103,21 @@ return Application::configure(basePath: dirname(__DIR__))
                 return null;
             }
 
+            // A `ValidationException` carries its OWN 422 status but does
+            // NOT implement `HttpExceptionInterface` (that's a Symfony
+            // interface Laravel's validation layer never adopted) — without
+            // this check, the `else 500` branch below silently
+            // misclassified every validation failure on a fetch()-based
+            // action as a 500, discarding its real field-specific message
+            // in favor of the generic one meant only for genuine server
+            // errors. Deferring to `null` here lets Laravel's own default
+            // handling render its normal `{"message", "errors"}` 422 body,
+            // exactly like the `$status < 500` case below already does for
+            // every other 4xx.
+            if ($e instanceof \Illuminate\Validation\ValidationException) {
+                return null;
+            }
+
             $status = $e instanceof \Symfony\Component\HttpKernel\Exception\HttpExceptionInterface
                 ? $e->getStatusCode()
                 : 500;

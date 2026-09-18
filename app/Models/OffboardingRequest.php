@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Collection;
 
 class OffboardingRequest extends Model
 {
@@ -28,6 +29,7 @@ class OffboardingRequest extends Model
         'notification_date',
         'notice_date',
         'last_working_day',
+        'original_last_working_day',
         'approval_mode',
         'email_template_id',
         'approver_notification_template_id',
@@ -50,6 +52,7 @@ class OffboardingRequest extends Model
             'notice_date' => 'date',
             'notification_date' => 'date',
             'last_working_day' => 'date',
+            'original_last_working_day' => 'date',
             'completed_at' => 'datetime',
             'final_pay_notified_at' => 'datetime',
             'secondary_notified_at' => 'datetime',
@@ -211,6 +214,44 @@ class OffboardingRequest extends Model
     public function approvers(): HasMany
     {
         return $this->hasMany(OffboardingRequestApprover::class)->orderBy('assigned_at');
+    }
+
+    /**
+     * Every checklist on this request that still counts toward the bulk
+     * "Extend Due" button/action (Offboardee Page) — not yet
+     * approved/declined, AND actually carrying a due date (a template with
+     * no `due_in_days` configured never gets one, so it's excluded rather
+     * than counting toward — or blocking — anything). Shared by
+     * `OffboardeeController::index()` (button visibility/modal data) and
+     * `ApprovalController::extendAllDue()` (the gate check and the fresh
+     * data returned after a successful extension) so both always agree on
+     * exactly the same set — assumes `approvers.checklistTemplate` is
+     * already loaded/loadable on `$this`.
+     */
+    public function extendDueApplicableApprovers(): Collection
+    {
+        return $this->approvers
+            ->reject(fn (OffboardingRequestApprover $approver) => in_array($approver->status, ['approved', 'declined'], true))
+            ->filter(fn (OffboardingRequestApprover $approver) => $approver->due_at !== null);
+    }
+
+    /**
+     * Whether "Extend Due" has ever pushed this request's Last Working Day
+     * forward from its original value. `original_last_working_day` is set
+     * once at creation and never touched again (see
+     * `OffboardingRequestController::store()` and the
+     * `add_original_last_working_day_to_offboarding_requests_table`
+     * migration's backfill for requests created before that column
+     * existed) — `last_working_day` itself is the only value
+     * `ApprovalController::extendAllDue()` ever updates, so comparing the
+     * two here always reflects the LATEST extension, however many there
+     * have been.
+     */
+    public function isLastWorkingDayExtended(): bool
+    {
+        return $this->original_last_working_day !== null
+            && $this->last_working_day !== null
+            && ! $this->original_last_working_day->equalTo($this->last_working_day);
     }
 
     /**
@@ -739,24 +780,6 @@ class OffboardingRequest extends Model
                 'delegateCompletedAt' => $assignment->delegate_completed_at?->format('M d, Y g:i A'),
                 'dueAt' => $assignment->due_at?->format('M d, Y g:i A'),
                 'isOverdue' => $assignment->isOverdue(),
-                // "Extend Due" button (Offboarding Status page) — see
-                // `OffboardingRequestApprover::canExtendDue()`. Gating the
-                // button itself is BOTH this AND the Blade view's own
-                // `@can('checklists.extend-due')`/permission check — this
-                // key alone only ever controls whether it's currently
-                // ACTIONABLE (due date reached, checklist unresolved), not
-                // who's allowed to see it at all.
-                'canExtendDue' => $assignment->canExtendDue(),
-                'extendDueUrl' => route('approvals.extend-due', $assignment->id),
-                // The checklist template's own configured "Due Date
-                // Extension (Days)" — the Extend Due modal's read-only
-                // "Before" field, purely informational (see
-                // `OffboardingRequestApprover::extendDue()`'s own
-                // docblock for why this never itself drives the
-                // calculation). Null when the template has none
-                // configured (e.g. the HR Checklist example in the
-                // feature's own spec).
-                'configuredExtensionDays' => $assignment->checklistTemplate?->due_in_days,
                 // Extend Due history block (Offboarding Status tab) — the
                 // checklist's very first due date (see
                 // `OffboardingRequestApprover::originalDueDate()`'s own

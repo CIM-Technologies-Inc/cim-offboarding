@@ -111,6 +111,98 @@
                 </p>
             </div>
 
+            <div class="mt-5" x-data="{
+                    notificationEnabled: {{ old('notification_enabled', $template->notification_enabled) ? 'true' : 'false' }},
+                    notificationRepeat: {{ old('notification_repeat', $template->notification_repeat) ? 'true' : 'false' }},
+                }">
+                <div class="flex items-center gap-2">
+                    <input type="checkbox" id="notification_enabled" name="notification_enabled" value="1" x-model="notificationEnabled"
+                        class="h-4 w-4 rounded border-gray-300 text-[#145a3a] accent-[#145a3a] focus:ring-[#145a3a]/40 dark:border-gray-700" />
+                    <label for="notification_enabled" class="text-sm font-medium text-gray-700 dark:text-gray-400">
+                        Schedule Email/Notification
+                    </label>
+                </div>
+                <p class="mt-1.5 text-xs text-gray-400">
+                    Reminds this checklist's own Clearance Signatory, Task Assignee(s), and any monitoring Group Head/Department Head.
+                </p>
+
+                <div x-show="notificationEnabled" x-cloak class="mt-3 space-y-4 rounded-xl border border-gray-200 p-4 dark:border-gray-800">
+                    <div>
+                        <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                            Email Template
+                        </label>
+                        <select name="notification_email_template_id"
+                            class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:text-white/90 dark:focus:border-brand-800">
+                            <option value="">Select a template</option>
+                            @foreach ($emailTemplates as $emailTemplate)
+                                <option value="{{ $emailTemplate->id }}" @selected((string) old('notification_email_template_id', $template->notification_email_template_id) === (string) $emailTemplate->id)>{{ $emailTemplate->template_name }}</option>
+                            @endforeach
+                        </select>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                                Days Before Due Date
+                            </label>
+                            <input type="number" name="notification_days_before" min="1" step="1"
+                                value="{{ old('notification_days_before', $template->notification_days_before) }}" placeholder="e.g. 5"
+                                class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
+                        </div>
+                        <div>
+                            <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                                Time to Send
+                            </label>
+                            <input type="time" name="notification_time" value="{{ old('notification_time', $template->notification_time?->format('H:i')) }}"
+                                class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:focus:border-brand-800" />
+                        </div>
+                    </div>
+
+                    <div>
+                        <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                            Notification Type
+                        </label>
+                        <select name="notification_type"
+                            class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:text-white/90 dark:focus:border-brand-800">
+                            <option value="email" @selected(old('notification_type', $template->notification_type ?? 'email') === 'email')>Email</option>
+                            <option value="system" @selected(old('notification_type', $template->notification_type) === 'system')>System Notification</option>
+                            <option value="both" @selected(old('notification_type', $template->notification_type) === 'both')>Email + System Notification</option>
+                        </select>
+                        <p class="mt-1.5 text-xs text-gray-400">
+                            Only Email actually sends today — System Notification has no in-app delivery yet, but the choice is saved for when it does.
+                        </p>
+                    </div>
+
+                    <div>
+                        <div class="flex items-center gap-2">
+                            <input type="checkbox" id="notification_repeat" name="notification_repeat" value="1" x-model="notificationRepeat"
+                                class="h-4 w-4 rounded border-gray-300 text-[#145a3a] accent-[#145a3a] focus:ring-[#145a3a]/40 dark:border-gray-700" />
+                            <label for="notification_repeat" class="text-sm font-medium text-gray-700 dark:text-gray-400">
+                                Repeat Reminder
+                            </label>
+                        </div>
+                        <div x-show="notificationRepeat" x-cloak class="mt-3 grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                                    Repeat Interval (Days)
+                                </label>
+                                <input type="number" name="notification_repeat_interval_days" min="1" step="1"
+                                    value="{{ old('notification_repeat_interval_days', $template->notification_repeat_interval_days) }}" placeholder="e.g. 2"
+                                    class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
+                            </div>
+                            <div>
+                                <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                                    Maximum Reminders
+                                </label>
+                                <input type="number" name="notification_max_reminders" min="1" step="1"
+                                    value="{{ old('notification_max_reminders', $template->notification_max_reminders) }}" placeholder="e.g. 3"
+                                    class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             @php
                 $currentClassification = $template->is_final_pay_checklist ? 'final_pay' : ($template->sequence_type ?? 'primary');
             @endphp

@@ -87,7 +87,15 @@ class EmailTemplateController extends Controller
     private function normalizeSchedule(array $validated): array
     {
         if (empty($validated['is_scheduled'])) {
-            $validated['schedule_type'] = null;
+            // `schedule_type` itself is NOT NULL at the database level
+            // (defaults to 'one_time' — see the
+            // `add_recurring_schedule_to_email_templates_table` migration),
+            // unlike every other schedule field here. Reset to that same
+            // default rather than null, which the column rejects outright.
+            // Harmless either way: every consumer (`SendScheduledEmailTemplates`,
+            // `EmailTemplate::scheduleLabel()`) gates on `is_scheduled`
+            // first and never reads `schedule_type` once it's false.
+            $validated['schedule_type'] = 'one_time';
             $validated['schedule_timing'] = null;
             $validated['schedule_days'] = null;
             $validated['schedule_interval_days'] = null;

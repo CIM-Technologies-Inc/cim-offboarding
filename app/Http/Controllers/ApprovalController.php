@@ -89,8 +89,13 @@ class ApprovalController extends Controller
             });
         }
 
+        // Computed once (not per row) — the set of employees this viewer is
+        // the Group Head/Department Head of, feeding the `isMonitoring` flag
+        // below. See `Employee::subordinateEmployeeIds()`.
+        $monitoredEmployeeIds = $employee ? $employee->subordinateEmployeeIds() : collect();
+
         $rows = $assignments
-            ->map(function (OffboardingRequestApprover $assignment) use ($user, $employee) {
+            ->map(function (OffboardingRequestApprover $assignment) use ($user, $employee, $monitoredEmployeeIds) {
                 $request = $assignment->offboardingRequest;
                 $template = $assignment->checklistTemplate;
 
@@ -118,6 +123,21 @@ class ApprovalController extends Controller
                     || $isDelegate
                     || $isGroupTaskAssignee
                     || ($employee && $template?->items->contains(fn ($item) => $assignment->effectiveSignatoryFor($item)?->id === $employee->id));
+
+                // Group Head/Department Head MONITORING visibility (see
+                // `scopeVisibleTo()`'s matching clause) — reached this row
+                // only because one of THEIR OWN people is a Task Assignee on
+                // it, never because they own any item themselves. Drives the
+                // "you're only monitoring" copy in `checklist-modal.blade.php`
+                // and suppresses `canTakeOver` below — this viewer must never
+                // be offered a way to take over/complete someone else's item,
+                // even though the server would independently reject it
+                // anyway (see `ChecklistDelegationController::authorizeItemAction()`).
+                $isMonitoring = $employee
+                    && ! $isAssignedApprover
+                    && $template?->use_task_assignee_as_signatory
+                    && $monitoredEmployeeIds->isNotEmpty()
+                    && $template->items->contains(fn ($item) => $monitoredEmployeeIds->contains($assignment->effectiveSignatoryFor($item)?->id));
 
                 $isReadyForApproval = $usesPerItemApprovers
                     && $assignment->allItemsCompleted()
@@ -214,7 +234,7 @@ class ApprovalController extends Controller
                         'assignableEmployees' => $this->eligibleAssigneesForPool($assignment),
                     ] : null,
                     'checklistItems' => $template
-                        ? $template->items->map(function ($item) use ($assignment, $template, $progressByItemId, $isPrimaryApprover, $isDelegate, $employee, $usesPerItemApprovers, $mustBeCheckedForSubmit, $rowAssignableEmployees) {
+                        ? $template->items->map(function ($item) use ($assignment, $template, $progressByItemId, $isPrimaryApprover, $isDelegate, $employee, $usesPerItemApprovers, $mustBeCheckedForSubmit, $rowAssignableEmployees, $isMonitoring) {
                             $progress = $progressByItemId->get($item->id);
                             $isChecked = (bool) ($progress?->is_checked ?? false);
                             $onHold = $progress?->status === 'hold' && ! $isChecked;
@@ -277,7 +297,13 @@ class ApprovalController extends Controller
                                 // OTHER not-yet-checked item — "Check This List" —
                                 // but never one that's on Hold: that's a deliberate
                                 // pause only the item's own approver can resolve.
-                                'canTakeOver' => ! $editable && ! $isChecked && ! $onHold,
+                                // Never offered to a Group Head/Department
+                                // Head who only reached this card through
+                                // monitoring visibility (see `isMonitoring`
+                                // above) — their access is for tracking their
+                                // own employee's progress, never for taking
+                                // over the work itself.
+                                'canTakeOver' => ! $editable && ! $isChecked && ! $onHold && ! $isMonitoring,
                                 'clearedByName' => $isChecked ? $progress?->checkedBy?->name : null,
                                 'clearedByCode' => $isChecked ? $checkedByEmployee?->employee_code : null,
                                 'clearedAt' => $isChecked ? $progress?->checked_at?->format('M d, Y g:i A') : null,
@@ -315,6 +341,7 @@ class ApprovalController extends Controller
                         : [],
                     'isPrimaryApprover' => $isPrimaryApprover,
                     'isAssignedApprover' => $isAssignedApprover,
+                    'isMonitoring' => (bool) $isMonitoring,
                     'isDelegate' => $isDelegate,
                     'usesPerItemApprovers' => $usesPerItemApprovers,
                     'isImmediateHeadChecklist' => (bool) $template?->is_immediate_head_checklist,
@@ -536,6 +563,7 @@ class ApprovalController extends Controller
                     'checklistItems' => [],
                     'isPrimaryApprover' => true,
                     'isAssignedApprover' => true,
+                    'isMonitoring' => false,
                     'isDelegate' => false,
                     'usesPerItemApprovers' => false,
                     'isImmediateHeadChecklist' => false,
@@ -669,6 +697,12 @@ class ApprovalController extends Controller
                     })(),
                     'isPrimaryApprover' => $first['isPrimaryApprover'],
                     'isAssignedApprover' => $group->contains('isAssignedApprover', true),
+                    // A headless (Task-Assignee-as-Signatory) template is
+                    // always a "group of one" by construction (see this
+                    // method's own docblock above), so `$first` alone is
+                    // authoritative here — never mixed with a real owning
+                    // employee's other, non-monitored checklists.
+                    'isMonitoring' => (bool) ($first['isMonitoring'] ?? false),
                     'isDelegate' => $group->contains('isDelegate', true),
                     'usesPerItemApprovers' => $group->contains('usesPerItemApprovers', true),
                     'isImmediateHeadChecklist' => $group->contains('isImmediateHeadChecklist', true),
@@ -924,20 +958,33 @@ class ApprovalController extends Controller
             'This has already been actioned.'
         );
 
+        // Trimmed BEFORE validation so a whitespace-only remark ("   ")
+        // fails the `required` rule below exactly like an empty one would —
+        // `required` alone only rejects null/"", not a string of blanks.
+        if ($request->has('remarks')) {
+            $request->merge(['remarks' => trim((string) $request->input('remarks'))]);
+        }
+
         $validated = $request->validate([
             'items' => ['nullable', 'array'],
             'items.*.checklist_item_id' => ['required', 'exists:checklist_items,id'],
             'items.*.is_checked' => ['nullable', 'boolean'],
             'items.*.remark' => ['nullable', 'string'],
-            // Optional whole-checklist "reason for the delay" remark — only
-            // ever meaningfully populated by the due-date confirmation
-            // dialog in `checklist-modal.blade.php` when the checklist has
-            // reached/passed its due date, but accepted unconditionally here
-            // since a stale/manipulated client flag is harmless: the actual
-            // on-time/late determination is always recomputed server-side
-            // from `due_at`/`approved_at` (see `wasCompletedLate()`), never
-            // trusted from the client.
-            'remarks' => ['nullable', 'string', 'max:2000'],
+            // Whole-checklist "reason for the delay" remark — REQUIRED the
+            // moment this checklist has reached/passed its own due date
+            // (never trusted from the client's own "hasReachedDueDate" flag
+            // in `checklist-modal.blade.php`: recomputed here from
+            // `due_at`, the same source of truth `wasCompletedLate()` uses,
+            // so a direct/manipulated request can't skip it just by
+            // omitting the field). Still optional while the checklist is
+            // on time, unchanged from before.
+            'remarks' => [
+                $offboardingRequestApprover->hasReachedDueDate() ? 'required' : 'nullable',
+                'string',
+                'max:2000',
+            ],
+        ], [
+            'remarks.required' => 'A remark is required explaining why this checklist was not completed by its due date.',
         ]);
 
         // The Department Head may check items themselves right up to the
@@ -978,12 +1025,32 @@ class ApprovalController extends Controller
             return $this->redirectToUploadSignature();
         }
 
+        // Same "required the moment ANY member has reached its own due
+        // date" rule `approve()` applies to a single checklist — mirrors
+        // the frontend's own group aggregation (`$group->contains('dueDateReached', true)`
+        // in `checklist-modal.blade.php`) rather than trusting it, since a
+        // direct/manipulated request could otherwise omit the remark
+        // entirely. A lightweight, unlocked read is enough here (this is
+        // only deciding a validation rule, not mutating anything) — the
+        // transaction below re-fetches these same rows `lockForUpdate()`.
+        $anyMemberOverdue = OffboardingRequestApprover::where('offboarding_request_id', $offboardingRequest->id)
+            ->where('employee_id', $employee->id)
+            ->whereIn('status', ['pending', 'viewed'])
+            ->get()
+            ->contains(fn (OffboardingRequestApprover $member) => $member->hasReachedDueDate());
+
+        if ($request->has('remarks')) {
+            $request->merge(['remarks' => trim((string) $request->input('remarks'))]);
+        }
+
         $validated = $request->validate([
             'items' => ['nullable', 'array'],
             'items.*.checklist_item_id' => ['required', 'exists:checklist_items,id'],
             'items.*.is_checked' => ['nullable', 'boolean'],
             'items.*.remark' => ['nullable', 'string'],
-            'remarks' => ['nullable', 'string', 'max:2000'],
+            'remarks' => [$anyMemberOverdue ? 'required' : 'nullable', 'string', 'max:2000'],
+        ], [
+            'remarks.required' => 'A remark is required explaining why this checklist was not completed by its due date.',
         ]);
 
         DB::transaction(function () use ($offboardingRequest, $employee, $validated) {
@@ -1038,6 +1105,7 @@ class ApprovalController extends Controller
         'already_approved' => 'This checklist has already been approved.',
         'not_actionable' => 'This checklist can no longer be approved from this link.',
         'not_ready' => 'This checklist is not yet ready for approval — not all items have been completed.',
+        'remarks_required' => 'This checklist has reached its due date and requires a remark explaining the delay before it can be approved. Log in to your account and approve it from there.',
         'no_signature' => self::MISSING_SIGNATURE_MESSAGE . ' Log in to your account, upload it from your Profile page, then use this link again.',
         'confirm' => 'Please confirm to approve this checklist.',
         'approved' => 'The checklist was successfully approved.',
@@ -1145,6 +1213,15 @@ class ApprovalController extends Controller
 
                 if ($notReady) {
                     return 'not_ready';
+                }
+
+                // The one-click email link has no remarks field to collect
+                // an overdue explanation at all — rather than silently
+                // approving without one (the exact loophole this whole
+                // feature exists to close), send the approver to the app's
+                // own modal, which does collect and require it.
+                if ($locked->contains(fn (OffboardingRequestApprover $m) => $m->hasReachedDueDate())) {
+                    return 'remarks_required';
                 }
 
                 $this->finalizeGroupApproval($locked, $actor);
@@ -1546,115 +1623,62 @@ class ApprovalController extends Controller
     }
 
     /**
-     * "Extend Due" — pushes a checklist's due date forward once it's
-     * actually been reached, from the Offboarding Status page's own
-     * dedicated button (see `OffboardingRequestApprover::canExtendDue()`/
-     * `extendDue()`, which does the actual date math and writes the
-     * permanent audit row). Gated by its own dedicated permission
-     * (`checklists.extend-due`, see the matching route middleware) rather
-     * than folding into `approvals.approve`, so an Admin can grant/revoke
-     * this specific ability independently — the same "own dedicated
-     * permission" reasoning `reset()`/`FinalApprovalController::send()`
-     * already follow for their own admin-gated actions. Checked again here
-     * (not just at the route) for the same defense-in-depth reason
-     * `remind()` above re-checks `isAdmin()`.
-     */
-    public function extendDue(Request $request, OffboardingRequestApprover $offboardingRequestApprover): RedirectResponse
-    {
-        abort_unless(auth()->user()->can('checklists.extend-due'), 403);
-
-        abort_unless(
-            $offboardingRequestApprover->canExtendDue(),
-            422,
-            'This checklist has not yet reached its current due date — it cannot be extended.'
-        );
-
-        $validated = $request->validate([
-            'additional_extension_days' => ['required', 'integer', 'min:1'],
-            'reason' => ['nullable', 'string', 'max:1000'],
-        ]);
-
-        $previousDueDate = $offboardingRequestApprover->due_at;
-
-        $extension = $offboardingRequestApprover->extendDue(
-            $validated['additional_extension_days'],
-            auth()->id(),
-            $validated['reason'] ?? null,
-        );
-
-        // The same "no longer meaningfully overdue" cleanup `approve()`
-        // already does — a checklist just granted a fresh future due date
-        // shouldn't keep showing a stale unread "overdue" notification.
-        $this->resolveOverdueNotifications($offboardingRequestApprover);
-
-        $offboardingRequest = $offboardingRequestApprover->offboardingRequest;
-
-        $offboardingRequest->activities()->create([
-            'user_id' => auth()->id(),
-            'offboarding_request_approver_id' => $offboardingRequestApprover->id,
-            'checklist_due_date_extension_id' => $extension->id,
-            'action' => 'due_date_extended',
-            'status' => $offboardingRequest->status,
-            'comment' => sprintf(
-                'Due date extended from %s to %s (+%d day%s)',
-                $previousDueDate->format('M d, Y'),
-                $extension->new_due_date->format('M d, Y'),
-                $validated['additional_extension_days'],
-                $validated['additional_extension_days'] === 1 ? '' : 's',
-            ),
-        ]);
-
-        // Only reached once the extension is genuinely saved above (an
-        // earlier abort_unless/validation failure returns before this
-        // point, so a rejected attempt never sends this) — a best-effort
-        // notice, not part of the extension's own success: a mail failure
-        // here is logged and swallowed rather than surfaced as an error,
-        // since the due date itself is already correctly extended and
-        // saved regardless of whether this email goes out.
-        try {
-            $this->notifyClearanceSignatoriesOfExtension($offboardingRequestApprover, $previousDueDate, $extension);
-        } catch (\Throwable $e) {
-            Log::error('Failed to send checklist due date extension notification.', [
-                'offboarding_request_approver_id' => $offboardingRequestApprover->id,
-                'exception' => $e->getMessage(),
-            ]);
-        }
-
-        return redirect()
-            ->route('offboardees.index', ['offboardee' => $offboardingRequest->employee_id])
-            ->with('success', 'Due date extended to ' . $extension->new_due_date->format('M d, Y') . '.');
-    }
-
-    /**
-     * "Extend Due" — bulk equivalent of `extendDue()` above, from the
-     * Offboardee Page's own button rather than a single checklist row on
-     * the Offboarding Status page. Applies the SAME number of days to
-     * EVERY still-applicable checklist (any approver row not already
-     * `approved`/`declined`, AND that actually has a due date at all — see
-     * below) on this request, each computed from ITS OWN current due date
-     * via the same `OffboardingRequestApprover::extendDue()` — never a
-     * single shared date — so checklists that were already at different
-     * due dates before stay at different (but each +N days) dates after,
-     * exactly per spec. Only reachable once EVERY applicable checklist has
-     * individually reached its own due date (mirrors `canExtendDue()` —
-     * see the `abort_unless` below), so this can never partially apply to
-     * some checklists while skipping others that aren't eligible yet.
+     * "Extend Due" — the Offboardee Page's single bulk button (there is no
+     * longer a per-checklist "Extend Due" anywhere on the Offboarding
+     * Status/Timeline tabs — see `OffboardingRequestApprover::canExtendDue()`/
+     * `extendDueTo()`, which writes the permanent audit row). Extends the
+     * OFFBOARDEE'S OWN Last Working Day to an admin-picked date, THEN
+     * recalculates every still-applicable checklist's due date from that
+     * new Last Working Day using ITS OWN template's `due_in_days` offset —
+     * never a single shared date applied uniformly. A checklist configured
+     * for 0 extra days lands exactly on the new Last Working Day; one
+     * configured for 5 lands 5 days after it — each checklist keeps using
+     * its own configured offset, exactly like at creation time (see
+     * `ChecklistApprovalNotifier::attachAndNotify()`), just recomputed from
+     * the NEW Last Working Day instead of the original one.
+     *
+     * Visible/reachable the moment AT LEAST ONE applicable checklist has
+     * reached its own due date (not ALL of them) — see the `abort_unless`
+     * below, which mirrors `OffboardeeController::index()`'s own
+     * `canBulkExtendDue` gate exactly.
      *
      * A checklist template with no `due_in_days` configured (a normal,
      * common config in this app — several fixed-name templates ship with
      * none) never gets a `due_at` at all, so it can never "reach" a due
      * date it doesn't have — it's excluded from the applicable set
-     * entirely rather than permanently blocking every other checklist's
-     * bulk extension. There must still be at least one genuinely
-     * applicable (due-date-bearing, unresolved) checklist for the button
-     * to ever be usable at all.
+     * entirely rather than counting toward or blocking this gate. Its own
+     * effective offset for the recalculation below is simply 0 days (i.e.
+     * it lands exactly on the new Last Working Day) via `?? 0`.
      *
-     * Wrapped in a single transaction: either every applicable checklist's
-     * due date (and its own audit-trail `ChecklistDueDateExtension` row and
-     * Timeline activity) gets extended, or — on any failure — none of them
-     * do, per spec ("do not partially update the checklists"). The
-     * per-recipient notification emails fire only after that transaction
-     * commits, same non-fatal best-effort handling as `extendDue()`'s own.
+     * The picked date must be later than the CURRENT Last Working Day —
+     * moving it backward would be a genuine data correction, not an
+     * "extension", and isn't what this action is for.
+     *
+     * A reason is REQUIRED (trimmed, rejecting whitespace-only same as the
+     * overdue-checklist-approval remark elsewhere in this controller) —
+     * this is a whole-request-level extension the HR/Admin team needs to
+     * be able to explain later, not a per-checklist technicality. Stored
+     * in TWO places for full traceability: the `last_working_day_extended`
+     * Timeline activity's own `comment` (the one entry per click), and
+     * each individual checklist's own `ChecklistDueDateExtension.reason`
+     * column (already existed for this — just never populated from here
+     * before).
+     *
+     * Wrapped in a single transaction: either the Last Working Day AND
+     * every applicable checklist's recalculated due date (each with its
+     * own audit-trail `ChecklistDueDateExtension` row and Timeline
+     * activity) all get set, or — on any failure — none of it does, per
+     * spec ("do not partially update the checklists"). The per-recipient
+     * notification emails fire only after that transaction commits, same
+     * non-fatal best-effort handling as before.
+     *
+     * Returns the fresh Last Working Day / button-visibility / checklist
+     * breakdown in its JSON response (mirroring
+     * `OffboardeeController::index()`'s own `lastWorkingDay`/
+     * `canBulkExtendDue`/`extendDueChecklists`/`extendDueMinSelectableDateIso`
+     * fields exactly) so the Offboardee Page can update that one card's
+     * Alpine state in place and re-open the modal with correct data next
+     * time, instead of reloading the whole page.
      */
     public function extendAllDue(Request $request, OffboardingRequest $offboardingRequest): RedirectResponse|JsonResponse
     {
@@ -1662,26 +1686,54 @@ class ApprovalController extends Controller
 
         $offboardingRequest->loadMissing('approvers.checklistTemplate');
 
-        $applicableApprovers = $offboardingRequest->approvers
-            ->reject(fn (OffboardingRequestApprover $approver) => in_array($approver->status, ['approved', 'declined'], true))
-            ->filter(fn (OffboardingRequestApprover $approver) => $approver->due_at !== null);
+        $applicableApprovers = $offboardingRequest->extendDueApplicableApprovers();
 
         abort_unless(
-            $applicableApprovers->isNotEmpty() && $applicableApprovers->every(fn (OffboardingRequestApprover $approver) => $approver->canExtendDue()),
+            $applicableApprovers->isNotEmpty() && $applicableApprovers->contains(fn (OffboardingRequestApprover $approver) => $approver->canExtendDue()),
             422,
-            'Not every checklist on this offboarding request has reached its due date yet — due dates cannot be bulk-extended.'
+            'No checklist on this offboarding request has reached its due date yet — due dates cannot be extended.'
         );
 
+        $currentLastWorkingDay = $offboardingRequest->last_working_day;
+
+        if ($request->has('reason')) {
+            $request->merge(['reason' => trim((string) $request->input('reason'))]);
+        }
+
         $validated = $request->validate([
-            'additional_extension_days' => ['required', 'integer', 'min:1'],
+            'new_last_working_day' => ['required', 'date', 'after:' . $currentLastWorkingDay->toDateString()],
+            'reason' => ['required', 'string', 'max:1000'],
+        ], [
+            'new_last_working_day.after' => 'The new Last Working Day must be later than the current Last Working Day (' . $currentLastWorkingDay->format('M d, Y') . ').',
+            'reason.required' => 'A reason is required to extend the Last Working Day.',
         ]);
 
-        $extensions = DB::transaction(function () use ($applicableApprovers, $validated, $offboardingRequest) {
-            return $applicableApprovers->map(function (OffboardingRequestApprover $approver) use ($validated, $offboardingRequest) {
+        $newLastWorkingDay = Carbon::parse($validated['new_last_working_day'])->startOfDay();
+        $reason = $validated['reason'];
+
+        $extensions = DB::transaction(function () use ($applicableApprovers, $newLastWorkingDay, $currentLastWorkingDay, $offboardingRequest, $reason) {
+            $offboardingRequest->update(['last_working_day' => $newLastWorkingDay]);
+
+            $offboardingRequest->activities()->create([
+                'user_id' => auth()->id(),
+                'action' => 'last_working_day_extended',
+                'status' => $offboardingRequest->status,
+                'comment' => sprintf(
+                    'Last Working Day extended from %s to %s. Reason: %s',
+                    $currentLastWorkingDay->format('M d, Y'),
+                    $newLastWorkingDay->format('M d, Y'),
+                    $reason,
+                ),
+            ]);
+
+            return $applicableApprovers->map(function (OffboardingRequestApprover $approver) use ($newLastWorkingDay, $offboardingRequest, $reason) {
                 $previousDueDate = $approver->due_at;
-                $extension = $approver->extendDue($validated['additional_extension_days'], auth()->id());
+                $newDueDate = $newLastWorkingDay->copy()->addDays($approver->checklistTemplate?->due_in_days ?? 0);
+                $extension = $approver->extendDueTo($newDueDate, auth()->id(), $reason);
 
                 $this->resolveOverdueNotifications($approver);
+
+                $days = $previousDueDate->diffInDays($extension->new_due_date);
 
                 $offboardingRequest->activities()->create([
                     'user_id' => auth()->id(),
@@ -1690,11 +1742,12 @@ class ApprovalController extends Controller
                     'action' => 'due_date_extended',
                     'status' => $offboardingRequest->status,
                     'comment' => sprintf(
-                        'Due date extended from %s to %s (+%d day%s)',
+                        'Due date extended from %s to %s (+%d day%s). Reason: %s',
                         $previousDueDate->format('M d, Y'),
                         $extension->new_due_date->format('M d, Y'),
-                        $validated['additional_extension_days'],
-                        $validated['additional_extension_days'] === 1 ? '' : 's',
+                        $days,
+                        $days === 1 ? '' : 's',
+                        $reason,
                     ),
                 ]);
 
@@ -1702,9 +1755,15 @@ class ApprovalController extends Controller
             });
         });
 
+        // Shared across every checklist's own notification call below — see
+        // `notifyClearanceSignatoriesOfExtension()`'s own docblock for why:
+        // the same person responsible for more than one extended checklist
+        // must still only receive ONE email for this whole bulk action.
+        $alreadyNotifiedEmployeeIds = [];
+
         foreach ($extensions as [$approver, $previousDueDate, $extension]) {
             try {
-                $this->notifyClearanceSignatoriesOfExtension($approver, $previousDueDate, $extension);
+                $this->notifyClearanceSignatoriesOfExtension($approver, $previousDueDate, $extension, $alreadyNotifiedEmployeeIds);
             } catch (\Throwable $e) {
                 Log::error('Failed to send checklist due date extension notification.', [
                     'offboarding_request_approver_id' => $approver->id,
@@ -1713,10 +1772,35 @@ class ApprovalController extends Controller
             }
         }
 
-        $message = 'Extended due dates for ' . $extensions->count() . ' checklist' . ($extensions->count() === 1 ? '' : 's') . '.';
+        $message = 'Last Working Day extended to ' . $newLastWorkingDay->format('M d, Y') . ' — recalculated due dates for ' . $extensions->count() . ' checklist' . ($extensions->count() === 1 ? '' : 's') . '.';
 
         if ($request->wantsJson()) {
-            return response()->json(['success' => true, 'message' => $message]);
+            // No reload needed: `$applicableApprovers`' own model instances
+            // ARE `$offboardingRequest->approvers`'s cached ones (the
+            // `->reject()->filter()` above returns a new Collection of the
+            // SAME object references) — `extendDueTo()` already mutated
+            // their `due_at` in place, so re-deriving from the relation
+            // again here already reflects the fresh values.
+            $freshApplicable = $offboardingRequest->extendDueApplicableApprovers();
+
+            return response()->json([
+                'success' => true,
+                'message' => $message,
+                'lastWorkingDay' => $newLastWorkingDay->format('M d, Y'),
+                // Offboardee Status modal's "Extended Last Working Day"
+                // display (see `status-timeline-modal.blade.php`) — sent
+                // here so the card's dispatch to that modal reflects the
+                // extension immediately, with no page reload.
+                'originalLastWorkingDay' => $offboardingRequest->original_last_working_day?->format('M d, Y'),
+                'isLastWorkingDayExtended' => $offboardingRequest->isLastWorkingDayExtended(),
+                'canBulkExtendDue' => $freshApplicable->isNotEmpty() && $freshApplicable->contains(fn (OffboardingRequestApprover $approver) => $approver->canExtendDue()),
+                'extendDueChecklists' => $freshApplicable->map(fn (OffboardingRequestApprover $approver) => [
+                    'title' => $approver->checklistTemplate?->title,
+                    'dueDate' => $approver->due_at?->format('M d, Y'),
+                    'hasReachedDueDate' => $approver->canExtendDue(),
+                ])->values()->all(),
+                'extendDueMinSelectableDateIso' => $newLastWorkingDay->copy()->addDay()->format('Y-m-d'),
+            ]);
         }
 
         return redirect()
@@ -1737,11 +1821,25 @@ class ApprovalController extends Controller
      * recipient has no usable email, exactly like `remind()`'s own
      * graceful degradation, since this is a secondary notice about an
      * already-successful extension, never a reason to fail the request.
+     *
+     * A checklist already `approved`/`declined` never reaches this method
+     * at all — `extendAllDue()`'s own `$applicableApprovers` excludes it
+     * from extension entirely — so a fully completed checklist's Clearance
+     * Signatory is never notified about ITS due date, per spec. What this
+     * method alone can't guarantee is the OTHER half of that same spec:
+     * the SAME person responsible for more than one checklist being
+     * extended in this one bulk action must still only get ONE email, not
+     * one per checklist. `$alreadyNotifiedEmployeeIds` is that guard — a
+     * by-reference set shared across every call in `extendAllDue()`'s own
+     * loop, checked before sending and appended to after, so whichever
+     * checklist a shared recipient happens to be resolved from FIRST is
+     * the one email they actually receive.
      */
     private function notifyClearanceSignatoriesOfExtension(
         OffboardingRequestApprover $offboardingRequestApprover,
         Carbon $previousDueDate,
         ChecklistDueDateExtension $extension,
+        array &$alreadyNotifiedEmployeeIds,
     ): void {
         $emailTemplate = EmailTemplate::where('is_active', true)
             ->where('template_name', 'Checklist Due Date Extended')
@@ -1755,6 +1853,10 @@ class ApprovalController extends Controller
         $recipients = $offboardingRequestApprover->checklistTemplate?->use_task_assignee_as_signatory
             ? $offboardingRequestApprover->pendingTaskAssigneeEmployees()
             : collect([$offboardingRequestApprover->employee])->filter();
+
+        $recipients = $recipients->reject(
+            fn (Employee $recipient) => in_array($recipient->id, $alreadyNotifiedEmployeeIds, true)
+        );
 
         if ($recipients->isEmpty()) {
             return;
@@ -1780,6 +1882,8 @@ class ApprovalController extends Controller
             );
 
             Mail::to($recipient->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+
+            $alreadyNotifiedEmployeeIds[] = $recipient->id;
         }
     }
 

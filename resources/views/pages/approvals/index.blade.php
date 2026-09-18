@@ -293,11 +293,15 @@
                             </p>
                         @endif
 
-                        @unless ($approval['isPrimaryApprover'])
+                        @if ($approval['isMonitoring'] ?? false)
+                            <p class="mt-1 text-xs font-medium text-[#145a3a] dark:text-[#3aa876]">
+                                Monitoring — Task Assignee's Checklist
+                            </p>
+                        @elseif (!$approval['isPrimaryApprover'])
                             <p class="mt-1 text-xs text-gray-400">
                                 Assigned by: {{ $approval['assignedByName'] }}
                             </p>
-                        @endunless
+                        @endif
 
                         <div class="mt-4 space-y-1.5 border-t border-gray-100 pt-4 dark:border-gray-800">
                             <div class="flex items-center justify-between text-xs">
