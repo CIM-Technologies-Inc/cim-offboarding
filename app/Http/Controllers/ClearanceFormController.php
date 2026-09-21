@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\ChecklistItem;
+use App\Models\ChecklistItemProgress;
 use App\Models\ChecklistTemplate;
 use App\Models\DepartmentHead;
 use App\Models\Employee;
@@ -729,19 +730,34 @@ class ClearanceFormController extends Controller
                 ->groupBy(fn (ChecklistItem $item) => $approver->effectiveSignatoryFor($item)?->id)
                 ->forget(null);
 
-            $checkedItemIds = $approver->itemProgress->where('is_checked', true)->pluck('checklist_item_id');
+            // Same `isFullyApproved()` predicate `taskAssigneeSignatoryEntries()`
+            // already uses — is_checked ALONE is never enough for a "Use Task
+            // Assignee as Clearance Signatory" item: when the effective
+            // signatory isn't already head-level, the item also needs its
+            // Department/Group/Immediate Head's separate approval (see
+            // `ChecklistItemProgress::resolveHeadApproval()`) before the unit
+            // this attributes to that Head (via `effectiveClearanceSignatoryIdFor()`
+            // below) can count as done. Using raw `is_checked` here let a
+            // Final Approver's Clearance Form row (and signature) show
+            // "Cleared" the instant their Task Assignee checked the item,
+            // before the Final Approver had actually approved anything.
+            $fullyApprovedProgress = $approver->itemProgress->filter->isFullyApproved();
+            $fullyApprovedItemIds = $fullyApprovedProgress->pluck('checklist_item_id');
 
             foreach ($itemsByEmployeeId as $itemEmployeeId => $items) {
                 if ((int) $itemEmployeeId === (int) $approver->employee_id) {
                     continue;
                 }
 
-                $isFullyCleared = $items->every(fn (ChecklistItem $item) => $checkedItemIds->contains($item->id));
+                $isFullyCleared = $items->every(fn (ChecklistItem $item) => $fullyApprovedItemIds->contains($item->id));
 
-                $lastCheckedAt = $approver->itemProgress
+                // The moment full approval was actually reached — a
+                // head-approved item's own approval time, not merely when it
+                // was checked, matching `taskAssigneeSignatoryEntries()`'s
+                // own `$lastCheckedAt` derivation.
+                $lastCheckedAt = $fullyApprovedProgress
                     ->whereIn('checklist_item_id', $items->pluck('id'))
-                    ->where('is_checked', true)
-                    ->max('checked_at');
+                    ->max(fn (ChecklistItemProgress $progress) => $progress->head_approved_at ?? $progress->checked_at);
 
                 // A "Use Task Assignee as Clearance Signatory" checklist's
                 // raw Task Assignee has their completion attributed to

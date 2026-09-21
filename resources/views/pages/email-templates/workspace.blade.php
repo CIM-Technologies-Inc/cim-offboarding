@@ -126,7 +126,7 @@
                             </label>
                         </div>
 
-                        <div x-data="{
+                        <!-- <div x-data="{
                                 isScheduled: {{ old('is_scheduled', $template->is_scheduled ?? false) ? 'true' : 'false' }},
                                 scheduleType: '{{ old('schedule_type', $template->schedule_type ?? 'one_time') }}',
                             }">
@@ -185,7 +185,7 @@
                                     </p>
                                 </div>
                             </div>
-                        </div>
+                        </div> -->
 
                         <div>
                             <div class="mb-1.5 flex items-center justify-between">

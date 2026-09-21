@@ -254,6 +254,9 @@
                                             </p>
                                         </template>
                                         <p>First Viewed: <span x-text="step.firstViewedAt || 'Not viewed yet'"></span></p>
+                                        <template x-if="step.firstViewedByName">
+                                            <p>First Viewed By: <span x-text="step.firstViewedByName"></span></p>
+                                        </template>
                                         <template x-if="step.status === 'approved'">
                                             <p :class="step.wasCompletedLate ? 'font-medium text-error-600 dark:text-error-400' : ''">
                                                 Cleared: <span x-text="step.approvedAt"></span>
@@ -481,6 +484,9 @@
                                                 </p>
                                             </template>
                                             <p>First Viewed: <span x-text="step.firstViewedAt || 'Not viewed yet'"></span></p>
+                                            <template x-if="step.firstViewedByName">
+                                                <p>First Viewed By: <span x-text="step.firstViewedByName"></span></p>
+                                            </template>
                                             <template x-if="step.status === 'approved'">
                                                 <p :class="step.wasCompletedLate ? 'font-medium text-error-600 dark:text-error-400' : ''">
                                                     Cleared: <span x-text="step.approvedAt"></span>

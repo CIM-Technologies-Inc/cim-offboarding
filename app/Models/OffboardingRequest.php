@@ -646,6 +646,7 @@ class OffboardingRequest extends Model
                 'checklistTemplate.items',
                 'itemProgress.checkedBy.employee',
                 'itemProgress.heldBy.employee',
+                'firstViewedBy',
             );
             $progressByItem = $assignment->itemProgress->keyBy('checklist_item_id');
 
@@ -750,6 +751,15 @@ class OffboardingRequest extends Model
                 'status' => $assignment->status,
                 'assignedAt' => $assignment->assigned_at?->format('M d, Y g:i A'),
                 'firstViewedAt' => $assignment->first_viewed_at?->format('M d, Y g:i A'),
+                // Whoever's view actually set `first_viewed_at` — on a "Use
+                // Task Assignee as Clearance Signatory" checklist this can be
+                // the Task Assignee, their Immediate/Group/Department Head,
+                // or anyone else `visibleTo()` already authorized (see
+                // `ApprovalController::index()`'s view-tracking block); on a
+                // normal checklist it's always the Clearance Signatory
+                // themselves. Null for any assignment recorded before this
+                // column existed.
+                'firstViewedByName' => $assignment->firstViewedBy?->name,
                 'approvedAt' => $assignment->approved_at?->format('M d, Y g:i A'),
                 'declinedAt' => $assignment->declined_at?->format('M d, Y g:i A'),
                 'declineReason' => $assignment->decline_reason,

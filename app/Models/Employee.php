@@ -145,6 +145,56 @@ class Employee extends Model
     }
 
     /**
+     * The person actually responsible for approving this employee's work on
+     * a "Use Task Assignee as Clearance Signatory" item: their Immediate
+     * Head (`headEmployee()`) if one is configured, else their Group Head/
+     * Department Head (`departmentHead()`) — the same two-step precedence
+     * `ClearanceFormController::effectiveClearanceSignatoryFor()` already
+     * uses for Clearance Form attribution.
+     */
+    public function approvalHead(): ?Employee
+    {
+        return $this->headEmployee ?? $this->departmentHead();
+    }
+
+    /**
+     * True when this employee is already SOMEONE's approval head — either
+     * their Immediate Head (`head_employee_id`) or their Group Head/
+     * Department Head (`isDepartmentHead()`) — used to skip the head-
+     * approval gate entirely (never require someone to approve their own
+     * work). Broader than `isDepartmentHead()` alone, matching the broader
+     * `approvalHead()` resolution above.
+     */
+    public function isApprovalAuthority(): bool
+    {
+        return $this->isDepartmentHead() || Employee::where('head_employee_id', $this->id)->exists();
+    }
+
+    /**
+     * Reverse of `approvalHead()`: every employee (by id) this employee is
+     * the approval head of — everyone whose Immediate Head is `$this`, plus
+     * everyone from `subordinateEmployeeIds()` (Group Head/Department Head
+     * reach) who has no Immediate Head of their own, since Immediate Head
+     * always takes precedence in `approvalHead()`. Powers Approvals-page
+     * monitoring visibility for an Immediate Head, mirroring what a Group
+     * Head/Department Head already gets via `subordinateEmployeeIds()`.
+     *
+     * @return Collection<int, int>
+     */
+    public function approvalSubordinateEmployeeIds(): Collection
+    {
+        $viaImmediateHead = Employee::where('head_employee_id', $this->id)->pluck('id');
+
+        $groupOrLegacyIds = $this->subordinateEmployeeIds()->diff($viaImmediateHead);
+
+        $viaGroupOrLegacy = $groupOrLegacyIds->isEmpty()
+            ? collect()
+            : static::whereIn('id', $groupOrLegacyIds)->whereNull('head_employee_id')->pluck('id');
+
+        return $viaImmediateHead->merge($viaGroupOrLegacy)->unique()->values();
+    }
+
+    /**
      * Reverse of `departmentHead()`: every employee (by id) this employee is
      * the Group Head/Department Head of — via an Employee Master group's
      * `group_head_employee_id`, or (only for an employee not covered by any

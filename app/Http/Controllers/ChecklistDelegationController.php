@@ -624,28 +624,124 @@ class ChecklistDelegationController extends Controller
      */
     public function approveHeadItem(Request $request, OffboardingRequestApprover $offboardingRequestApprover, ChecklistItem $checklistItem): RedirectResponse|JsonResponse
     {
-        abort_unless($checklistItem->checklist_template_id === $offboardingRequestApprover->checklist_template_id, 404);
+        $outcome = $this->approveOneHeadItem($offboardingRequestApprover, $checklistItem, auth()->user());
 
-        abort_unless(
-            in_array($offboardingRequestApprover->status, ['pending', 'viewed'], true),
-            422,
-            'This checklist has already been actioned.'
+        abort_if($outcome['status'] === 'not_found', 404);
+        abort_if($outcome['status'] === 'forbidden', 403);
+        abort_if($outcome['status'] === 'invalid', 422, $outcome['message']);
+
+        // Same completion check every other completion path already runs —
+        // this may have been the last outstanding gate on the whole
+        // checklist.
+        app(ChecklistCompletionService::class)->autoApproveIfHeadless($offboardingRequestApprover->fresh());
+
+        if ($request->wantsJson()) {
+            return response()->json([
+                'items' => $this->checkedItemPatches([$offboardingRequestApprover->fresh()]),
+                'message' => $outcome['message'],
+            ]);
+        }
+
+        return back()->with('success', $outcome['message']);
+    }
+
+    /**
+     * Bulk counterpart to `approveHeadItem()` — the Approvals page's
+     * "Submit Selected Task" button for a head approves an arbitrary subset
+     * of their own pending head-approval items in one request, possibly
+     * spanning several different checklist assignments (a Task Assignee's
+     * items can live on more than one checklist template). Each pair runs
+     * through the exact same `approveOneHeadItem()` authorization/
+     * validation the single-item route uses — nothing here is more
+     * permissive — and one item failing never blocks or reverts any other:
+     * the response's `failed` list is what the client uses to clearly
+     * identify which items were NOT approved and why, so they are never
+     * mistaken for completed.
+     */
+    public function bulkApproveHeadItems(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'items' => ['required', 'array', 'min:1'],
+            'items.*.assignment_id' => ['required', 'integer', 'exists:offboarding_request_approvers,id'],
+            'items.*.checklist_item_id' => ['required', 'integer', 'exists:checklist_items,id'],
+        ]);
+
+        $user = auth()->user();
+        $approved = [];
+        $failed = [];
+        $affectedAssignments = collect();
+
+        foreach ($validated['items'] as $pair) {
+            $assignment = OffboardingRequestApprover::find($pair['assignment_id']);
+            $checklistItem = ChecklistItem::find($pair['checklist_item_id']);
+
+            $outcome = $this->approveOneHeadItem($assignment, $checklistItem, $user);
+
+            if ($outcome['status'] === 'approved') {
+                $approved[] = $checklistItem->id;
+                $affectedAssignments->push($assignment);
+            } else {
+                $failed[] = [
+                    'checklist_item_id' => $pair['checklist_item_id'],
+                    'message' => $outcome['message'],
+                ];
+            }
+        }
+
+        $affectedAssignments = $affectedAssignments->unique('id');
+        $affectedAssignments->each(
+            fn (OffboardingRequestApprover $assignment) => app(ChecklistCompletionService::class)->autoApproveIfHeadless($assignment->fresh())
         );
+
+        return response()->json([
+            'approved' => $approved,
+            'failed' => $failed,
+            'items' => $this->checkedItemPatches($affectedAssignments->map->fresh()),
+            'message' => count($approved) > 0
+                ? count($approved) . ' task(s) approved.' . (count($failed) > 0 ? ' ' . count($failed) . ' could not be approved.' : '')
+                : 'No tasks could be approved.',
+        ]);
+    }
+
+    /**
+     * The shared core `approveHeadItem()` and `bulkApproveHeadItems()` both
+     * run through — every validation/authorization rule single-item
+     * approval already enforces, returning a status/message instead of
+     * aborting so the bulk route can report a per-item outcome without one
+     * failure aborting the whole request.
+     *
+     * @return array{status: 'approved'|'invalid'|'forbidden'|'not_found', message: string}
+     */
+    private function approveOneHeadItem(?OffboardingRequestApprover $offboardingRequestApprover, ?ChecklistItem $checklistItem, User $user): array
+    {
+        if (! $offboardingRequestApprover || ! $checklistItem
+            || $checklistItem->checklist_template_id !== $offboardingRequestApprover->checklist_template_id) {
+            return ['status' => 'not_found', 'message' => 'Checklist item not found.'];
+        }
+
+        if (! in_array($offboardingRequestApprover->status, ['pending', 'viewed'], true)) {
+            return ['status' => 'invalid', 'message' => 'This checklist has already been actioned.'];
+        }
 
         $progress = $offboardingRequestApprover->itemProgress()
             ->where('checklist_item_id', $checklistItem->id)
             ->first();
 
-        abort_unless($progress?->is_checked, 422, 'This checklist item has not been completed yet.');
-        abort_unless($progress->head_approval_required, 422, 'This checklist item does not require an additional approval.');
-        abort_if($progress->head_approved_at !== null, 422, 'This checklist item has already been approved.');
+        if (! $progress?->is_checked) {
+            return ['status' => 'invalid', 'message' => "\"{$checklistItem->title}\" has not been completed yet."];
+        }
 
-        $user = auth()->user();
+        if (! $progress->head_approval_required) {
+            return ['status' => 'invalid', 'message' => "\"{$checklistItem->title}\" does not require an additional approval."];
+        }
 
-        abort_unless(
-            $user->isAdmin() || $progress->head_approver_employee_id === $user->employee?->id,
-            403
-        );
+        if ($progress->head_approved_at !== null) {
+            return ['status' => 'invalid', 'message' => "\"{$checklistItem->title}\" has already been approved."];
+        }
+
+        if (! ($user->isAdmin() || $progress->head_approver_employee_id === $user->employee?->id)) {
+            return ['status' => 'forbidden', 'message' => "You are not authorized to approve \"{$checklistItem->title}\"."];
+        }
 
         DB::transaction(function () use ($progress, $offboardingRequestApprover, $checklistItem, $user) {
             $progress->update([
@@ -662,19 +758,7 @@ class ChecklistDelegationController extends Controller
             ]);
         });
 
-        // Same completion check every other completion path already runs —
-        // this may have been the last outstanding gate on the whole
-        // checklist.
-        app(ChecklistCompletionService::class)->autoApproveIfHeadless($offboardingRequestApprover->fresh());
-
-        if ($request->wantsJson()) {
-            return response()->json([
-                'items' => $this->checkedItemPatches([$offboardingRequestApprover->fresh()]),
-                'message' => "\"{$checklistItem->title}\" has been approved.",
-            ]);
-        }
-
-        return back()->with('success', "\"{$checklistItem->title}\" has been approved.");
+        return ['status' => 'approved', 'message' => "\"{$checklistItem->title}\" has been approved."];
     }
 
     /**

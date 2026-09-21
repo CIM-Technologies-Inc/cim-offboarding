@@ -173,17 +173,19 @@ class ChecklistItemProgress extends Model
 
     /**
      * Requirement: a "Use Task Assignee as Clearance Signatory" item
-     * checked by a regular employee needs their own Department/Group
-     * Head's additional approval; one checked directly by a Department/
-     * Group Head needs none (never require someone to approve their own
-     * work). Every other checklist kind never reaches the `true` branch at
-     * all — `use_task_assignee_as_signatory` is checked first — so this
-     * never affects a normal single-/per-item-approver checklist.
+     * checked by a regular employee needs their approval head's — Immediate
+     * Head first, else Department/Group Head, see `Employee::approvalHead()`
+     * — additional approval; one checked directly by someone who is already
+     * an approval head themselves needs none (never require someone to
+     * approve their own work). Every other checklist kind never reaches the
+     * `true` branch at all — `use_task_assignee_as_signatory` is checked
+     * first — so this never affects a normal single-/per-item-approver
+     * checklist.
      *
-     * Fails open (no approval required) when the checked-by employee has
-     * no Department/Group Head configured anywhere to resolve to — an
-     * admin data gap, not a normal case, but one that must never leave an
-     * item permanently unapprovable.
+     * Fails open (no approval required) when the checked-by employee has no
+     * approval head configured anywhere to resolve to — an admin data gap,
+     * not a normal case, but one that must never leave an item permanently
+     * unapprovable.
      *
      * @return array{head_approval_required: bool, head_approver_employee_id: ?int}
      */
@@ -198,14 +200,14 @@ class ChecklistItemProgress extends Model
         $checklistItem = $assignment->checklistTemplate->items->firstWhere('id', $checklistItemId);
         $signatory = $checklistItem ? $assignment->effectiveSignatoryFor($checklistItem) : null;
 
-        if (! $signatory || $signatory->isDepartmentHead()) {
+        if (! $signatory || $signatory->isApprovalAuthority()) {
             return ['head_approval_required' => false, 'head_approver_employee_id' => null];
         }
 
-        $head = $signatory->departmentHead();
+        $head = $signatory->approvalHead();
 
         if (! $head) {
-            Log::warning('Checklist item checked by an employee with no resolvable Department/Group Head — skipping the approval gate.', [
+            Log::warning('Checklist item checked by an employee with no resolvable approval head — skipping the approval gate.', [
                 'offboarding_request_approver_id' => $assignment->id,
                 'checklist_item_id' => $checklistItemId,
                 'employee_id' => $signatory->id,

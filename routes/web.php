@@ -123,6 +123,10 @@ Route::middleware('permission:approvals.view')->group(function () {
     // progress row (or admin) may call this; never the Task Assignee who
     // checked it themselves. See `ChecklistDelegationController::approveHeadItem()`.
     Route::post('/approvals/{offboardingRequestApprover}/items/{checklistItem}/approve-head', [ChecklistDelegationController::class, 'approveHeadItem'])->name('approvals.items.approve-head');
+    // Bulk counterpart to the above — approves several pending head-approval
+    // items (possibly across different checklist assignments) in one
+    // submission; see `ChecklistDelegationController::bulkApproveHeadItems()`.
+    Route::post('/approvals/head-approvals/bulk-approve', [ChecklistDelegationController::class, 'bulkApproveHeadItems'])->name('approvals.items.bulk-approve-head');
 
     // combined-card actions: every checklist the same approver is assigned
     // for the same offboarding request, actioned in one request instead of

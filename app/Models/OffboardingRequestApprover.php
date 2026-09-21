@@ -18,6 +18,7 @@ class OffboardingRequestApprover extends Model
         'status',
         'assigned_at',
         'first_viewed_at',
+        'first_viewed_by_employee_id',
         'approved_at',
         'approval_remarks',
         'declined_at',
@@ -66,6 +67,11 @@ class OffboardingRequestApprover extends Model
     public function delegatedEmployee(): BelongsTo
     {
         return $this->belongsTo(Employee::class, 'delegated_employee_id');
+    }
+
+    public function firstViewedBy(): BelongsTo
+    {
+        return $this->belongsTo(Employee::class, 'first_viewed_by_employee_id');
     }
 
     public function itemProgress(): HasMany
@@ -177,21 +183,21 @@ class OffboardingRequestApprover extends Model
                     ->where(fn ($qh) => $qh->whereNull('department_head_id')->orWhere('department_head_id', '!=', $employee->id)));
             }
 
-            // Group Head/Department Head MONITORING visibility — a "Use Task
-            // Assignee as Clearance Signatory" checklist has no owning
-            // employee of its own (`employee_id` is null; its Task
-            // Assignees ARE the signatories), so without this clause the
-            // Group Head/Department Head of one of those Task Assignees
-            // would have no way to track their own employee's progress on
-            // it. Read-only by construction, not by any extra check here:
-            // `employee_id` stays null and this employee owns no item, so
-            // `ApprovalController::authorizeAssignment()` and
-            // `ChecklistDelegationController::authorizeItemAction()` both
-            // already reject them from approving/checking/taking over
+            // Approval head (Immediate Head, else Group/Department Head)
+            // MONITORING visibility — a "Use Task Assignee as Clearance
+            // Signatory" checklist has no owning employee of its own
+            // (`employee_id` is null; its Task Assignees ARE the
+            // signatories), so without this clause the approval head of one
+            // of those Task Assignees would have no way to track their own
+            // employee's progress on it. Read-only by construction, not by
+            // any extra check here: `employee_id` stays null and this
+            // employee owns no item, so `ApprovalController::authorizeAssignment()`
+            // and `ChecklistDelegationController::authorizeItemAction()`
+            // both already reject them from approving/checking/taking over
             // anything — this clause only ever affects whether the row is
-            // fetched at all. See `Employee::subordinateEmployeeIds()` and
-            // `monitoringDepartmentHeads()` below.
-            $subordinateEmployeeIds = $employee->subordinateEmployeeIds();
+            // fetched at all. See `Employee::approvalSubordinateEmployeeIds()`
+            // and `monitoringDepartmentHeads()` below.
+            $subordinateEmployeeIds = $employee->approvalSubordinateEmployeeIds();
 
             if ($subordinateEmployeeIds->isNotEmpty()) {
                 $q->orWhere(function (Builder $qMonitor) use ($subordinateEmployeeIds) {
@@ -207,13 +213,15 @@ class OffboardingRequestApprover extends Model
 
     /**
      * For a "Use Task Assignee as Clearance Signatory" checklist, the
-     * distinct Group Head(s)/Department Head(s) actually responsible for
-     * monitoring it — one entry per real Task Assignee's own head, deduped
-     * by id (several Task Assignees sharing the same head only ever
-     * produce one entry — see `Employee::subordinateEmployeeIds()`'s own
-     * exclusion of anyone who is themselves a head). Empty for any other
-     * kind of checklist, or once every item has been reassigned to a Task
-     * Assignee who is themselves a Group Head/Department Head.
+     * distinct approval head(s) — Immediate Head first, else Group/
+     * Department Head, see `Employee::approvalHead()` — actually
+     * responsible for monitoring it, one entry per real Task Assignee's own
+     * head, deduped by id (several Task Assignees sharing the same head
+     * only ever produce one entry — see
+     * `Employee::approvalSubordinateEmployeeIds()`'s own exclusion of
+     * anyone who is themselves an approval head). Empty for any other kind
+     * of checklist, or once every item has been reassigned to a Task
+     * Assignee who is themselves an approval head.
      *
      * @return Collection<int, Employee>
      */
@@ -229,8 +237,8 @@ class OffboardingRequestApprover extends Model
             ->map(fn (ChecklistItem $item) => $this->effectiveSignatoryFor($item))
             ->filter()
             ->unique('id')
-            ->reject(fn (Employee $assignee) => $assignee->isDepartmentHead())
-            ->map(fn (Employee $assignee) => $assignee->departmentHead())
+            ->reject(fn (Employee $assignee) => $assignee->isApprovalAuthority())
+            ->map(fn (Employee $assignee) => $assignee->approvalHead())
             ->filter()
             ->unique('id')
             ->values();

@@ -69,12 +69,35 @@ class ApprovalController extends Controller
             ->filter(fn (OffboardingRequestApprover $assignment) => $assignment->offboardingRequest?->employee);
 
         // Loading your own queue counts as "viewing" whatever's still pending in
-        // it — but only for the primary approver. A delegate merely opening
-        // their queue must never flip the primary assignment's status.
+        // it — but only for the primary approver on a normal checklist. A
+        // delegate merely opening their queue must never flip the primary
+        // assignment's status.
+        //
+        // A "Use Task Assignee as Clearance Signatory" checklist has no
+        // primary owner at all (`employee_id` is null) — the Task
+        // Assignee(s), their Immediate/Group/Department Head, and anyone
+        // else who reaches this row at all already did so ONLY because
+        // `visibleTo()` above independently authorized them (its item-level
+        // signatory, active per-item override, group-Task-Assignee, or
+        // Head-monitoring clauses — never an unrelated employee). There is
+        // no separate "primary vs. delegate" distinction to draw the way
+        // there is for a normal checklist, so any such viewer's first visit
+        // counts. Previously this block only ever matched `employee_id`,
+        // which is always null here — so `first_viewed_at` could never be
+        // set for a headless checklist no matter who opened it, even after
+        // it had already been fully cleared/approved.
         if (! $user->isAdmin() && $employee) {
             $assignments->each(function (OffboardingRequestApprover $assignment) use ($user, $employee) {
-                if ($assignment->employee_id === $employee->id && ! $assignment->first_viewed_at) {
-                    $assignment->update(['first_viewed_at' => now(), 'status' => 'viewed']);
+                $isPrimaryViewer = $assignment->employee_id === $employee->id;
+                $isAuthorizedHeadlessViewer = $assignment->employee_id === null
+                    && $assignment->checklistTemplate?->use_task_assignee_as_signatory;
+
+                if (($isPrimaryViewer || $isAuthorizedHeadlessViewer) && ! $assignment->first_viewed_at) {
+                    $assignment->update([
+                        'first_viewed_at' => now(),
+                        'first_viewed_by_employee_id' => $employee->id,
+                        'status' => 'viewed',
+                    ]);
 
                     // Recorded so the admin-facing Offboarding Status/Timeline
                     // shows exactly who first opened this checklist and when
@@ -91,9 +114,10 @@ class ApprovalController extends Controller
         }
 
         // Computed once (not per row) — the set of employees this viewer is
-        // the Group Head/Department Head of, feeding the `isMonitoring` flag
-        // below. See `Employee::subordinateEmployeeIds()`.
-        $monitoredEmployeeIds = $employee ? $employee->subordinateEmployeeIds() : collect();
+        // the approval head (Immediate Head, else Group/Department Head) of,
+        // feeding the `isMonitoring` flag below. See
+        // `Employee::approvalSubordinateEmployeeIds()`.
+        $monitoredEmployeeIds = $employee ? $employee->approvalSubordinateEmployeeIds() : collect();
 
         $rows = $assignments
             ->map(function (OffboardingRequestApprover $assignment) use ($user, $employee, $monitoredEmployeeIds) {

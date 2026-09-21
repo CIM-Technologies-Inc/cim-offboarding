@@ -81,7 +81,16 @@ class OffboardingActivity extends Model
                 ? "Cleared by {$actor}{$suffix}"
                 : 'All checklist items completed — auto-approved',
             'general_signatory_approved' => "Cleared by General Signatory: {$actor}{$suffix}",
-            'checklist_viewed' => "Viewed by {$actor}{$suffix}",
+            // Names the checklist itself — on a "Use Task Assignee as
+            // Clearance Signatory" checklist this can be a Task Assignee,
+            // their Immediate/Group/Department Head, or anyone else
+            // `visibleTo()` already authorized (see
+            // `ApprovalController::index()`'s view-tracking block), so
+            // "Viewed by {actor}" alone would leave WHICH checklist
+            // ambiguous once a request has more than one.
+            'checklist_viewed' => $this->offboardingRequestApprover?->checklistTemplate?->title
+                ? "Viewed \"{$this->offboardingRequestApprover->checklistTemplate->title}\" by {$actor}{$suffix}"
+                : "Viewed by {$actor}{$suffix}",
             'general_signatory_viewed' => "Viewed by {$actor} (General Signatory)",
             'offboarding_reset' => "Offboarding Request Reset by {$actor}",
             'offboarding_cancelled' => "Offboarding Request Cancelled by {$actor}",

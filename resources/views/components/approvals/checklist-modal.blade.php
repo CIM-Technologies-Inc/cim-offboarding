@@ -6,18 +6,26 @@
         takeOverProcessing: {},
         doneProcessing: {},
         approveProcessing: {},
+        selectedDone: {},
+        selectedApprove: {},
+        doneBulkProcessing: false,
+        approveBulkProcessing: false,
         setSelected(detail) {
             const checked = {};
             const remarks = {};
             const takeOverProcessing = {};
             const doneProcessing = {};
             const approveProcessing = {};
+            const selectedDone = {};
+            const selectedApprove = {};
             (detail.checklistItems || []).forEach((item) => {
                 checked[item.id] = !!item.checked;
                 remarks[item.id] = item.remark || '';
                 takeOverProcessing[item.id] = false;
                 doneProcessing[item.id] = false;
                 approveProcessing[item.id] = false;
+                selectedDone[item.id] = false;
+                selectedApprove[item.id] = false;
             });
             // Populate reactive state BEFORE assigning `selected` — that
             // assignment is what triggers the x-if/x-for to render, so
@@ -32,6 +40,10 @@
             this.takeOverProcessing = takeOverProcessing;
             this.doneProcessing = doneProcessing;
             this.approveProcessing = approveProcessing;
+            this.selectedDone = selectedDone;
+            this.selectedApprove = selectedApprove;
+            this.doneBulkProcessing = false;
+            this.approveBulkProcessing = false;
             this.selected = detail;
         },
         // Submits the Done click via `fetch()` instead of a real form
@@ -102,6 +114,108 @@
                 });
             }).catch((e) => {
                 this.doneProcessing[item.id] = false;
+                Swal.fire({
+                    icon: 'error',
+                    title: e?.name === 'AbortError'
+                        ? 'This is taking longer than expected. Please check before trying again.'
+                        : 'Failed to save task completion',
+                    confirmButtonColor: '#145a3a',
+                });
+            });
+        },
+        // This viewer's own not-yet-checked items eligible for the Done
+        // bulk flow below — deliberately the exact same predicate
+        // `isDoneFlowItem()`'s per-item-approver branch uses, restricted to
+        // items still unchecked, so bulk selection can only ever affect
+        // tasks this ONE Task Assignee owns and hasn't completed yet —
+        // never another approver's items on the same checklist.
+        myDoneEligibleItems() {
+            return (this.selected?.checklistItems || []).filter((item) => item.editable && !item.checked && !!item.usesPerItemApprovers && !!item.isOwnItem);
+        },
+        showDoneSelectAll() {
+            return this.myDoneEligibleItems().length > 1;
+        },
+        doneAllChecked() {
+            const items = this.myDoneEligibleItems();
+            return items.length > 0 && items.every((item) => this.selectedDone[item.id]);
+        },
+        doneNoneChecked() {
+            return this.myDoneEligibleItems().every((item) => !this.selectedDone[item.id]);
+        },
+        toggleDoneAll(value) {
+            this.myDoneEligibleItems().forEach((item) => { this.selectedDone[item.id] = value; });
+        },
+        showSubmitSelectedDone() {
+            const items = this.myDoneEligibleItems().filter((item) => this.selectedDone[item.id]);
+            return this.doneAllChecked() || items.length > 1;
+        },
+        // Bulk counterpart to submitDone() — same fetch/patch-in-place
+        // convention, same saveProgressUrl, same items[] payload shape
+        // `ChecklistDelegationController::saveProgress()` already accepts,
+        // just carrying every SELECTED item at once instead of one. No new
+        // backend endpoint needed: `authorizeItemAction()` already scopes a
+        // bare item-approver to their own items regardless of what the
+        // client sends.
+        submitSelectedDone() {
+            if (this.doneBulkProcessing) {
+                return;
+            }
+            const items = this.myDoneEligibleItems().filter((item) => this.selectedDone[item.id]);
+            if (items.length === 0) {
+                return;
+            }
+
+            this.doneBulkProcessing = true;
+            items.forEach((item) => { this.doneProcessing[item.id] = true; });
+
+            const formData = new FormData();
+            items.forEach((item) => {
+                formData.append(`items[${item.id}][checklist_item_id]`, item.id);
+                formData.append(`items[${item.id}][is_checked]`, '1');
+                formData.append(`items[${item.id}][remark]`, this.remarks[item.id] || '');
+            });
+
+            window.fetchWithTimeout(this.selected.saveProgressUrl, {
+                method: 'POST',
+                headers: {
+                    'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                    'Accept': 'application/json',
+                },
+                body: formData,
+            }).then(async (res) => {
+                if (!res.ok) {
+                    throw new Error('request failed');
+                }
+
+                const data = await res.json();
+
+                (data.items || []).forEach((patch) => {
+                    const target = (this.selected.checklistItems || []).find((i) => i.id === patch.id);
+
+                    if (target) {
+                        Object.assign(target, patch);
+                        this.checked[target.id] = true;
+                        this.selectedDone[target.id] = false;
+                    }
+                });
+
+                this.selected.allItemsCompleted = (this.selected.checklistItems || []).every((i) => this.checked[i.id]);
+                items.forEach((item) => { this.doneProcessing[item.id] = false; });
+                this.doneBulkProcessing = false;
+
+                window.Swal?.fire({
+                    toast: true,
+                    position: 'bottom-end',
+                    icon: 'success',
+                    title: data.message || `${items.length} task(s) successfully checked.`,
+                    showConfirmButton: false,
+                    timer: 2000,
+                    timerProgressBar: true,
+                    customClass: { container: 'app-toast' },
+                });
+            }).catch((e) => {
+                items.forEach((item) => { this.doneProcessing[item.id] = false; });
+                this.doneBulkProcessing = false;
                 Swal.fire({
                     icon: 'error',
                     title: e?.name === 'AbortError'
@@ -267,6 +381,118 @@
                         title: e?.name === 'AbortError'
                             ? 'This is taking longer than expected. Please check before trying again.'
                             : 'Failed to approve task',
+                        confirmButtonColor: '#145a3a',
+                    });
+                });
+            });
+        },
+        // This viewer's own pending head-approval items eligible for the
+        // bulk Approve flow below — the same predicate the single-item
+        // Approve button (`item.isHeadApprover && item.headApprovalPending`)
+        // already gates on, so bulk selection can only ever affect tasks
+        // this ONE head is actually recorded as the approver of — never
+        // another head's or another Task Assignee's items.
+        myApproveEligibleItems() {
+            return (this.selected?.checklistItems || []).filter((item) => item.isHeadApprover && item.headApprovalPending);
+        },
+        showApproveSelectAll() {
+            return this.myApproveEligibleItems().length > 1;
+        },
+        approveAllChecked() {
+            const items = this.myApproveEligibleItems();
+            return items.length > 0 && items.every((item) => this.selectedApprove[item.id]);
+        },
+        approveNoneChecked() {
+            return this.myApproveEligibleItems().every((item) => !this.selectedApprove[item.id]);
+        },
+        toggleApproveAll(value) {
+            this.myApproveEligibleItems().forEach((item) => { this.selectedApprove[item.id] = value; });
+        },
+        showSubmitSelectedApprove() {
+            const items = this.myApproveEligibleItems().filter((item) => this.selectedApprove[item.id]);
+            return this.approveAllChecked() || items.length > 1;
+        },
+        // Bulk counterpart to approveHeadItem() — posts every SELECTED
+        // item's {assignment_id, checklist_item_id} pair to the new
+        // bulk-approve endpoint in one request. Partial failures (a race
+        // with someone else, an item that's since changed state) are
+        // surfaced explicitly via `data.failed` rather than silently
+        // treated as success — only items in `data.items` (server-confirmed
+        // approvals) are patched in place.
+        submitSelectedApprove() {
+            if (this.approveBulkProcessing) {
+                return;
+            }
+            const items = this.myApproveEligibleItems().filter((item) => this.selectedApprove[item.id]);
+            if (items.length === 0) {
+                return;
+            }
+
+            Swal.fire({
+                title: 'Approve Selected Tasks?',
+                html: `By approving, you confirm these ${items.length} completed tasks meet requirements. This cannot be undone.`,
+                icon: 'question',
+                showCancelButton: true,
+                confirmButtonText: 'Yes, Approve',
+                cancelButtonText: 'Cancel',
+                confirmButtonColor: '#145a3a',
+                cancelButtonColor: '#6b7280',
+                reverseButtons: true,
+            }).then((result) => {
+                if (!result.isConfirmed) {
+                    return;
+                }
+
+                this.approveBulkProcessing = true;
+                items.forEach((item) => { this.approveProcessing[item.id] = true; });
+
+                window.fetchWithTimeout('{{ route('approvals.items.bulk-approve-head') }}', {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        items: items.map((item) => ({ assignment_id: item.assignmentId, checklist_item_id: item.id })),
+                    }),
+                }).then(async (res) => {
+                    if (!res.ok) {
+                        throw new Error('request failed');
+                    }
+
+                    const data = await res.json();
+
+                    (data.items || []).forEach((patch) => {
+                        const target = (this.selected.checklistItems || []).find((i) => i.id === patch.id);
+
+                        if (target) {
+                            Object.assign(target, patch);
+                            this.selectedApprove[target.id] = false;
+                        }
+                    });
+
+                    items.forEach((item) => { this.approveProcessing[item.id] = false; });
+                    this.approveBulkProcessing = false;
+
+                    const failed = data.failed || [];
+
+                    window.Swal?.fire({
+                        icon: failed.length > 0 ? 'warning' : 'success',
+                        title: failed.length > 0 ? 'Some tasks could not be approved' : 'Tasks approved',
+                        html: failed.length > 0
+                            ? (data.message || '') + '<br><br>' + failed.map((f) => f.message).join('<br>')
+                            : (data.message || 'Tasks approved.'),
+                        confirmButtonColor: '#145a3a',
+                    });
+                }).catch((e) => {
+                    items.forEach((item) => { this.approveProcessing[item.id] = false; });
+                    this.approveBulkProcessing = false;
+                    Swal.fire({
+                        icon: 'error',
+                        title: e?.name === 'AbortError'
+                            ? 'This is taking longer than expected. Please check before trying again.'
+                            : 'Failed to approve selected tasks',
                         confirmButtonColor: '#145a3a',
                     });
                 });
@@ -453,6 +679,50 @@
                             <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Select All</span>
                         </label>
                     </template>
+
+                    <!-- Bulk "Done": only when THIS viewer has more than one of their own
+                         unchecked tasks on this card — a lone task keeps using its own Done
+                         button below, unaffected. Selection/indeterminate state are scoped
+                         entirely to myDoneEligibleItems(), which never includes another
+                         approver's item. -->
+                    <template x-if="showDoneSelectAll()">
+                        <div class="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-200 bg-gray-50 px-4 py-2.5 dark:border-gray-800 dark:bg-white/[0.03]">
+                            <label class="flex cursor-pointer items-center gap-3">
+                                <input type="checkbox" :checked="doneAllChecked()" @change="toggleDoneAll($event.target.checked)"
+                                    x-effect="$el.indeterminate = !doneAllChecked() && !doneNoneChecked()"
+                                    class="h-4 w-4 rounded border-gray-300 text-[#145a3a] focus:ring-[#145a3a] dark:border-gray-700 dark:bg-gray-900" />
+                                <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Select All My Tasks</span>
+                            </label>
+                            <template x-if="showSubmitSelectedDone()">
+                                <button type="button" @click="submitSelectedDone()" :disabled="doneBulkProcessing"
+                                    :class="doneBulkProcessing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#0f4630]'"
+                                    class="rounded-lg bg-[#145a3a] px-3 py-1.5 text-xs font-medium text-white">
+                                    Submit Selected Task
+                                </button>
+                            </template>
+                        </div>
+                    </template>
+
+                    <!-- Bulk "Approve": only when THIS viewer (the head approval-gate
+                         recipient) has more than one pending head-approval task on this
+                         card — see myApproveEligibleItems(). -->
+                    <template x-if="showApproveSelectAll()">
+                        <div class="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-200 bg-gray-50 px-4 py-2.5 dark:border-gray-800 dark:bg-white/[0.03]">
+                            <label class="flex cursor-pointer items-center gap-3">
+                                <input type="checkbox" :checked="approveAllChecked()" @change="toggleApproveAll($event.target.checked)"
+                                    x-effect="$el.indeterminate = !approveAllChecked() && !approveNoneChecked()"
+                                    class="h-4 w-4 rounded border-gray-300 text-[#145a3a] focus:ring-[#145a3a] dark:border-gray-700 dark:bg-gray-900" />
+                                <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Select All Pending My Approval</span>
+                            </label>
+                            <template x-if="showSubmitSelectedApprove()">
+                                <button type="button" @click="submitSelectedApprove()" :disabled="approveBulkProcessing"
+                                    :class="approveBulkProcessing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#0f4630]'"
+                                    class="rounded-lg bg-[#145a3a] px-3 py-1.5 text-xs font-medium text-white">
+                                    Submit Selected Task
+                                </button>
+                            </template>
+                        </div>
+                    </template>
                 </div>
 
                 <form method="POST" :action="selected.saveProgressUrl"
@@ -503,7 +773,14 @@
                                          on a per-item-approver checklist) — Done stays disabled until the checkbox above is checked, and
                                          becomes disabled again if the signatory unchecks it. -->
                                     <template x-if="item.editable && !item.checked">
-                                        <div class="mt-2 flex gap-2">
+                                        <div class="mt-2 flex items-center gap-2">
+                                            <!-- Bulk "Done" per-item checkbox — only rendered once this
+                                                 viewer has more than one own eligible task (showDoneSelectAll()),
+                                                 and only for THIS viewer's own item, never anyone else's. -->
+                                            <template x-if="showDoneSelectAll() && item.usesPerItemApprovers && item.isOwnItem">
+                                                <input type="checkbox" x-model="selectedDone[item.id]"
+                                                    class="h-4 w-4 shrink-0 rounded border-gray-300 text-[#145a3a] focus:ring-[#145a3a] dark:border-gray-700 dark:bg-gray-900" />
+                                            </template>
                                             <button type="button" @click="holdItem(item)"
                                                 :disabled="!canHold(item)"
                                                 :class="!canHold(item) ? 'opacity-50 cursor-not-allowed' : 'hover:bg-amber-50 dark:hover:bg-amber-500/10'"
@@ -567,7 +844,14 @@
                                          specific Department/Group Head recorded on this item, never the Task Assignee who
                                          checked it themselves. See `ChecklistItemProgress::resolveHeadApproval()`. -->
                                     <template x-if="item.isHeadApprover && item.headApprovalPending">
-                                        <div class="mt-2">
+                                        <div class="mt-2 flex items-center gap-2">
+                                            <!-- Bulk "Approve" per-item checkbox — only rendered once this
+                                                 head has more than one pending approval on this card
+                                                 (showApproveSelectAll()). -->
+                                            <template x-if="showApproveSelectAll()">
+                                                <input type="checkbox" x-model="selectedApprove[item.id]"
+                                                    class="h-4 w-4 shrink-0 rounded border-gray-300 text-[#145a3a] focus:ring-[#145a3a] dark:border-gray-700 dark:bg-gray-900" />
+                                            </template>
                                             <button type="button" @click="approveHeadItem(item)"
                                                 :disabled="approveProcessing[item.id]"
                                                 :class="approveProcessing[item.id] ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#0f4630]'"
