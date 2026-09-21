@@ -5,29 +5,33 @@
         holdProcessing: {},
         takeOverProcessing: {},
         doneProcessing: {},
+        approveProcessing: {},
         setSelected(detail) {
             const checked = {};
             const remarks = {};
             const takeOverProcessing = {};
             const doneProcessing = {};
+            const approveProcessing = {};
             (detail.checklistItems || []).forEach((item) => {
                 checked[item.id] = !!item.checked;
                 remarks[item.id] = item.remark || '';
                 takeOverProcessing[item.id] = false;
                 doneProcessing[item.id] = false;
+                approveProcessing[item.id] = false;
             });
             // Populate reactive state BEFORE assigning `selected` — that
             // assignment is what triggers the x-if/x-for to render, so
             // every item's `checked`/`remarks`/`takeOverProcessing`/
-            // `doneProcessing` entry must already exist by then for
-            // bindings (like the Hold and Check This List buttons'
-            // :disabled) that key off them to track correctly from their
-            // very first evaluation.
+            // `doneProcessing`/`approveProcessing` entry must already exist
+            // by then for bindings (like the Hold and Check This List
+            // buttons' :disabled) that key off them to track correctly from
+            // their very first evaluation.
             this.checked = checked;
             this.remarks = remarks;
             this.holdProcessing = {};
             this.takeOverProcessing = takeOverProcessing;
             this.doneProcessing = doneProcessing;
+            this.approveProcessing = approveProcessing;
             this.selected = detail;
         },
         // Submits the Done click via `fetch()` instead of a real form
@@ -197,6 +201,77 @@
                 });
             });
         },
+        // Use Task Assignee as Clearance Signatory head-approval gate:
+        // only shown to the specific Department/Group Head recorded on this
+        // one item (item.isHeadApprover && item.headApprovalPending —
+        // never the Task Assignee who checked it, and never anyone else's
+        // item on this same checklist). Same fetch-and-patch-in-place
+        // convention as Hold/Done above, via checkedItemPatches()'s own
+        // response shape (an items array), same as submitDone() reads.
+        approveHeadItem(item) {
+            if (this.approveProcessing[item.id]) {
+                return;
+            }
+            Swal.fire({
+                title: 'Approve This Task?',
+                html: 'By approving, you confirm this completed task meets requirements. This cannot be undone.',
+                icon: 'question',
+                showCancelButton: true,
+                confirmButtonText: 'Yes, Approve',
+                cancelButtonText: 'Cancel',
+                confirmButtonColor: '#145a3a',
+                cancelButtonColor: '#6b7280',
+                reverseButtons: true,
+            }).then((result) => {
+                if (!result.isConfirmed) {
+                    return;
+                }
+                this.approveProcessing[item.id] = true;
+                window.fetchWithTimeout(item.approveHeadItemUrl, {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                        'Accept': 'application/json',
+                    },
+                }).then(async (res) => {
+                    if (!res.ok) {
+                        throw new Error('request failed');
+                    }
+
+                    const data = await res.json();
+
+                    (data.items || []).forEach((patch) => {
+                        const target = (this.selected.checklistItems || []).find((i) => i.id === patch.id);
+
+                        if (target) {
+                            Object.assign(target, patch);
+                        }
+                    });
+
+                    this.approveProcessing[item.id] = false;
+
+                    window.Swal?.fire({
+                        toast: true,
+                        position: 'bottom-end',
+                        icon: 'success',
+                        title: data.message || 'Task approved.',
+                        showConfirmButton: false,
+                        timer: 2000,
+                        timerProgressBar: true,
+                        customClass: { container: 'app-toast' },
+                    });
+                }).catch((e) => {
+                    this.approveProcessing[item.id] = false;
+                    Swal.fire({
+                        icon: 'error',
+                        title: e?.name === 'AbortError'
+                            ? 'This is taking longer than expected. Please check before trying again.'
+                            : 'Failed to approve task',
+                        confirmButtonColor: '#145a3a',
+                    });
+                });
+            });
+        },
         // 'Check This List': only accepts/assigns this item to the current
         // approver — it must never check/complete it or submit the form, and
         // it must never reload the page (that would close this very modal).
@@ -323,7 +398,7 @@
                     </template>
 
                     <p class="mb-5 text-sm text-gray-500 dark:text-gray-400" x-show="selected.isMonitoring">
-                        You're viewing this checklist because one of your own people is a Task Assignee on it. Items below are tracked here for your reference only — each Task Assignee remains responsible for completing their own item(s).
+                        You're viewing this checklist because one of your own people is a Task Assignee on it. Each Task Assignee remains responsible for completing their own item(s) — you can track status here, and approve a completed item below when it's waiting on you specifically.
                     </p>
                     <p class="mb-5 text-sm text-gray-500 dark:text-gray-400" x-show="selected.isDelegate">
                         Check the box for each item, add a remark if needed, then click Done to confirm it (or Save Progress to save several at once). Use Hold instead if you're blocked and need to explain why. The Clearance Signatory will review your work before giving final approval.
@@ -405,7 +480,13 @@
                                                 x-text="'Assigned To: ' + (item.approverCode ? item.approverCode + ' – ' : '') + item.approverName"></span>
                                             <span class="block text-xs text-gray-400" x-show="item.isReassigned"
                                                 x-text="'Previously: ' + (item.originalApproverCode ? item.originalApproverCode + ' – ' : '') + (item.originalApproverName || 'Unassigned')"></span>
-                                            <span class="block text-sm font-semibold" :class="item.completedLate ? 'text-error-600 dark:text-error-400' : 'text-success-600 dark:text-success-400'" x-show="item.checked">Status: Checked</span>
+                                            <span class="block text-sm font-semibold" :class="item.completedLate ? 'text-error-600 dark:text-error-400' : 'text-success-600 dark:text-success-400'" x-show="item.checked && !item.headApprovalRequired">Status: Checked</span>
+                                            <!-- "Use Task Assignee as Clearance Signatory" head-approval gate: the item is checked but
+                                                 not yet counted toward the checklist's own completion until its Department/Group Head
+                                                 (named here) also approves it — see `ChecklistItemProgress::isFullyApproved()`. -->
+                                            <span class="block text-sm font-semibold text-warning-600 dark:text-orange-400" x-show="item.checked && item.headApprovalPending"
+                                                x-text="'Status: Pending Head Approval' + (item.headApproverName ? ' (' + (item.headApproverCode ? item.headApproverCode + ' – ' : '') + item.headApproverName + ')' : '')"></span>
+                                            <span class="block text-sm font-semibold text-success-600 dark:text-success-400" x-show="item.checked && item.headApprovalRequired && !item.headApprovalPending">Status: Fully Approved</span>
                                             <span class="block text-sm text-gray-500 dark:text-gray-400" x-show="item.checked && item.clearedByName"
                                                 x-text="'Checked By: ' + (item.clearedByCode ? item.clearedByCode + ' – ' : '') + item.clearedByName"></span>
                                             <span class="block text-sm text-gray-500 dark:text-gray-400" x-show="item.checked && item.clearedAt"
@@ -478,6 +559,20 @@
                                                 :class="takeOverProcessing[item.id] ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#145a3a]/5 dark:hover:bg-[#3aa876]/10'"
                                                 class="rounded-lg border border-[#145a3a] px-3 py-1.5 text-xs font-medium text-[#145a3a] dark:border-[#3aa876] dark:text-[#3aa876]">
                                                 Check This List
+                                            </button>
+                                        </div>
+                                    </template>
+
+                                    <!-- "Use Task Assignee as Clearance Signatory" head-approval gate — shown ONLY to the
+                                         specific Department/Group Head recorded on this item, never the Task Assignee who
+                                         checked it themselves. See `ChecklistItemProgress::resolveHeadApproval()`. -->
+                                    <template x-if="item.isHeadApprover && item.headApprovalPending">
+                                        <div class="mt-2">
+                                            <button type="button" @click="approveHeadItem(item)"
+                                                :disabled="approveProcessing[item.id]"
+                                                :class="approveProcessing[item.id] ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#0f4630]'"
+                                                class="rounded-lg bg-[#145a3a] px-3 py-1.5 text-xs font-medium text-white">
+                                                Approve
                                             </button>
                                         </div>
                                     </template>

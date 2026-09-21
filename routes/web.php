@@ -118,6 +118,11 @@ Route::middleware('permission:approvals.view')->group(function () {
     Route::post('/approvals/{offboardingRequestApprover}/items/{checklistItem}/hold', [ChecklistDelegationController::class, 'holdItem'])->name('approvals.items.hold');
     Route::post('/approvals/{offboardingRequestApprover}/items/{checklistItem}/assign', [ChecklistDelegationController::class, 'assignItem'])->name('approvals.items.assign');
     Route::post('/approvals/{offboardingRequestApprover}/items/{checklistItem}/take-over', [ChecklistDelegationController::class, 'takeOverItem'])->name('approvals.items.take-over');
+    // "Use Task Assignee as Clearance Signatory" head-approval gate — only
+    // the specific Department/Group Head recorded on that item's own
+    // progress row (or admin) may call this; never the Task Assignee who
+    // checked it themselves. See `ChecklistDelegationController::approveHeadItem()`.
+    Route::post('/approvals/{offboardingRequestApprover}/items/{checklistItem}/approve-head', [ChecklistDelegationController::class, 'approveHeadItem'])->name('approvals.items.approve-head');
 
     // combined-card actions: every checklist the same approver is assigned
     // for the same offboarding request, actioned in one request instead of
@@ -135,6 +140,12 @@ Route::middleware('permission:approvals.approve')->group(function () {
     // General Signatory in-app Submit — same permission gate as the
     // checklist approve actions above, independent controller/model.
     Route::post('/general-signatory-approvals/{generalSignatoryApproval}/approve', [GeneralSignatoryApprovalController::class, 'approve'])->name('general-signatory-approvals.approve');
+
+    // Final Approval in-app Approve — the Final Approver's own account now
+    // has a real approval action alongside the existing emailed-link one
+    // (`final-approval.confirm` above); same permission gate as every
+    // other in-app approve action on this page.
+    Route::post('/final-approval-approvals/{offboardingRequestFinalApproval}/approve', [FinalApprovalController::class, 'approve'])->name('final-approval-approvals.approve');
 });
 
 // pages restricted to the employee role — the offboardee's own self-service

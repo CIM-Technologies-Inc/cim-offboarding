@@ -180,6 +180,15 @@
                     <div x-data="{
                             cancelling: false,
                             extending: false,
+                            // The status badge's own reactive copy — see
+                            // below. `statusStyles`/`statusLabels` come
+                            // straight from this same page's own PHP arrays
+                            // (single source of truth), so a successful
+                            // extension can update the badge without ever
+                            // duplicating that class/label mapping in JS.
+                            status: @js($offboardee['status']),
+                            statusStyles: @js($statusStyles),
+                            statusLabels: @js($statusLabels),
                             // Reactive copies of the server-rendered Extend Due
                             // fields — initialized from the same page-load data
                             // as everything else on this card, but updated in
@@ -202,15 +211,16 @@
                             isLastWorkingDayExtended: @js($offboardee['isLastWorkingDayExtended'] ?? false),
                         }"
                         data-offboardee-card="{{ $offboardee['id'] }}"
-                        @click="if (!cancelling && !extending) $dispatch('open-offboardee-modal', { ...@js($offboardee), lastWorkingDay, originalLastWorkingDay, isLastWorkingDayExtended })"
+                        @click="if (!cancelling && !extending) $dispatch('open-offboardee-modal', { ...@js($offboardee), status, lastWorkingDay, originalLastWorkingDay, isLastWorkingDayExtended })"
                         x-show="search.trim() === '' || @js(Str::lower($offboardee['name'])).includes(search.trim().toLowerCase())"
                         class="group cursor-pointer rounded-2xl border border-gray-200 bg-white p-5 transition-all duration-200 hover:-translate-y-1 hover:border-[#145a3a]/40 hover:shadow-lg dark:border-gray-800 dark:bg-white/[0.03] dark:hover:border-[#3aa876]/40">
                         <div class="flex items-start justify-between">
                             <div class="flex h-12 w-12 items-center justify-center rounded-full bg-gray-100 text-base font-semibold text-gray-600 dark:bg-gray-800 dark:text-gray-300">
                                 {{ collect(explode(' ', $offboardee['name']))->map(fn ($part) => mb_substr($part, 0, 1))->take(2)->implode('') }}
                             </div>
-                            <span class="rounded-full px-2.5 py-1 text-xs font-medium {{ $statusStyles[$offboardee['status']] ?? $statusStyles['pending'] }}">
-                                {{ $statusLabels[$offboardee['status']] ?? ucfirst($offboardee['status']) }}
+                            <span class="rounded-full px-2.5 py-1 text-xs font-medium"
+                                :class="statusStyles[status] || statusStyles.pending"
+                                x-text="statusLabels[status] || (status.charAt(0).toUpperCase() + status.slice(1))">
                             </span>
                         </div>
 
@@ -276,14 +286,24 @@
                                         @submit.prevent="if (cancelling) return;
                                             Swal.fire({
                                                 title: 'Cancel Offboarding Request?',
-                                                text: 'Are you sure you want to cancel this offboarding request for ' + @js($offboardee['name']) + '? This action will retract the request and remove all records associated with this offboarding process.',
+                                                html: '&lt;p style=\'text-align:left;font-size:14px;margin:0 0 12px;\'&gt;Are you sure you want to cancel this offboarding request for ' + @js($offboardee['name']) + '? This action will retract the request and remove all records associated with this offboarding process.&lt;/p&gt;'
+                                                    + '&lt;label style=\'display:block;text-align:left;font-size:12px;color:#6b7280;margin:0 0 4px;\'&gt;Cancellation Reason/Remarks&lt;/label&gt;'
+                                                    + '&lt;textarea id=\'cancel-offboarding-reason-input\' class=\'swal2-textarea\' style=\'margin:0;width:100%;box-sizing:border-box;\' rows=\'3\' placeholder=\'Explain why this offboarding request is being cancelled...\'&gt;&lt;/textarea&gt;',
                                                 icon: 'warning',
                                                 showCancelButton: true,
                                                 confirmButtonText: 'Confirm Cancellation',
                                                 cancelButtonText: 'Cancel',
                                                 confirmButtonColor: '#dc2626',
                                                 cancelButtonColor: '#6b7280',
-                                                reverseButtons: true
+                                                reverseButtons: true,
+                                                preConfirm: () => {
+                                                    const reason = (document.getElementById('cancel-offboarding-reason-input').value || '').trim();
+                                                    if (!reason) {
+                                                        Swal.showValidationMessage('A reason is required to cancel this offboarding request.');
+                                                        return false;
+                                                    }
+                                                    return { reason: reason };
+                                                }
                                             }).then((result) => {
                                                 if (!result.isConfirmed) return;
                                                 cancelling = true;
@@ -293,11 +313,19 @@
                                                         'Accept': 'application/json',
                                                         'X-Requested-With': 'XMLHttpRequest',
                                                         'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                                                        'Content-Type': 'application/json',
                                                     },
+                                                    body: JSON.stringify({ reason: result.value.reason }),
                                                 }).then(async (response) => {
                                                     const data = await response.json().catch(() => ({}));
                                                     if (!response.ok) {
-                                                        throw new Error(data.message || 'Cancellation failed. Please try again.');
+                                                        // Same prefer-the-specific-field-error-over-Laravel's-
+                                                        // generic-422-wrapper convention the Extend Due flow
+                                                        // already uses — the client-side check above blocks an
+                                                        // empty reason before this is ever reached in normal use,
+                                                        // but a direct/bypassed request still gets a real message.
+                                                        const fieldError = data.errors ? Object.values(data.errors)[0]?.[0] : null;
+                                                        throw new Error(fieldError || data.message || 'Cancellation failed. Please try again.');
                                                     }
                                                     $el.closest('[data-offboardee-card]')?.remove();
                                                     Swal.fire({
@@ -497,6 +525,7 @@
                                                     // and the data a SUBSEQUENT click of it would show) all come
                                                     // straight from this response, matching
                                                     // `OffboardeeController::index()`'s own fields exactly.
+                                                    if (data.status !== undefined) status = data.status;
                                                     if (data.lastWorkingDay !== undefined) lastWorkingDay = data.lastWorkingDay;
                                                     if (data.originalLastWorkingDay !== undefined) originalLastWorkingDay = data.originalLastWorkingDay;
                                                     if (data.isLastWorkingDayExtended !== undefined) isLastWorkingDayExtended = data.isLastWorkingDayExtended;

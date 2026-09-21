@@ -54,19 +54,35 @@
             @if ($href) href="{{ $href }}" @endif
             class="rounded-2xl border border-gray-200 bg-white p-5 transition-all duration-200 hover:-translate-y-1 hover:border-[#145a3a]/40 hover:shadow-lg dark:border-gray-800 dark:bg-white/[0.03] dark:hover:border-[#3aa876]/40 md:p-6 {{ $href ? 'block cursor-pointer' : '' }}"
         >
-            <div class="flex items-center justify-center w-16 h-16 {{ isset($card['image']) ? '' : 'bg-gray-100 rounded-xl dark:bg-gray-800' }}">
+            {{-- Fixed-height icon slot so every card's icon occupies the exact
+                 same box regardless of whether it renders an image or the
+                 SVG fallback (e.g. "Overdue", which has no matching icon
+                 image) — previously the fallback sat in its own shaded
+                 square at a different visual size, the most visible source
+                 of misalignment across the row. --}}
+            <div class="flex h-16 w-16 items-center justify-center">
                 @if (isset($card['image']))
                     <img src="{{ $card['image'] }}" alt="{{ $card['label'] }}"
-                        class="w-18 h-18 object-contain brightness-0 dark:invert" />
+                        class="h-14 w-14 object-contain brightness-0 dark:invert" />
                 @else
-                    <svg class="stroke-gray-800 dark:stroke-white/90" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
+                    <svg class="stroke-gray-800 dark:stroke-white/90" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
                         {!! $card['icon'] !!}
                     </svg>
                 @endif
             </div>
 
+            {{-- The label's own box reserves space for up to two lines
+                 (text-sm's own 1.25rem line-height × 2) and bottom-aligns
+                 its text within it — "Total Employees"/"In Progress" wrap
+                 to two lines while "Pending"/"Overdue"/"Completed" don't,
+                 which previously left each card's number sitting at a
+                 different height. Anchoring every label to the same
+                 bottom edge means every value below it lines up on the
+                 same row regardless of how its own label wraps. --}}
             <div class="mt-5">
-                <span class="text-sm text-gray-500 dark:text-gray-400">{{ $card['label'] }}</span>
+                <div class="flex min-h-[2.5rem] items-end">
+                    <span class="text-sm text-gray-500 dark:text-gray-400">{{ $card['label'] }}</span>
+                </div>
                 <h4 class="mt-2 font-bold text-[#145a3a] text-title-sm dark:text-[#3aa876]">{{ $card['value'] }}</h4>
             </div>
         </{{ $tag }}>

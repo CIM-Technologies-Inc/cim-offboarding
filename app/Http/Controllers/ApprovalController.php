@@ -13,6 +13,7 @@ use App\Models\Employee;
 use App\Models\EmployeeGroup;
 use App\Models\OffboardingRequest;
 use App\Models\OffboardingRequestApprover;
+use App\Models\OffboardingRequestFinalApproval;
 use App\Models\OffboardingRequestGeneralSignatory;
 use App\Models\User;
 use App\Notifications\OffboardingApprovalUpdated;
@@ -63,7 +64,7 @@ class ApprovalController extends Controller
             ->whereIn('status', ['pending', 'viewed'])
             ->whereHas('offboardingRequest', fn ($q) => $q->where('status', 'pending'))
             ->visibleTo($user)
-            ->with(['offboardingRequest.employee', 'checklistTemplate.items.signatory', 'employee', 'delegatedEmployee', 'itemProgress.checkedBy.employee', 'itemProgress.heldBy.employee', 'itemAssignments.assignedEmployee'])
+            ->with(['offboardingRequest.employee', 'checklistTemplate.items.signatory', 'employee', 'delegatedEmployee', 'itemProgress.checkedBy.employee', 'itemProgress.heldBy.employee', 'itemProgress.headApprover', 'itemAssignments.assignedEmployee'])
             ->get()
             ->filter(fn (OffboardingRequestApprover $assignment) => $assignment->offboardingRequest?->employee);
 
@@ -336,6 +337,24 @@ class ApprovalController extends Controller
                                 // Signatory group, same pool as the row's
                                 // own `assignableEmployees` above.
                                 'assignableEmployees' => $rowAssignableEmployees,
+                                // "Use Task Assignee as Clearance Signatory"
+                                // head-approval gate (see
+                                // `ChecklistItemProgress::resolveHeadApproval()`)
+                                // — always false/null for any other checklist
+                                // kind, so these never affect a normal
+                                // single-/per-item-approver checklist's UI.
+                                'headApprovalRequired' => (bool) $progress?->head_approval_required,
+                                'headApprovalPending' => (bool) $progress?->head_approval_required && ! $progress?->head_approved_at,
+                                'headApproverName' => $progress?->headApprover?->name,
+                                'headApproverCode' => $progress?->headApprover?->employee_code,
+                                // True when the CURRENT viewer is the specific
+                                // Department/Group Head recorded for this
+                                // item — as distinct from `isOwnItem` (the
+                                // Task Assignee who checked it) and
+                                // `$isMonitoring` (read-only access to every
+                                // OTHER item on this same checklist).
+                                'isHeadApprover' => $employee !== null && $progress?->head_approver_employee_id === $employee->id,
+                                'approveHeadItemUrl' => route('approvals.items.approve-head', [$assignment->id, $item->id]),
                             ];
                         })->values()->all()
                         : [],
@@ -376,7 +395,8 @@ class ApprovalController extends Controller
         $combineChecklists = (bool) ($user->combine_assigned_checklists ?? true);
 
         $approvals = $this->groupIntoCombinedApprovals($rows, $combineChecklists)
-            ->concat($this->buildGeneralSignatoryApprovals($user));
+            ->concat($this->buildGeneralSignatoryApprovals($user))
+            ->concat($this->buildFinalApprovalApprovals($user));
 
         // Filter dropdown options, dynamically sourced from whatever's
         // actually on THIS admin/HR user's own queue right now (not a
@@ -585,6 +605,120 @@ class ApprovalController extends Controller
                         ->values()
                         ->all(),
                     'submitUrl' => route('general-signatory-approvals.approve', $assignment->id),
+                    'timeline' => collect($request->timeline())
+                        ->reject(fn ($step) => $step['label'] === 'Offboarding In Progress')
+                        ->values()
+                        ->all(),
+                ];
+            })
+            ->values();
+    }
+
+    /**
+     * Final Approval as a third card "kind" on this same page — see this
+     * method's counterpart `buildGeneralSignatoryApprovals()` immediately
+     * above, which this mirrors field-for-field. Only ever surfaces a
+     * request that has ALREADY reached `status === 'completed'` (every
+     * checklist and General Signatory already cleared) — the same
+     * precondition `FinalApprovalController::send()` itself enforces
+     * before a Final Approval process can even be created, so a request
+     * still mid-workflow never appears here regardless of who's looking.
+     */
+    private function buildFinalApprovalApprovals(User $user)
+    {
+        $assignments = OffboardingRequestFinalApproval::query()
+            ->where('status', 'pending')
+            ->whereHas('offboardingRequest', fn ($q) => $q->where('status', 'completed'))
+            ->visibleTo($user)
+            ->with(['offboardingRequest.employee', 'offboardingRequest.activities'])
+            ->get()
+            ->filter(fn (OffboardingRequestFinalApproval $assignment) => $assignment->offboardingRequest?->employee);
+
+        // Same "loading your own queue counts as viewing" side effect the
+        // General Signatory builder above applies, and the email path
+        // (`FinalApprovalController::showEmailApproval()`) already applies
+        // for a link click — opening the card in-app marks it viewed the
+        // identical way, so "first_viewed_at" reflects whichever channel
+        // the Final Approver actually used first.
+        $employee = $user->employee;
+
+        if (! $user->isAdmin() && $employee) {
+            $assignments->each(function (OffboardingRequestFinalApproval $assignment) use ($user, $employee) {
+                if ($assignment->employee_id === $employee->id && ! $assignment->first_viewed_at) {
+                    $assignment->update(['first_viewed_at' => now()]);
+
+                    $assignment->offboardingRequest->activities()->create([
+                        'user_id' => $user->id,
+                        'offboarding_request_final_approval_id' => $assignment->id,
+                        'action' => 'final_approval_viewed',
+                        'status' => $assignment->offboardingRequest->status,
+                    ]);
+                }
+            });
+        }
+
+        return $assignments
+            ->map(function (OffboardingRequestFinalApproval $assignment) {
+                $request = $assignment->offboardingRequest;
+
+                return [
+                    'id' => 'final-approval-' . $assignment->id,
+                    'kind' => 'final_approval',
+                    'offboardingRequestId' => $request->id,
+                    'name' => $request->employee->name,
+                    'firstName' => $request->employee->firstName,
+                    'lastName' => $request->employee->lastName,
+                    'middleName' => $request->employee->middleName,
+                    'employeeCode' => $request->employee->employee_code,
+                    'department' => $request->employee->department,
+                    'designation' => $request->employee->designation,
+                    'status' => $request->status,
+                    'displayStatus' => 'pending',
+                    'requestStatus' => $request->displayStatus(),
+                    'requestStatusLabel' => ucfirst(str_replace('_', ' ', $request->displayStatus())),
+                    'reason' => $request->reason,
+                    'noticeDate' => $request->notice_date?->format('M d, Y'),
+                    'lastWorkingDay' => $request->last_working_day->format('M d, Y'),
+                    // Requirement #3's "Original Last Working Day"/
+                    // "Extended Last Working Day, if applicable" — same
+                    // fields the Offboardee page's own status modal already
+                    // uses (see `OffboardingRequest::isLastWorkingDayExtended()`).
+                    'originalLastWorkingDay' => $request->original_last_working_day?->format('M d, Y'),
+                    'isLastWorkingDayExtended' => $request->isLastWorkingDayExtended(),
+                    'approvalMode' => $request->approval_mode === 'sync' ? 'Sync' : 'Async',
+                    'checklistTemplates' => [],
+                    'checklistItems' => [],
+                    'isPrimaryApprover' => true,
+                    'isAssignedApprover' => true,
+                    'isMonitoring' => false,
+                    'isDelegate' => false,
+                    'usesPerItemApprovers' => false,
+                    'isImmediateHeadChecklist' => false,
+                    'allItemsCompleted' => true,
+                    'dueAt' => null,
+                    'isOverdue' => false,
+                    'hasReachedDueDate' => false,
+                    'assignedByName' => null,
+                    'assignedByCode' => null,
+                    'delegations' => [],
+                    'checklistPoolOptions' => [],
+                    'showAssignChecklistPool' => false,
+                    'generalSignatoryName' => null,
+                    'generalSignatoryTasks' => [],
+                    // "Checklist completion/status" and "Clearance status"
+                    // (requirement #3) are exactly what the Clearance Form
+                    // already summarizes — surfaced here as the "Supporting
+                    // documents" link rather than re-deriving a duplicate
+                    // per-checklist breakdown. Same routes
+                    // `OffboardeeController::index()` already generates.
+                    'clearanceFormUrl' => route('clearance-form.pdf', $request),
+                    'printClearanceFormUrl' => route('clearance-form.print', $request),
+                    'finalApprovalStatus' => $assignment->status,
+                    'submitUrl' => route('final-approval-approvals.approve', $assignment->id),
+                    // "Previous approval/signatory status" — already
+                    // includes its own dedicated Final Approval steps (see
+                    // `OffboardingRequest::timeline()`), so the modal shows
+                    // the same history a checklist card's modal would.
                     'timeline' => collect($request->timeline())
                         ->reject(fn ($step) => $step['label'] === 'Offboarding In Progress')
                         ->values()
@@ -1793,6 +1927,14 @@ class ApprovalController extends Controller
                 // extension immediately, with no page reload.
                 'originalLastWorkingDay' => $offboardingRequest->original_last_working_day?->format('M d, Y'),
                 'isLastWorkingDayExtended' => $offboardingRequest->isLastWorkingDayExtended(),
+                // The Offboardee card's own status badge (Pending/In
+                // Progress/Overdue/Completed) — an extension can genuinely
+                // change this (e.g. a checklist that was Overdue no longer
+                // is, now that its due date has moved forward), so it must
+                // be refreshed here too rather than left stale until the
+                // next full page load. Same `displayStatus()` call
+                // `OffboardeeController::index()` itself uses.
+                'status' => $offboardingRequest->displayStatus(),
                 'canBulkExtendDue' => $freshApplicable->isNotEmpty() && $freshApplicable->contains(fn (OffboardingRequestApprover $approver) => $approver->canExtendDue()),
                 'extendDueChecklists' => $freshApplicable->map(fn (OffboardingRequestApprover $approver) => [
                     'title' => $approver->checklistTemplate?->title,

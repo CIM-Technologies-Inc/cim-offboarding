@@ -4,6 +4,8 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Log;
 
 class ChecklistItemProgress extends Model
 {
@@ -17,6 +19,15 @@ class ChecklistItemProgress extends Model
         'checked_at',
         'held_by_user_id',
         'held_at',
+        // For a "Use Task Assignee as Clearance Signatory" checklist item
+        // checked by a regular employee (not a Department/Group Head
+        // themselves) — an additional sign-off gate. Set ONCE, the moment
+        // the item is first checked (see `syncForAssignment()` below), and
+        // never recomputed afterward.
+        'head_approval_required',
+        'head_approver_employee_id',
+        'head_approved_at',
+        'head_approved_by_user_id',
     ];
 
     protected function casts(): array
@@ -25,6 +36,8 @@ class ChecklistItemProgress extends Model
             'is_checked' => 'boolean',
             'checked_at' => 'datetime',
             'held_at' => 'datetime',
+            'head_approval_required' => 'boolean',
+            'head_approved_at' => 'datetime',
         ];
     }
 
@@ -48,6 +61,28 @@ class ChecklistItemProgress extends Model
         return $this->belongsTo(User::class, 'held_by_user_id');
     }
 
+    public function headApprover(): BelongsTo
+    {
+        return $this->belongsTo(Employee::class, 'head_approver_employee_id');
+    }
+
+    public function headApprovedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'head_approved_by_user_id');
+    }
+
+    /**
+     * True once this item counts as fully done: checked, and — if it ever
+     * needed one — its Department/Group Head approval has been given.
+     * `head_approval_required` is always false for anything other than a
+     * "Use Task Assignee as Clearance Signatory" item, so this is
+     * equivalent to plain `is_checked` everywhere else, unchanged.
+     */
+    public function isFullyApproved(): bool
+    {
+        return $this->is_checked && (! $this->head_approval_required || $this->head_approved_at !== null);
+    }
+
     /**
      * Upserts checked/remark state for each submitted item against the given
      * assignment. Shared by the delegate's "Save Progress" action, the
@@ -68,10 +103,16 @@ class ChecklistItemProgress extends Model
      * happened to submit the form.
      *
      * @param  array<int, array{checklist_item_id: int, is_checked?: bool, remark?: ?string}>  $items
+     * @return Collection<int, static> every row that just became genuinely
+     *         checked AND newly requires head approval on THIS call — never
+     *         one that already required it from a previous save. Callers
+     *         use this to email the required head exactly once, right when
+     *         the gate is first created, not on every subsequent save.
      */
-    public static function syncForAssignment(OffboardingRequestApprover $assignment, array $items, int $userId): void
+    public static function syncForAssignment(OffboardingRequestApprover $assignment, array $items, int $userId): Collection
     {
         $existing = $assignment->itemProgress()->get()->keyBy('checklist_item_id');
+        $newlyPendingHeadApproval = collect();
 
         foreach ($items as $item) {
             $current = $existing->get($item['checklist_item_id']);
@@ -97,7 +138,17 @@ class ChecklistItemProgress extends Model
                 continue;
             }
 
-            static::updateOrCreate(
+            // The head-approval gate is decided ONCE, right here, the very
+            // first time an item is actually checked — never recomputed on
+            // a later save of the same item (which can't happen anyway,
+            // since a checked item is excluded above, but the `$isChecked`
+            // guard keeps this block from ever running for an unchecked
+            // save either).
+            $headApprovalAttributes = $isChecked
+                ? static::resolveHeadApproval($assignment, (int) $item['checklist_item_id'])
+                : ['head_approval_required' => false, 'head_approver_employee_id' => null];
+
+            $row = static::updateOrCreate(
                 [
                     'offboarding_request_approver_id' => $assignment->id,
                     'checklist_item_id' => $item['checklist_item_id'],
@@ -108,8 +159,61 @@ class ChecklistItemProgress extends Model
                     'checked_by_user_id' => $userId,
                     'checked_at' => now(),
                     ...($isChecked ? ['status' => null] : []),
+                    ...$headApprovalAttributes,
                 ]
             );
+
+            if ($isChecked && $row->head_approval_required) {
+                $newlyPendingHeadApproval->push($row);
+            }
         }
+
+        return $newlyPendingHeadApproval;
+    }
+
+    /**
+     * Requirement: a "Use Task Assignee as Clearance Signatory" item
+     * checked by a regular employee needs their own Department/Group
+     * Head's additional approval; one checked directly by a Department/
+     * Group Head needs none (never require someone to approve their own
+     * work). Every other checklist kind never reaches the `true` branch at
+     * all — `use_task_assignee_as_signatory` is checked first — so this
+     * never affects a normal single-/per-item-approver checklist.
+     *
+     * Fails open (no approval required) when the checked-by employee has
+     * no Department/Group Head configured anywhere to resolve to — an
+     * admin data gap, not a normal case, but one that must never leave an
+     * item permanently unapprovable.
+     *
+     * @return array{head_approval_required: bool, head_approver_employee_id: ?int}
+     */
+    private static function resolveHeadApproval(OffboardingRequestApprover $assignment, int $checklistItemId): array
+    {
+        $assignment->loadMissing('checklistTemplate.items', 'itemAssignments.assignedEmployee');
+
+        if (! $assignment->checklistTemplate?->use_task_assignee_as_signatory) {
+            return ['head_approval_required' => false, 'head_approver_employee_id' => null];
+        }
+
+        $checklistItem = $assignment->checklistTemplate->items->firstWhere('id', $checklistItemId);
+        $signatory = $checklistItem ? $assignment->effectiveSignatoryFor($checklistItem) : null;
+
+        if (! $signatory || $signatory->isDepartmentHead()) {
+            return ['head_approval_required' => false, 'head_approver_employee_id' => null];
+        }
+
+        $head = $signatory->departmentHead();
+
+        if (! $head) {
+            Log::warning('Checklist item checked by an employee with no resolvable Department/Group Head — skipping the approval gate.', [
+                'offboarding_request_approver_id' => $assignment->id,
+                'checklist_item_id' => $checklistItemId,
+                'employee_id' => $signatory->id,
+            ]);
+
+            return ['head_approval_required' => false, 'head_approver_employee_id' => null];
+        }
+
+        return ['head_approval_required' => true, 'head_approver_employee_id' => $head->id];
     }
 }

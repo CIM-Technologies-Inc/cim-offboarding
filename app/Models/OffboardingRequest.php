@@ -44,6 +44,7 @@ class OffboardingRequest extends Model
         'general_signatory_final_pay_notified_at',
         'cancelled_at',
         'cancelled_by',
+        'cancellation_reason',
     ];
 
     protected function casts(): array

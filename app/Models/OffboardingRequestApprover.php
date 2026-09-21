@@ -380,8 +380,13 @@ class OffboardingRequestApprover extends Model
 
         $progress = $this->itemProgress->keyBy('checklist_item_id');
 
+        // `isFullyApproved()` is plain `is_checked` for every item that
+        // never needed a Department/Group Head sign-off (i.e. every
+        // checklist that isn't "Use Task Assignee as Clearance Signatory")
+        // — this is a strict narrowing of the old condition, never a
+        // behavior change, for anything other than that one checklist kind.
         return $this->checklistTemplate->items->every(
-            fn (ChecklistItem $item) => (bool) ($progress->get($item->id)?->is_checked ?? false)
+            fn (ChecklistItem $item) => (bool) $progress->get($item->id)?->isFullyApproved()
         );
     }
 

@@ -399,6 +399,21 @@ class OffboardingRequestController extends Controller
                 : 'This offboarding request has already been cancelled.'
         );
 
+        // Required BEFORE any destructive action below — a cancellation
+        // must never partially proceed (or even start the deletion
+        // cascade) without a reason on file.
+        if ($request->has('reason')) {
+            $request->merge(['reason' => trim((string) $request->input('reason'))]);
+        }
+
+        $validated = $request->validate([
+            'reason' => ['required', 'string', 'max:2000'],
+        ], [
+            'reason.required' => 'A reason is required to cancel this offboarding request.',
+        ]);
+
+        $reason = $validated['reason'];
+
         $offboardingRequest->loadMissing('employee');
         $employee = $offboardingRequest->employee;
         $admin = $request->user();
@@ -411,9 +426,15 @@ class OffboardingRequestController extends Controller
         // dependent records are gone, and even the request row's `id`
         // wouldn't help without the employee snapshot alongside it).
         $offboardingRequestId = $offboardingRequest->id;
-        $employeeSnapshot = ['name' => $employee->name, 'employeeCode' => $employee->employee_code, 'department' => $employee->department];
+        $employeeSnapshot = [
+            'name' => $employee->name,
+            'employeeCode' => $employee->employee_code,
+            'department' => $employee->department,
+            'originalLastWorkingDay' => $offboardingRequest->original_last_working_day?->format('M d, Y')
+                ?? $offboardingRequest->last_working_day?->format('M d, Y'),
+        ];
 
-        DB::transaction(function () use ($offboardingRequest, $employee, $admin) {
+        DB::transaction(function () use ($offboardingRequest, $employee, $admin, $reason) {
             // Identical cascade shape to `reset()` above — see its own
             // comments for exactly what each deletion cascades to.
             $offboardingRequest->approvers()->delete();
@@ -450,6 +471,11 @@ class OffboardingRequestController extends Controller
                 'status' => 'cancelled',
                 'cancelled_at' => now(),
                 'cancelled_by' => $admin->id,
+                // Never editable after this point — there is no update path
+                // for this column anywhere else in the app, since a request
+                // can only ever be cancelled once (the guard at the top of
+                // this method rejects a second cancellation outright).
+                'cancellation_reason' => $reason,
                 'completed_at' => null,
                 'final_pay_notified_at' => null,
                 'secondary_notified_at' => null,
@@ -461,11 +487,15 @@ class OffboardingRequestController extends Controller
 
             // The one thing that survives the wipe above — same "never
             // silent" convention `reset()`'s own final activity follows.
+            // The reason is embedded directly in this comment (this table
+            // has no dedicated reason column of its own), so it's part of
+            // the permanent timeline/audit trail exactly like every other
+            // activity comment in this app.
             $offboardingRequest->activities()->create([
                 'user_id' => $admin->id,
                 'action' => 'offboarding_cancelled',
                 'status' => 'cancelled',
-                'comment' => "Offboarding request cancelled by {$admin->name}; all checklist, clearance, and approval records for this request were removed.",
+                'comment' => "Offboarding request cancelled by {$admin->name}; all checklist, clearance, and approval records for this request were removed. Reason: {$reason}",
             ]);
         });
 
@@ -477,7 +507,11 @@ class OffboardingRequestController extends Controller
             'result' => 'success',
         ]);
 
-        $this->sendCancellationNotifications($recipients, $employeeSnapshot, $offboardingRequestId, $admin);
+        // Reads the SAVED column (the same in-memory instance `update()`
+        // above already set), never the raw request input directly — the
+        // email must reflect exactly what was persisted, not merely what
+        // was typed into the modal.
+        $this->sendCancellationNotifications($recipients, $employeeSnapshot, $offboardingRequestId, $admin, $offboardingRequest->cancellation_reason);
 
         // The Offboardee Page's Cancel Offboarding button submits via
         // `fetch()` (not a native form post) so it can remove just this one
@@ -569,9 +603,9 @@ class OffboardingRequestController extends Controller
      * bounced.
      *
      * @param  Collection<int, Employee>  $recipients
-     * @param  array{name: string, employeeCode: ?string, department: ?string}  $employeeSnapshot
+     * @param  array{name: string, employeeCode: ?string, department: ?string, originalLastWorkingDay: ?string}  $employeeSnapshot
      */
-    private function sendCancellationNotifications(Collection $recipients, array $employeeSnapshot, int $offboardingRequestId, User $admin): void
+    private function sendCancellationNotifications(Collection $recipients, array $employeeSnapshot, int $offboardingRequestId, User $admin, ?string $cancellationReason): void
     {
         if ($recipients->isEmpty()) {
             return;
@@ -605,9 +639,11 @@ class OffboardingRequestController extends Controller
                     offboardeeName: $employeeSnapshot['name'],
                     employeeNumber: $employeeSnapshot['employeeCode'],
                     department: $employeeSnapshot['department'],
+                    separationDate: $employeeSnapshot['originalLastWorkingDay'],
                     cancelledBy: $admin->name,
                     cancelledAt: $cancelledAt,
                     offboardingRequestId: (string) $offboardingRequestId,
+                    cancellationReason: $cancellationReason,
                 );
 
                 Mail::to($recipient->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));

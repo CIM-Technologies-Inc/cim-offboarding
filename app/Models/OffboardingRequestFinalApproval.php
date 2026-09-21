@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -63,6 +64,29 @@ class OffboardingRequestFinalApproval extends Model
     public function approvedBy(): BelongsTo
     {
         return $this->belongsTo(User::class, 'approved_by');
+    }
+
+    /**
+     * Rows this user may see/act on in their own Approvals queue — every
+     * row for an admin, otherwise only the one(s) where THEY are the
+     * snapshotted Final Signatory (`employee_id`). No group/delegate
+     * concept exists for Final Approval (unlike a checklist's Clearance
+     * Signatory), so this is a plain direct-match, same shape as
+     * `OffboardingRequestGeneralSignatory::scopeVisibleTo()`.
+     */
+    public function scopeVisibleTo(Builder $query, User $user): Builder
+    {
+        if ($user->isAdmin()) {
+            return $query;
+        }
+
+        $employee = $user->employee;
+
+        if (! $employee) {
+            return $query->whereRaw('1 = 0');
+        }
+
+        return $query->where('employee_id', $employee->id);
     }
 
     public function tokens(): HasMany

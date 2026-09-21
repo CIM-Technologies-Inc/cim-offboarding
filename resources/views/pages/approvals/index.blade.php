@@ -343,6 +343,14 @@
                                     </svg>
                                     Review & Approve
                                 </button>
+                            @elseif (($approval['kind'] ?? null) === 'final_approval')
+                                <button type="button" @click.stop="$dispatch('open-final-approval-modal', @js($approval))"
+                                    class="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-[#145a3a] px-3 py-2 text-sm font-medium text-white hover:bg-[#0f4630]">
+                                    <svg width="16" height="16" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path fill-rule="evenodd" clip-rule="evenodd" d="M3 4.5C3 4.08579 3.33579 3.75 3.75 3.75H14.25C14.6642 3.75 15 4.08579 15 4.5C15 4.91421 14.6642 5.25 14.25 5.25H3.75C3.33579 5.25 3 4.91421 3 4.5ZM3 9C3 8.58579 3.33579 8.25 3.75 8.25H14.25C14.6642 8.25 15 8.58579 15 9C15 9.41421 14.6642 9.75 14.25 9.75H3.75C3.33579 9.75 3 9.41421 3 9ZM3.75 12.75C3.33579 12.75 3 13.0858 3 13.5C3 13.9142 3.33579 14.25 3.75 14.25H10.5C10.9142 14.25 11.25 13.9142 11.25 13.5C11.25 13.0858 10.9142 12.75 10.5 12.75H3.75Z" fill="currentColor" />
+                                    </svg>
+                                    Review & Approve
+                                </button>
                             @else
                                 <button type="button" @click.stop="$dispatch('open-checklist-modal', @js($approval))"
                                     class="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-[#145a3a] px-3 py-2 text-sm font-medium text-white hover:bg-[#0f4630]">
@@ -401,6 +409,9 @@
 
         <!-- General Signatory Approval Modal -->
         <x-approvals.general-signatory-modal />
+
+        <!-- Final Approval Modal -->
+        <x-approvals.final-approval-modal />
 
         <!-- Assign To Modal (whole checklist delegation) -->
         <x-approvals.assign-modal :employees="$employees" />

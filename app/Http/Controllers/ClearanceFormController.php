@@ -455,9 +455,16 @@ class ClearanceFormController extends Controller
             ->groupBy(fn ($item) => $approver->effectiveSignatoryFor($item)?->id)
             ->forget(null);
 
-        $checkedItemIds = $approver->itemProgress->where('is_checked', true)->pluck('checklist_item_id');
+        // Only ever `is_checked` for anything but a "Use Task Assignee as
+        // Clearance Signatory" checklist — same `isFullyApproved()` an item
+        // must satisfy for the checklist's own `allItemsCompleted()`, so a
+        // Task Assignee's row on this form is never shown "Cleared" while
+        // their Department/Group Head's additional approval is still
+        // pending. See `ChecklistItemProgress::isFullyApproved()`.
+        $fullyApprovedProgress = $approver->itemProgress->filter->isFullyApproved();
+        $fullyApprovedItemIds = $fullyApprovedProgress->pluck('checklist_item_id');
 
-        return $itemsByEmployeeId->map(function ($items, $employeeId) use ($approver, $checkedItemIds, $offboardingRequest) {
+        return $itemsByEmployeeId->map(function ($items, $employeeId) use ($approver, $fullyApprovedItemIds, $fullyApprovedProgress, $offboardingRequest) {
             $assignee = Employee::find($employeeId);
             $employee = $assignee ? $this->effectiveClearanceSignatoryFor($assignee) : null;
 
@@ -465,12 +472,15 @@ class ClearanceFormController extends Controller
                 return null;
             }
 
-            $isFullyCleared = $items->every(fn ($item) => $checkedItemIds->contains($item->id));
+            $isFullyCleared = $items->every(fn ($item) => $fullyApprovedItemIds->contains($item->id));
 
-            $lastCheckedAt = $approver->itemProgress
+            // The moment full approval was actually reached per item — a
+            // head-approved item's own approval time, not when it was
+            // merely checked, since that's the point it genuinely became
+            // "Cleared" on this form.
+            $lastCheckedAt = $fullyApprovedProgress
                 ->whereIn('checklist_item_id', $items->pluck('id'))
-                ->where('is_checked', true)
-                ->max('checked_at');
+                ->max(fn ($progress) => $progress->head_approved_at ?? $progress->checked_at);
 
             return [
                 'employeeId' => $employee?->id,

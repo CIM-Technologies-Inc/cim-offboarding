@@ -3,9 +3,11 @@
 namespace App\Http\Controllers;
 
 use App\Mail\ChecklistItemApproverAssignedMail;
+use App\Mail\ChecklistSignatoryAnnouncementMail;
 use App\Models\ChecklistDelegation;
 use App\Models\ChecklistItem;
 use App\Models\ChecklistItemProgress;
+use App\Models\EmailTemplate;
 use App\Models\Employee;
 use App\Models\OffboardingRequest;
 use App\Models\OffboardingRequestApprover;
@@ -20,6 +22,14 @@ use Illuminate\Support\Facades\Mail;
 
 class ChecklistDelegationController extends Controller
 {
+    /**
+     * Fixed-name email template for the "one of your people completed a
+     * task and needs your approval" notice — same graceful "warn and skip
+     * if missing" convention as `NotifyOverdueChecklists::OVERDUE_TEMPLATE`,
+     * rather than requiring this to be seeded. See `notifyPendingHeadApprovals()`.
+     */
+    private const HEAD_APPROVAL_TEMPLATE = 'Checklist Item Pending Head Approval';
+
     /**
      * The Department Head/primary approver delegates their checklist to
      * another employee, who can complete the items and add remarks but
@@ -601,6 +611,73 @@ class ChecklistDelegationController extends Controller
     }
 
     /**
+     * "Use Task Assignee as Clearance Signatory" head-approval gate: the
+     * Department/Group Head required by `ChecklistItemProgress::resolveHeadApproval()`
+     * gives their additional sign-off on an item their own Task Assignee has
+     * already checked. Deliberately its own authorization check, never
+     * `authorizeItemAction()` (that grants EDIT/ownership rights over an
+     * item — checking it off, holding it, taking it over — none of which
+     * apply here: the head never touches the item's own checked state,
+     * only approves it) and never satisfiable by the Task Assignee who
+     * checked it themselves, since `resolveHeadApproval()` only ever
+     * assigns this to somebody else.
+     */
+    public function approveHeadItem(Request $request, OffboardingRequestApprover $offboardingRequestApprover, ChecklistItem $checklistItem): RedirectResponse|JsonResponse
+    {
+        abort_unless($checklistItem->checklist_template_id === $offboardingRequestApprover->checklist_template_id, 404);
+
+        abort_unless(
+            in_array($offboardingRequestApprover->status, ['pending', 'viewed'], true),
+            422,
+            'This checklist has already been actioned.'
+        );
+
+        $progress = $offboardingRequestApprover->itemProgress()
+            ->where('checklist_item_id', $checklistItem->id)
+            ->first();
+
+        abort_unless($progress?->is_checked, 422, 'This checklist item has not been completed yet.');
+        abort_unless($progress->head_approval_required, 422, 'This checklist item does not require an additional approval.');
+        abort_if($progress->head_approved_at !== null, 422, 'This checklist item has already been approved.');
+
+        $user = auth()->user();
+
+        abort_unless(
+            $user->isAdmin() || $progress->head_approver_employee_id === $user->employee?->id,
+            403
+        );
+
+        DB::transaction(function () use ($progress, $offboardingRequestApprover, $checklistItem, $user) {
+            $progress->update([
+                'head_approved_at' => now(),
+                'head_approved_by_user_id' => $user->id,
+            ]);
+
+            $offboardingRequestApprover->offboardingRequest->activities()->create([
+                'user_id' => $user->id,
+                'offboarding_request_approver_id' => $offboardingRequestApprover->id,
+                'action' => 'checklist_item_head_approved',
+                'status' => $offboardingRequestApprover->offboardingRequest->status,
+                'comment' => "\"{$checklistItem->title}\" approved by {$user->employee?->employee_code} - {$user->employee?->name} (Department/Group Head).",
+            ]);
+        });
+
+        // Same completion check every other completion path already runs —
+        // this may have been the last outstanding gate on the whole
+        // checklist.
+        app(ChecklistCompletionService::class)->autoApproveIfHeadless($offboardingRequestApprover->fresh());
+
+        if ($request->wantsJson()) {
+            return response()->json([
+                'items' => $this->checkedItemPatches([$offboardingRequestApprover->fresh()]),
+                'message' => "\"{$checklistItem->title}\" has been approved.",
+            ]);
+        }
+
+        return back()->with('success', "\"{$checklistItem->title}\" has been approved.");
+    }
+
+    /**
      * The JSON payload `takeOverItem()` returns on success — everything the
      * Approvals page's checklist modal needs to patch this one item (and the
      * whole assignment's per-item-approver/completion flags) into its live
@@ -716,7 +793,8 @@ class ChecklistDelegationController extends Controller
 
         $this->logTakeoverActivity($offboardingRequestApprover, $items->all());
 
-        ChecklistItemProgress::syncForAssignment($offboardingRequestApprover, $items->all(), auth()->id());
+        $newlyPendingHeadApproval = ChecklistItemProgress::syncForAssignment($offboardingRequestApprover, $items->all(), auth()->id());
+        $this->notifyPendingHeadApprovals($newlyPendingHeadApproval);
 
         // At least one item was actually checked/completed in this save —
         // the checklist has now genuinely been acted upon, so its status
@@ -834,7 +912,8 @@ class ChecklistDelegationController extends Controller
 
             $this->logTakeoverActivity($member, $items->all());
 
-            ChecklistItemProgress::syncForAssignment($member, $items->all(), auth()->id());
+            $newlyPendingHeadApproval = ChecklistItemProgress::syncForAssignment($member, $items->all(), auth()->id());
+            $this->notifyPendingHeadApprovals($newlyPendingHeadApproval);
 
             // Same "genuinely acted upon" bump as the single-row
             // `saveProgress()` above, per member of the combined group.
@@ -883,6 +962,7 @@ class ChecklistDelegationController extends Controller
     private function checkedItemPatches($members): array
     {
         $patches = [];
+        $viewerEmployeeId = auth()->user()->employee?->id;
 
         foreach ($members as $member) {
             // A forced `load()`, not `loadMissing()` — `authorizeItemAction()`
@@ -891,7 +971,7 @@ class ChecklistDelegationController extends Controller
             // would silently keep serving that stale, empty snapshot instead
             // of the rows `ChecklistItemProgress::syncForAssignment()` just
             // created/updated moments ago.
-            $member->load('checklistTemplate.items', 'itemProgress.checkedBy.employee');
+            $member->load('checklistTemplate.items', 'itemProgress.checkedBy.employee', 'itemProgress.headApprover');
             $progressByItemId = $member->itemProgress->keyBy('checklist_item_id');
 
             foreach ($member->checklistTemplate->items as $item) {
@@ -902,6 +982,7 @@ class ChecklistDelegationController extends Controller
                 }
 
                 $checkedByEmployee = $progress->checkedBy?->employee;
+                $headApprovalPending = $progress->head_approval_required && ! $progress->head_approved_at;
 
                 $patches[] = [
                     'id' => $item->id,
@@ -922,11 +1003,85 @@ class ChecklistDelegationController extends Controller
                     'completedLate' => $member->due_at !== null
                         && $progress->checked_at !== null
                         && $progress->checked_at->greaterThanOrEqualTo($member->due_at),
+                    // "Use Task Assignee as Clearance Signatory" head-
+                    // approval gate — see `ChecklistItemProgress::isFullyApproved()`.
+                    // Always false/null for any other checklist kind.
+                    'headApprovalRequired' => $progress->head_approval_required,
+                    'headApprovalPending' => $headApprovalPending,
+                    'headApproverName' => $progress->headApprover?->name,
+                    'headApproverCode' => $progress->headApprover?->employee_code,
+                    'isHeadApprover' => $viewerEmployeeId !== null && $progress->head_approver_employee_id === $viewerEmployeeId,
+                    'approveHeadItemUrl' => route('approvals.items.approve-head', [$member->id, $item->id]),
                 ];
             }
         }
 
         return $patches;
+    }
+
+    /**
+     * Emails each newly-required Department/Group Head the moment
+     * `ChecklistItemProgress::syncForAssignment()` creates their approval
+     * gate — event-driven, fired exactly once per gate (never re-fired on a
+     * later save of the same item, since `syncForAssignment()` only ever
+     * returns a row here the FIRST time it becomes pending), unlike the
+     * scheduled per-checklist reminder (`app:send-checklist-reminders`).
+     * Missing the fixed-name template is treated as a soft configuration
+     * gap, not a failure — same convention `NotifyOverdueChecklists`
+     * already uses — so a checklist can still be used before an admin gets
+     * around to authoring that template's content.
+     *
+     * @param  \Illuminate\Support\Collection<int, ChecklistItemProgress>  $newlyPending
+     */
+    private function notifyPendingHeadApprovals($newlyPending): void
+    {
+        if ($newlyPending->isEmpty()) {
+            return;
+        }
+
+        $emailTemplate = EmailTemplate::where('is_active', true)
+            ->where('template_name', self::HEAD_APPROVAL_TEMPLATE)
+            ->latest('updated_at')
+            ->first();
+
+        if (! $emailTemplate) {
+            Log::warning('No "' . self::HEAD_APPROVAL_TEMPLATE . '" email template found — Department/Group Heads were not emailed about a pending item approval.');
+
+            return;
+        }
+
+        $newlyPending->load('checklistItem', 'headApprover', 'assignment.offboardingRequest.employee');
+
+        foreach ($newlyPending as $progress) {
+            $head = $progress->headApprover;
+
+            if (! $head || ! $head->email || ! filter_var($head->email, FILTER_VALIDATE_EMAIL)) {
+                continue;
+            }
+
+            $assignment = $progress->assignment;
+            $offboardee = $assignment->offboardingRequest->employee;
+
+            [$subject, $body] = $emailTemplate->render(
+                approverName: $head->name,
+                offboardeeName: $offboardee->name,
+                employeeNumber: $offboardee->employee_code,
+                checklistName: $progress->checklistItem->title,
+                dueDate: $assignment->due_at?->format('M d, Y'),
+                department: $offboardee->department,
+                position: $offboardee->designation,
+            );
+
+            try {
+                Mail::to($head->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+            } catch (\Throwable $e) {
+                Log::error('Failed to send head-approval-pending notification.', [
+                    'checklist_item_progress_id' => $progress->id,
+                    'recipient' => $head->email,
+                    'exception' => $e->getMessage(),
+                ]);
+            }
+        }
     }
 
     /**

@@ -185,54 +185,133 @@ class FinalApprovalController extends Controller
             // convention as every other emailed-approval flow in this app.
             $actor = User::findOrCreateApprover($signatoryEmployee);
 
-            $locked = null;
-
-            $state = DB::transaction(function () use ($finalApproval, $actor, $remarks, &$locked) {
-                $locked = OffboardingRequestFinalApproval::whereKey($finalApproval->id)
-                    ->where('status', 'pending')
-                    ->lockForUpdate()
-                    ->first();
-
-                if (! $locked) {
-                    return 'already_approved';
-                }
-
-                $locked->update([
-                    'status' => 'approved',
-                    'approved_at' => now(),
-                    'approved_by' => $actor->id,
-                    'remarks' => $remarks,
-                ]);
-
-                $offboardingRequest = $locked->offboardingRequest;
-
-                $offboardingRequest->activities()->create([
-                    'user_id' => $actor->id,
-                    'offboarding_request_final_approval_id' => $locked->id,
-                    'action' => 'final_approval_approved',
-                    'status' => $offboardingRequest->status,
-                    'comment' => 'Final Approval given by: ' . $actor->name . ' (Via Email)'
-                        . ($remarks ? ' — Remarks: ' . $remarks : ''),
-                ]);
-
-                return 'approved';
-            });
-
-            // Sent outside the transaction, same convention as every other
-            // notification in this app — a slow/failed mail send must never
-            // roll back an otherwise-successful approval. Every step in the
-            // request's lifecycle (checklists, General Signatories, Final
-            // Approval) is now genuinely done, so this is the one
-            // "everything is finished" notice the creator gets.
-            if ($state === 'approved' && $locked) {
-                $this->notifyRequestCreator($locked->fresh(['offboardingRequest.employee', 'employee']));
-            }
+            $state = $this->finalizeApproval($finalApproval, $actor, $remarks, 'Via Email') ? 'approved' : 'already_approved';
         }
 
         return response()->json([
             'state' => $state,
             'message' => self::EMAIL_APPROVAL_MESSAGES[$state],
         ]);
+    }
+
+    /**
+     * The Final Approver's own in-app approval — the counterpart to the
+     * emailed-link flow above (`confirmEmailApproval()`), reachable from
+     * their own Approvals page queue (see
+     * `ApprovalController::buildFinalApprovalApprovals()`) instead of only
+     * through the notification email. Same signature-upload gate, same
+     * "only the currently configured Final Approver" authorization, and
+     * the identical `finalizeApproval()` core the email path uses — the
+     * only difference between the two entry points is the "(Via Email)"
+     * vs "(Via Application)" tag on the resulting audit trail comment.
+     */
+    public function approve(Request $request, OffboardingRequestFinalApproval $offboardingRequestFinalApproval): RedirectResponse
+    {
+        $this->authorizeAssignment($offboardingRequestFinalApproval);
+
+        if (! auth()->user()->hasUsableSignature()) {
+            return redirect()->route('profile')->with('error', self::MISSING_SIGNATURE_MESSAGE);
+        }
+
+        abort_unless($offboardingRequestFinalApproval->status === 'pending', 422, 'This has already been actioned.');
+
+        // Same shape/limit as every other in-app approval's own optional
+        // `remarks` input in this app.
+        $validated = $request->validate([
+            'remarks' => ['nullable', 'string', 'max:2000'],
+        ]);
+
+        $approved = $this->finalizeApproval(
+            $offboardingRequestFinalApproval,
+            auth()->user(),
+            $validated['remarks'] ?? null,
+            'Via Application'
+        );
+
+        abort_unless($approved, 422, 'This has already been actioned.');
+
+        return back()->with(
+            'success',
+            $offboardingRequestFinalApproval->offboardingRequest->employee->name . '\'s offboarding request received Final Approval.'
+        );
+    }
+
+    /**
+     * Only the CURRENTLY configured Final Approver (or admin) may give
+     * in-app Final Approval — same "not every Admin/HR user" gate
+     * `GeneralSignatoryApprovalController::authorizeAssignment()` already
+     * applies to its own equivalent action. Deliberately checks THIS row's
+     * own snapshotted `employee_id`, not the live `FinalApprover` config —
+     * `resolveEmailApprovalState()`'s own "not_actionable" re-check is what
+     * already handles a config change for the email path; the in-app path
+     * simply never shows a stale assignment's card to anyone but the
+     * employee it was actually snapshotted for in the first place (see
+     * `OffboardingRequestFinalApproval::scopeVisibleTo()`).
+     */
+    private function authorizeAssignment(OffboardingRequestFinalApproval $finalApproval): void
+    {
+        $user = auth()->user();
+
+        if ($user->isAdmin()) {
+            return;
+        }
+
+        abort_unless($finalApproval->employee_id === $user->employee?->id, 403);
+    }
+
+    /**
+     * The shared "actually record this approval" core both the emailed-link
+     * flow (`confirmEmailApproval()`) and the in-app `approve()` action call
+     * — re-locks the row from scratch inside its own transaction (never
+     * trusting whatever state the caller already read), so a double-click,
+     * two tabs, or a race between the email link and the in-app button can
+     * never approve the same request twice. Returns false (nothing
+     * persisted) when a concurrent request already won that race, true once
+     * this call is the one that actually recorded it. The creator
+     * notification is sent OUTSIDE the transaction, same convention as
+     * every other notification in this app — a slow/failed mail send must
+     * never roll back an otherwise-successful approval.
+     */
+    private function finalizeApproval(OffboardingRequestFinalApproval $finalApproval, User $actor, ?string $remarks, string $via): bool
+    {
+        $locked = null;
+
+        $approved = DB::transaction(function () use ($finalApproval, $actor, $remarks, $via, &$locked) {
+            $locked = OffboardingRequestFinalApproval::whereKey($finalApproval->id)
+                ->where('status', 'pending')
+                ->lockForUpdate()
+                ->first();
+
+            if (! $locked) {
+                return false;
+            }
+
+            $locked->update([
+                'status' => 'approved',
+                'approved_at' => now(),
+                'approved_by' => $actor->id,
+                'remarks' => $remarks,
+            ]);
+
+            $offboardingRequest = $locked->offboardingRequest;
+
+            $offboardingRequest->activities()->create([
+                'user_id' => $actor->id,
+                'offboarding_request_final_approval_id' => $locked->id,
+                'action' => 'final_approval_approved',
+                'status' => $offboardingRequest->status,
+                'comment' => 'Final Approval given by: ' . $actor->name . " ({$via})"
+                    . ($remarks ? ' — Remarks: ' . $remarks : ''),
+            ]);
+
+            return true;
+        });
+
+        if ($approved && $locked) {
+            $this->notifyRequestCreator($locked->fresh(['offboardingRequest.employee', 'employee']));
+        }
+
+        return $approved;
     }
 
     /**
