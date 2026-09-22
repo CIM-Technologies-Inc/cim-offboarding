@@ -6,7 +6,6 @@
         takeOverProcessing: {},
         doneProcessing: {},
         approveProcessing: {},
-        selectedDone: {},
         selectedApprove: {},
         doneBulkProcessing: false,
         approveBulkProcessing: false,
@@ -16,7 +15,6 @@
             const takeOverProcessing = {};
             const doneProcessing = {};
             const approveProcessing = {};
-            const selectedDone = {};
             const selectedApprove = {};
             (detail.checklistItems || []).forEach((item) => {
                 checked[item.id] = !!item.checked;
@@ -24,7 +22,6 @@
                 takeOverProcessing[item.id] = false;
                 doneProcessing[item.id] = false;
                 approveProcessing[item.id] = false;
-                selectedDone[item.id] = false;
                 selectedApprove[item.id] = false;
             });
             // Populate reactive state BEFORE assigning `selected` — that
@@ -40,11 +37,55 @@
             this.takeOverProcessing = takeOverProcessing;
             this.doneProcessing = doneProcessing;
             this.approveProcessing = approveProcessing;
-            this.selectedDone = selectedDone;
             this.selectedApprove = selectedApprove;
             this.doneBulkProcessing = false;
             this.approveBulkProcessing = false;
+            this.declining = false;
+            // A decline reason draft is scoped to whichever card was open
+            // when it failed — never carried over to a different card
+            // opened afterward.
+            this.declineReasonDraft = '';
             this.selected = detail;
+            this.refreshCheckedItems();
+        },
+        // The page's own checklist data is a static snapshot baked into the
+        // page's HTML at render time — it never changes after load, so
+        // reopening a card already acted on earlier this session (bulk-
+        // submitted, held, approved) would otherwise show it as pending
+        // again. Fetches the real persisted state for every distinct
+        // assignment on this card in the background (never blocks the
+        // initial open) and patches it in, the same `Object.assign`
+        // convention every other fetch()-driven action here already uses.
+        refreshCheckedItems() {
+            const urls = new Set((this.selected?.checklistItems || []).map((item) => item.checkedItemsUrl).filter(Boolean));
+
+            urls.forEach((url) => {
+                window.fetchWithTimeout(url, {
+                    headers: { 'Accept': 'application/json' },
+                }).then(async (res) => {
+                    if (!res.ok) {
+                        return;
+                    }
+                    const data = await res.json();
+
+                    (data.items || []).forEach((patch) => {
+                        const target = (this.selected?.checklistItems || []).find((i) => i.id === patch.id);
+
+                        if (target) {
+                            Object.assign(target, patch);
+                            this.checked[target.id] = true;
+                        }
+                    });
+
+                    if (this.selected) {
+                        this.selected.allItemsCompleted = (this.selected.checklistItems || []).every((i) => this.checked[i.id]);
+                    }
+                }).catch(() => {
+                    // Silent — this is a background freshness check, not a
+                    // user-initiated action; the static snapshot already on
+                    // screen stays exactly as good as it was before.
+                });
+            });
         },
         // Submits the Done click via `fetch()` instead of a real form
         // navigation, so completing one item never closes/reloads this
@@ -135,18 +176,24 @@
         showDoneSelectAll() {
             return this.myDoneEligibleItems().length > 1;
         },
+        // Selection lives ENTIRELY on `checked[item.id]` — the exact same
+        // checkbox each task's own row already renders next to Hold/Done —
+        // never a second, separate selection flag. Select All My Tasks just
+        // toggles that one existing checkbox for every eligible item at
+        // once; ticking/unticking one task by hand is indistinguishable
+        // from doing it through the Select All control.
         doneAllChecked() {
             const items = this.myDoneEligibleItems();
-            return items.length > 0 && items.every((item) => this.selectedDone[item.id]);
+            return items.length > 0 && items.every((item) => this.checked[item.id]);
         },
         doneNoneChecked() {
-            return this.myDoneEligibleItems().every((item) => !this.selectedDone[item.id]);
+            return this.myDoneEligibleItems().every((item) => !this.checked[item.id]);
         },
         toggleDoneAll(value) {
-            this.myDoneEligibleItems().forEach((item) => { this.selectedDone[item.id] = value; });
+            this.myDoneEligibleItems().forEach((item) => { this.checked[item.id] = value; });
         },
         showSubmitSelectedDone() {
-            const items = this.myDoneEligibleItems().filter((item) => this.selectedDone[item.id]);
+            const items = this.myDoneEligibleItems().filter((item) => this.checked[item.id]);
             return this.doneAllChecked() || items.length > 1;
         },
         // Bulk counterpart to submitDone() — same fetch/patch-in-place
@@ -160,7 +207,7 @@
             if (this.doneBulkProcessing) {
                 return;
             }
-            const items = this.myDoneEligibleItems().filter((item) => this.selectedDone[item.id]);
+            const items = this.myDoneEligibleItems().filter((item) => this.checked[item.id]);
             if (items.length === 0) {
                 return;
             }
@@ -195,7 +242,6 @@
                     if (target) {
                         Object.assign(target, patch);
                         this.checked[target.id] = true;
-                        this.selectedDone[target.id] = false;
                     }
                 });
 
@@ -203,13 +249,22 @@
                 items.forEach((item) => { this.doneProcessing[item.id] = false; });
                 this.doneBulkProcessing = false;
 
+                // Requirement: close the modal automatically once the
+                // selected tasks are successfully submitted. `open` lives
+                // on the NESTED x-ui.modal's own x-data scope, unreachable
+                // as `this.open` from a method defined out here —
+                // dispatched as a window event instead, same open/close
+                // convention `@open-checklist-modal.window` already uses in
+                // the other direction.
+                window.dispatchEvent(new CustomEvent('close-checklist-modal'));
+
                 window.Swal?.fire({
                     toast: true,
                     position: 'bottom-end',
                     icon: 'success',
-                    title: data.message || `${items.length} task(s) successfully checked.`,
+                    title: data.message || `${items.length} task(s) successfully submitted.`,
                     showConfirmButton: false,
-                    timer: 2000,
+                    timer: 2500,
                     timerProgressBar: true,
                     customClass: { container: 'app-toast' },
                 });
@@ -315,6 +370,20 @@
                 });
             });
         },
+        // The card behind this modal is server-rendered — nothing on the
+        // list page itself is reactive, so once a checklist clears every
+        // remaining gate and drops out of the pending/viewed queue, that
+        // card would otherwise keep showing as actionable until the whole
+        // page is reloaded. Removes it directly by the `data-card-id`
+        // `pages/approvals/index.blade.php` stamps on every card (same id
+        // as `selected.id`) — a no-op if the card isn't on screen (e.g. a
+        // filtered-out search result) or already gone.
+        removeListCard(cardId) {
+            if (!cardId) {
+                return;
+            }
+            document.querySelector(`[data-card-id='${CSS.escape(String(cardId))}']`)?.remove();
+        },
         // Use Task Assignee as Clearance Signatory head-approval gate:
         // only shown to the specific Department/Group Head recorded on this
         // one item (item.isHeadApprover && item.headApprovalPending —
@@ -364,15 +433,21 @@
 
                     this.approveProcessing[item.id] = false;
 
+                    // Requirement: an approval action closes the modal
+                    // automatically once it's genuinely done — same
+                    // window-event convention declineChecklist()/
+                    // submitSelectedDone() already use.
+                    window.dispatchEvent(new CustomEvent('close-checklist-modal'));
+
+                    if (data.assignmentStatus && data.assignmentStatus !== 'pending' && data.assignmentStatus !== 'viewed') {
+                        this.removeListCard(this.selected?.id);
+                    }
+
                     window.Swal?.fire({
-                        toast: true,
-                        position: 'bottom-end',
                         icon: 'success',
-                        title: data.message || 'Task approved.',
-                        showConfirmButton: false,
-                        timer: 2000,
-                        timerProgressBar: true,
-                        customClass: { container: 'app-toast' },
+                        title: 'Task List Approved Successfully',
+                        text: data.message || 'The selected task list has been approved successfully.',
+                        confirmButtonColor: '#145a3a',
                     });
                 }).catch((e) => {
                     this.approveProcessing[item.id] = false;
@@ -477,12 +552,32 @@
 
                     const failed = data.failed || [];
 
+                    // Requirement: the modal closes automatically once
+                    // processing succeeds — but only on a CLEAN submission
+                    // (nothing in `failed`). A partial failure is
+                    // deliberately not counted as fully successful
+                    // processing — the modal stays open so the user can see
+                    // exactly what still needs attention, same as
+                    // declineChecklist()/approveHeadItem() only ever close
+                    // on genuine success too.
+                    if (failed.length === 0) {
+                        window.dispatchEvent(new CustomEvent('close-checklist-modal'));
+
+                        // Every assignment this submission touched, that's
+                        // no longer sitting in the pending/viewed queue —
+                        // for a headless checklist (always a group of one —
+                        // see ApprovalController's own docblock) this is
+                        // just the one card currently open.
+                        Object.values(data.assignmentStatuses || {}).some((status) => status !== 'pending' && status !== 'viewed')
+                            && this.removeListCard(this.selected?.id);
+                    }
+
                     window.Swal?.fire({
                         icon: failed.length > 0 ? 'warning' : 'success',
-                        title: failed.length > 0 ? 'Some tasks could not be approved' : 'Tasks approved',
+                        title: failed.length > 0 ? 'Some Tasks Could Not Be Approved' : 'Task List Approved Successfully',
                         html: failed.length > 0
                             ? (data.message || '') + '<br><br>' + failed.map((f) => f.message).join('<br>')
-                            : (data.message || 'Tasks approved.'),
+                            : 'The selected task list(s) have been approved successfully.',
                         confirmButtonColor: '#145a3a',
                     });
                 }).catch((e) => {
@@ -591,8 +686,117 @@
             if (!this.selected) return false;
             return (this.selected.checklistItems || []).every((item) => !item.mustBeCheckedForSubmit || !!this.checked[item.id]);
         },
+        // Declining is now a COMPLETED signatory action (see
+        // ApprovalController::decline()) — a mandatory-reason confirm via
+        // SweetAlert2 (same input:'textarea' convention the overdue-Submit
+        // flow above already uses), then a fetch() POST so the modal never
+        // closes/reloads. selected.declineUrl is null for a combined
+        // multi-checklist card (decline stays per-checklist), so the button
+        // itself is never even rendered in that case.
+        declining: false,
+        // Whatever the user last typed into the reason prompt — kept around
+        // (never cleared on failure) purely so a failed attempt can be
+        // retried without re-typing; cleared only once a decline actually
+        // succeeds.
+        declineReasonDraft: '',
+        declineChecklist() {
+            if (this.declining || !this.selected?.declineUrl) {
+                return;
+            }
+            Swal.fire({
+                title: 'Decline This Checklist?',
+                text: 'This checklist will be declined. This does not stop the offboarding request — it will continue processing normally. Please provide a reason.',
+                icon: 'warning',
+                input: 'textarea',
+                inputLabel: 'Reason for Declining',
+                inputPlaceholder: 'Explain why this checklist is being declined...',
+                inputValue: this.declineReasonDraft,
+                inputValidator: (value) => {
+                    if (!value || !value.trim()) {
+                        return 'A reason is required to decline this checklist.';
+                    }
+                },
+                showCancelButton: true,
+                confirmButtonText: 'Yes, Decline',
+                cancelButtonText: 'Cancel',
+                confirmButtonColor: '#dc2626',
+                cancelButtonColor: '#6b7280',
+                reverseButtons: true,
+            }).then((result) => {
+                if (!result.isConfirmed) {
+                    return;
+                }
+
+                // Immediately visible loading state — the button itself
+                // reflects `declining` (spinner + Declining... text,
+                // disabled), preventing a double-submit for the whole
+                // round trip, not just while this dialog is open.
+                this.declining = true;
+                this.declineReasonDraft = (result.value || '').trim();
+
+                const targetItem = this.selected;
+                const formData = new FormData();
+                formData.append('comment', this.declineReasonDraft);
+
+                window.fetchWithTimeout(targetItem.declineUrl, {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                        'Accept': 'application/json',
+                    },
+                    body: formData,
+                }).then(async (res) => {
+                    const data = await res.json();
+
+                    if (!res.ok) {
+                        throw new Error(data.message || 'request failed');
+                    }
+
+                    this.declining = false;
+
+                    // Patched in place — same convention every other action
+                    // in this file already follows (submitDone(),
+                    // approveHeadItem(), etc. never reload either) — so the
+                    // modal reflects Declined status immediately without a
+                    // page refresh. The underlying card behind this modal is
+                    // server-rendered and won't itself update until the
+                    // page is next loaded, same as it already doesn't for
+                    // any other in-modal action.
+                    targetItem.isDeclined = true;
+                    targetItem.declinedAt = data.declinedAt;
+                    targetItem.declineReason = this.declineReasonDraft;
+                    (targetItem.checklistItems || []).forEach((item) => {
+                        item.editable = false;
+                    });
+
+                    // Only cleared on genuine success, and only AFTER the
+                    // patch above already read it — a failed attempt (see
+                    // .catch below) deliberately leaves this alone so the
+                    // next Decline click re-opens pre-filled with what was
+                    // already typed.
+                    this.declineReasonDraft = '';
+
+                    window.Swal?.fire({
+                        icon: 'success',
+                        title: 'Checklist Declined Successfully',
+                        text: 'The checklist has been successfully declined and the decline reason has been recorded.',
+                        confirmButtonColor: '#145a3a',
+                    });
+                }).catch((e) => {
+                    this.declining = false;
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'Failed to Decline Checklist',
+                        text: e?.name === 'AbortError'
+                            ? 'This is taking longer than expected. Please check before trying again.'
+                            : (e?.message || 'The checklist could not be declined. Please try again.'),
+                        confirmButtonColor: '#145a3a',
+                    });
+                });
+            });
+        },
     }" @open-checklist-modal.window="setSelected($event.detail)">
-    <x-ui.modal x-data="{ open: false }" @open-checklist-modal.window="open = true" :isOpen="false" class="w-full sm:max-w-[50vw]">
+    <x-ui.modal x-data="{ open: false }" @open-checklist-modal.window="open = true" @close-checklist-modal.window="open = false" :isOpen="false" class="w-full sm:max-w-[50vw]">
         <!-- Flexible height: compact for a short checklist, growing up to
              85% of the viewport for a long one, at which point only the
              item list below scrolls internally — the header above and the
@@ -604,6 +808,21 @@
                 <div class="flex min-h-0 flex-1 flex-col">
                 <div class="shrink-0 p-6 pb-0 lg:p-8 lg:pb-0">
                     <h4 class="text-xl font-semibold text-gray-800 dark:text-white/90" x-text="selected.name"></h4>
+
+                    <!-- Declined banner — shown the instant a decline succeeds (patched in place by
+                         declineChecklist() above, no reload needed), same "current terminal state"
+                         role the "ready for final approval" banner further down plays for Submit. -->
+                    <template x-if="selected.isDeclined">
+                        <div class="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm dark:border-red-500/30 dark:bg-red-500/10">
+                            <p class="font-medium text-red-700 dark:text-red-400">This checklist has been declined.</p>
+                            <p class="mt-1 text-red-600 dark:text-red-400" x-show="selected.declinedAt">
+                                Declined: <span x-text="selected.declinedAt"></span>
+                            </p>
+                            <p class="mt-1 text-red-600 dark:text-red-400" x-show="selected.declineReason">
+                                Reason: <span x-text="selected.declineReason"></span>
+                            </p>
+                        </div>
+                    </template>
 
                     <template x-if="selected.isMonitoring">
                         <p class="mb-1 text-sm font-medium text-[#145a3a] dark:text-[#3aa876]">
@@ -774,13 +993,11 @@
                                          becomes disabled again if the signatory unchecks it. -->
                                     <template x-if="item.editable && !item.checked">
                                         <div class="mt-2 flex items-center gap-2">
-                                            <!-- Bulk "Done" per-item checkbox — only rendered once this
-                                                 viewer has more than one own eligible task (showDoneSelectAll()),
-                                                 and only for THIS viewer's own item, never anyone else's. -->
-                                            <template x-if="showDoneSelectAll() && item.usesPerItemApprovers && item.isOwnItem">
-                                                <input type="checkbox" x-model="selectedDone[item.id]"
-                                                    class="h-4 w-4 shrink-0 rounded border-gray-300 text-[#145a3a] focus:ring-[#145a3a] dark:border-gray-700 dark:bg-gray-900" />
-                                            </template>
+                                            <!-- No separate bulk-selection checkbox here — the task's own
+                                                 checkbox above (x-model="checked[item.id]") is the single
+                                                 source of truth for both bulk (Select All My Tasks) and
+                                                 single-item (Done) selection; see doneAllChecked()/
+                                                 toggleDoneAll() above, which read/write that exact same state. -->
                                             <button type="button" @click="holdItem(item)"
                                                 :disabled="!canHold(item)"
                                                 :class="!canHold(item) ? 'opacity-50 cursor-not-allowed' : 'hover:bg-amber-50 dark:hover:bg-amber-500/10'"
@@ -865,10 +1082,10 @@
                         </div>
 
                         <div class="shrink-0 flex items-center justify-end gap-3 border-t border-gray-100 p-6 pt-4 dark:border-gray-800 lg:px-8 lg:pb-8">
-                            <button @click="open = false" type="button"
+                            <!-- <button @click="open = false" type="button"
                                 class="flex justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03]">
                                 Close
-                            </button>
+                            </button> -->
 
                             <!-- Save Progress: delegates (no Submit authority of their own — this is their only way to persist work for
                                  the Department Head to review), and the Department Head themselves on ANY checklist with items — every
@@ -877,7 +1094,7 @@
                                  to persist partial progress (check some items now, the rest later) on a "legacy" single-approver checklist
                                  exactly like they already could on a per-item-approver one — without this, checking 3 of 5 items and closing
                                  the modal before Submit is even enabled would lose that work. A checklist item signatory only ever sees Done. -->
-                            <template x-if="(selected.isDelegate || selected.isPrimaryApprover) && selected.checklistItems && selected.checklistItems.length">
+                            <template x-if="(selected.isDelegate || selected.isPrimaryApprover) && selected.checklistItems && selected.checklistItems.length && !selected.isDeclined">
                                 <button type="submit" :formaction="selected.saveProgressUrl" :disabled="processing" data-turbo-submits-with="Saving..."
                                     :class="processing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50 dark:hover:bg-white/5'"
                                     class="flex items-center justify-center gap-1.5 rounded-lg border border-gray-300 px-4 py-2.5 text-sm font-medium text-gray-700 dark:border-gray-700 dark:text-gray-300">
@@ -885,10 +1102,25 @@
                                 </button>
                             </template>
 
+                            <!-- Decline: same authority as Submit (the assigned Clearance Signatory), but stays a
+                                 per-checklist action — never rendered for a combined multi-checklist card (see
+                                 `declineUrl`'s own null case in `ApprovalController::groupIntoCombinedApprovers()`).
+                                 A completed signatory action, not a stop: requires the same e-signature Submit does
+                                 (validated server-side) and a mandatory reason via the confirm dialog below. Hides
+                                 once already declined — nothing left to decline twice, see `selected.isDeclined`. -->
+                            <template x-if="selected.isPrimaryApprover && selected.declineUrl && !selected.isDeclined">
+                                <button type="button" @click="declineChecklist()" :disabled="declining"
+                                    :class="declining ? 'opacity-70 cursor-not-allowed' : 'hover:bg-red-50 dark:hover:bg-red-500/10'"
+                                    class="flex items-center justify-center gap-1.5 rounded-lg border border-red-500 px-4 py-2.5 text-sm font-medium text-red-600 dark:border-red-400 dark:text-red-400">
+                                    <span x-show="declining" class="h-4 w-4 animate-spin rounded-full border-2 border-solid border-red-600 border-t-transparent dark:border-red-400"></span>
+                                    <span x-text="declining ? 'Declining...' : 'Decline'"></span>
+                                </button>
+                            </template>
+
                             <!-- Department Head / primary approver: final Submit — only they can approve the whole checklist. Legacy
                                  checklists: enabled regardless of item checks (same as always). Per-item-approver checklists: enabled
-                                 only once every item has actually been checked. -->
-                            <template x-if="selected.isPrimaryApprover">
+                                 only once every item has actually been checked. Hides once declined — see Decline above. -->
+                            <template x-if="selected.isPrimaryApprover && !selected.isDeclined">
                                 <button type="submit" :formaction="selected.approveUrl" :disabled="processing || !canApprove()" data-turbo-submits-with="Submitting..."
                                     @click="
                                         if (!remarksResolved && selected.hasReachedDueDate) {

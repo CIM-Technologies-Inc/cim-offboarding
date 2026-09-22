@@ -347,6 +347,13 @@ class ApprovalController extends Controller
                                 'heldByCode' => $onHold ? $heldByEmployee?->employee_code : null,
                                 'heldAt' => $onHold ? $progress?->held_at?->format('M d, Y g:i A') : null,
                                 'holdUrl' => route('approvals.items.hold', [$assignment->id, $item->id]),
+                                // Fetched in the background whenever the
+                                // checklist modal opens this item's own
+                                // assignment, so a reopened card shows this
+                                // item's actual persisted status rather than
+                                // the page's original static snapshot — see
+                                // `ChecklistDelegationController::checkedItemsForAssignment()`.
+                                'checkedItemsUrl' => route('approvals.items.checked', $assignment->id),
                                 // The button itself is only rendered for the
                                 // Department Head client-side; the route is
                                 // authorized server-side regardless.
@@ -629,6 +636,7 @@ class ApprovalController extends Controller
                         ->values()
                         ->all(),
                     'submitUrl' => route('general-signatory-approvals.approve', $assignment->id),
+                    'declineUrl' => route('general-signatory-approvals.decline', $assignment->id),
                     'timeline' => collect($request->timeline())
                         ->reject(fn ($step) => $step['label'] === 'Offboarding In Progress')
                         ->values()
@@ -909,6 +917,14 @@ class ApprovalController extends Controller
                     'approveUrl' => $useGroupRoutes
                         ? route('approvals.group.approve', ['offboardingRequest' => $first['offboardingRequestId'], 'employee' => $first['approverEmployeeId']])
                         : route('approvals.approve', $first['assignmentId']),
+                    // Decline stays a per-checklist action — there's no
+                    // "group decline" route, unlike Approve/Save Progress —
+                    // so a genuinely combined multi-checklist card simply
+                    // gets no Decline button at all (null here); only a
+                    // card that resolves to exactly one checklist gets one.
+                    'declineUrl' => $group->pluck('checklistTemplates')->flatten()->unique()->count() === 1
+                        ? route('approvals.decline', $first['assignmentId'])
+                        : null,
                     'assignUrl' => $useGroupRoutes
                         ? route('approvals.group.assign', ['offboardingRequest' => $first['offboardingRequestId'], 'employee' => $first['approverEmployeeId']])
                         : ($first['approverEmployeeId'] ? route('approvals.assign', $first['assignmentId']) : null),
@@ -1540,9 +1556,27 @@ class ApprovalController extends Controller
         app(ChecklistApprovalNotifier::class)->notifyRequestCreatorOfGroupApproval($offboardingRequest, $employeeId, $members);
     }
 
-    public function decline(Request $request, OffboardingRequestApprover $offboardingRequestApprover): RedirectResponse
+    /**
+     * Declining a Core/Primary checklist is a COMPLETED signatory action,
+     * not an incomplete one — the assigned Clearance Signatory's required
+     * action on THIS checklist is done, exactly like `approve()`, and the
+     * offboarding request keeps moving. Requires the same e-signature
+     * `approve()` does (declining is still a signed-off decision) and a
+     * mandatory reason. Mirrors `approve()`'s structure closely; the two
+     * genuine differences are the completion cascade never blocks on item
+     * completeness here (there's nothing to check off on a declined
+     * checklist) and the notification is the new dedicated decline email
+     * rather than the creator-confirmation approval one.
+     */
+    public function decline(Request $request, OffboardingRequestApprover $offboardingRequestApprover): RedirectResponse|JsonResponse
     {
         $this->authorizeAssignment($offboardingRequestApprover);
+
+        if (! auth()->user()->hasUsableSignature()) {
+            return $request->wantsJson()
+                ? response()->json(['message' => self::MISSING_SIGNATURE_MESSAGE], 422)
+                : $this->redirectToUploadSignature();
+        }
 
         abort_unless(
             in_array($offboardingRequestApprover->status, ['pending', 'viewed'], true),
@@ -1550,7 +1584,18 @@ class ApprovalController extends Controller
             'This has already been actioned.'
         );
 
-        $comment = $request->string('comment')->trim()->value() ?: null;
+        if ($request->has('comment')) {
+            $request->merge(['comment' => trim((string) $request->input('comment'))]);
+        }
+
+        $validated = $request->validate([
+            'comment' => ['required', 'string', 'max:2000'],
+        ], [
+            'comment.required' => 'A reason is required to decline this checklist.',
+        ]);
+
+        $comment = $validated['comment'];
+        $actor = auth()->user();
 
         $offboardingRequestApprover->update([
             'status' => 'declined',
@@ -1558,20 +1603,117 @@ class ApprovalController extends Controller
             'decline_reason' => $comment,
         ]);
 
+        // Per-row only — unlike the old hard-cancel behavior, every OTHER
+        // still-outstanding assignment on this request is entirely
+        // unaffected by this decline, so their own overdue notices (if any)
+        // must stay exactly as they are.
+        $this->resolveOverdueNotifications($offboardingRequestApprover);
+
         $offboardingRequest = $offboardingRequestApprover->offboardingRequest;
 
-        // A decline from any single department is a hard stop for the whole request.
-        $offboardingRequest->update(['status' => 'cancelled']);
-        $offboardingRequest->employee()->update(['status' => 'active']);
+        $this->recordActivityAndNotify($offboardingRequest, 'declined', $comment, $actor, $offboardingRequestApprover->id);
 
-        // Every other still-outstanding assignment on this request (if any)
-        // is now moot too, so any overdue notices tied to them no longer
-        // apply — not just the one that was just declined.
-        $this->resolveOverdueNotificationsForRequest($offboardingRequest);
+        // Same completion cascade `finalizeGroupApproval()` runs after a
+        // real approval — a declined checklist counts as resolved for
+        // Secondary/Final-Pay attachment and overall completion purposes
+        // (see `ChecklistCompletionService`'s widened gates), so the request
+        // must keep advancing exactly as if this had been approved.
+        $completionService = app(ChecklistCompletionService::class);
+        $offboardingRequestApprover->checklistTemplate?->is_final_pay_checklist
+            ? $completionService->checkFinalPayCompletion($offboardingRequest)
+            : $completionService->checkRegularChecklistsCompletion($offboardingRequest);
 
-        $this->recordActivityAndNotify($offboardingRequest, 'declined', $comment);
+        $this->sendDeclineNotification($offboardingRequestApprover, $actor, $comment, 'Clearance Signatory');
 
-        return back()->with('success', $offboardingRequest->employee->name . '\'s offboarding request was declined.');
+        if ($request->wantsJson()) {
+            return response()->json([
+                'message' => 'Checklist declined.',
+                'declinedAt' => $offboardingRequestApprover->declined_at->format('M d, Y g:i A'),
+            ]);
+        }
+
+        return back()->with('success', 'Checklist for ' . $offboardingRequest->employee->name . ' was declined.');
+    }
+
+    /**
+     * Emails admins and this request's creator that a Clearance Signatory or
+     * General Signatory has declined a checklist — a brand-new, dedicated
+     * notification (never reused from Approve/Assignment/Overdue/
+     * Cancellation, since declining is neither a clearance nor a
+     * cancellation). Shared shape with
+     * `GeneralSignatoryApprovalController::sendDeclineNotification()`
+     * (kept as separate copies, same convention as this controller and that
+     * one already being entirely independent elsewhere). Never lets a mail
+     * failure look like the decline itself failed — the decline has already
+     * committed by the time this runs.
+     */
+    private function sendDeclineNotification(OffboardingRequestApprover $offboardingRequestApprover, User $actor, string $declineReason, string $signatoryType): void
+    {
+        $offboardingRequest = $offboardingRequestApprover->offboardingRequest;
+        $offboardee = $offboardingRequest->employee;
+        $template = $offboardingRequestApprover->checklistTemplate;
+
+        $recipients = User::role(User::ROLE_ADMIN)->get();
+
+        if ($offboardingRequest->creator && $offboardingRequest->creator->email) {
+            $recipients = $recipients->push($offboardingRequest->creator);
+        }
+
+        $recipients = $recipients->filter(fn (User $recipient) => $recipient->email && filter_var($recipient->email, FILTER_VALIDATE_EMAIL))
+            ->unique('id');
+
+        if ($recipients->isEmpty()) {
+            return;
+        }
+
+        $emailTemplate = EmailTemplate::where('is_active', true)
+            ->where('template_name', 'Checklist Signatory Declined')
+            ->latest('updated_at')
+            ->first();
+
+        if (! $emailTemplate) {
+            Log::warning('No "Checklist Signatory Declined" email template found — decline notifications were not sent.', [
+                'offboarding_request_approver_id' => $offboardingRequestApprover->id,
+            ]);
+
+            return;
+        }
+
+        $declinedAt = $offboardingRequestApprover->declined_at->format('M d, Y g:i A');
+        $checklistType = $template?->is_final_pay_checklist
+            ? 'Final Pay'
+            : ($template?->sequence_type === ChecklistTemplate::SEQUENCE_TYPE_SECONDARY ? 'Secondary' : 'Core/Primary');
+
+        foreach ($recipients as $recipient) {
+            try {
+                [$subject, $body] = $emailTemplate->render(
+                    approverName: $recipient->name,
+                    offboardeeName: $offboardee->name,
+                    employeeNumber: $offboardee->employee_code,
+                    department: $offboardee->department,
+                    position: $offboardee->designation,
+                    separationDate: $offboardingRequest->last_working_day?->format('M d, Y'),
+                    reason: $offboardingRequest->reason,
+                    checklistName: $template?->title,
+                    checklistType: $checklistType,
+                    dueDate: $offboardingRequestApprover->due_at?->format('M d, Y'),
+                    checklistStatus: $offboardingRequestApprover->clearanceStatusLabel(includeOverdue: false),
+                    offboardingRequestId: (string) $offboardingRequest->id,
+                    declinedBy: $actor->name,
+                    declinedAt: $declinedAt,
+                    declineReason: $declineReason,
+                    signatoryType: $signatoryType,
+                );
+
+                Mail::to($recipient->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+            } catch (\Throwable $e) {
+                Log::error('Failed to send checklist decline notification.', [
+                    'offboarding_request_approver_id' => $offboardingRequestApprover->id,
+                    'recipient' => $recipient->email,
+                    'exception' => $e->getMessage(),
+                ]);
+            }
+        }
     }
 
     /**
@@ -2154,13 +2296,14 @@ class ApprovalController extends Controller
      * own account explicitly instead, so the activity log/notification
      * still correctly attribute to a real person rather than "Unknown".
      */
-    private function recordActivityAndNotify(OffboardingRequest $offboardingRequest, string $action, ?string $comment, ?User $actor = null): void
+    private function recordActivityAndNotify(OffboardingRequest $offboardingRequest, string $action, ?string $comment, ?User $actor = null, ?int $offboardingRequestApproverId = null): void
     {
         $actor ??= auth()->user();
 
         try {
             $offboardingRequest->activities()->create([
                 'user_id' => $actor?->id,
+                'offboarding_request_approver_id' => $offboardingRequestApproverId,
                 'action' => $action,
                 'status' => $offboardingRequest->status,
                 'comment' => $comment,

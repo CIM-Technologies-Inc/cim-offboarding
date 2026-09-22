@@ -636,9 +636,17 @@ class ChecklistDelegationController extends Controller
         app(ChecklistCompletionService::class)->autoApproveIfHeadless($offboardingRequestApprover->fresh());
 
         if ($request->wantsJson()) {
+            $fresh = $offboardingRequestApprover->fresh();
+
             return response()->json([
-                'items' => $this->checkedItemPatches([$offboardingRequestApprover->fresh()]),
+                'items' => $this->checkedItemPatches([$fresh]),
                 'message' => $outcome['message'],
+                // Lets the client tell whether THIS card just left the
+                // pending/viewed queue entirely (every gate on it now
+                // cleared) — see `checklist-modal.blade.php`'s own
+                // `removeListCard()`, which hides the now-stale card behind
+                // the modal without waiting for a page reload.
+                'assignmentStatus' => $fresh->status,
             ]);
         }
 
@@ -693,10 +701,20 @@ class ChecklistDelegationController extends Controller
             fn (OffboardingRequestApprover $assignment) => app(ChecklistCompletionService::class)->autoApproveIfHeadless($assignment->fresh())
         );
 
+        $freshAssignments = $affectedAssignments->map->fresh();
+
         return response()->json([
             'approved' => $approved,
             'failed' => $failed,
-            'items' => $this->checkedItemPatches($affectedAssignments->map->fresh()),
+            'items' => $this->checkedItemPatches($freshAssignments),
+            // Keyed by assignment id → its current status, so the client
+            // can tell exactly which of the (possibly several) checklists
+            // touched by this one bulk submission just cleared every gate
+            // and left the pending/viewed queue — same purpose as
+            // `approveHeadItem()`'s own `assignmentStatus` above, just
+            // plural since a bulk submission can span more than one
+            // assignment.
+            'assignmentStatuses' => $freshAssignments->mapWithKeys(fn (OffboardingRequestApprover $a) => [$a->id => $a->status]),
             'message' => count($approved) > 0
                 ? count($approved) . ' task(s) approved.' . (count($failed) > 0 ? ' ' . count($failed) . ' could not be approved.' : '')
                 : 'No tasks could be approved.',
@@ -1101,6 +1119,47 @@ class ChecklistDelegationController extends Controller
         }
 
         return $patches;
+    }
+
+    /**
+     * Read-only: this assignment's currently-checked items straight from the
+     * database, in the exact same shape `checkedItemPatches()` already
+     * produces for every other fetch()-driven action in the checklist
+     * modal. The modal calls this in the background every time a card is
+     * opened (see `checklist-modal.blade.php`'s `setSelected()`) and merges
+     * the result into the initial page-load snapshot — that snapshot is
+     * static HTML baked in at render time (`@js($approval)`), so without
+     * this, reopening a checklist already acted on earlier in the session
+     * (bulk-submitted, held, approved) would silently show it as pending
+     * again until the whole page is reloaded. Authorized the same way
+     * every other item-level read/action on this assignment already is —
+     * this reveals nothing a legitimate viewer couldn't already see on the
+     * page that opened it.
+     */
+    public function checkedItemsForAssignment(OffboardingRequestApprover $offboardingRequestApprover): JsonResponse
+    {
+        // `authorizeItemAction()` only recognizes the primary approver,
+        // delegate, item-owning Task Assignee, or a flagged group Task
+        // Assignee — never the Department/Group/Immediate Head recorded as
+        // an item's `head_approver_employee_id` (see
+        // `ChecklistItemProgress::resolveHeadApproval()`), since it was
+        // written before that role existed. Checked first and, if it
+        // matches, skips straight past that otherwise-too-narrow gate —
+        // a head-approver already sees this exact data on the page that
+        // opened this fetch in the first place, so this reveals nothing new.
+        $employeeId = auth()->user()->employee?->id;
+
+        $isHeadApprover = $employeeId !== null && $offboardingRequestApprover->itemProgress()
+            ->where('head_approver_employee_id', $employeeId)
+            ->exists();
+
+        if (! $isHeadApprover) {
+            $this->authorizeItemAction($offboardingRequestApprover);
+        }
+
+        return response()->json([
+            'items' => $this->checkedItemPatches([$offboardingRequestApprover]),
+        ]);
     }
 
     /**

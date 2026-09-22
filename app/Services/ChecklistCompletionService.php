@@ -75,7 +75,7 @@ class ChecklistCompletionService
         // defensive call right after creation), not blocked forever. The
         // `secondary_notified_at` lock below still makes this safe to
         // re-evaluate on every call — it only ever attaches Secondary once.
-        $allPrimaryApproved = $primaryApprovers->clone()->where('status', '!=', 'approved')->doesntExist();
+        $allPrimaryApproved = $primaryApprovers->clone()->whereNotIn('status', ['approved', 'declined'])->doesntExist();
 
         if ($allPrimaryApproved) {
             DB::transaction(function () use ($offboardingRequest) {
@@ -145,7 +145,7 @@ class ChecklistCompletionService
         // (and notifying) the Final Pay Checklist before any real approval
         // ever happened.
         $allRegularApproved = $regularApprovers->clone()->exists()
-            && $regularApprovers->clone()->where('status', '!=', 'approved')->doesntExist();
+            && $regularApprovers->clone()->whereNotIn('status', ['approved', 'declined'])->doesntExist();
 
         // A General Signatory is an additional, checklist-independent
         // clearance requirement (see `OffboardingRequestGeneralSignatory`) —
@@ -270,7 +270,7 @@ class ChecklistCompletionService
         // Signatories ever attached must count as the Core stage trivially
         // PASSED, not blocked forever — the `general_signatory_secondary_notified_at`
         // lock below still makes this safe to re-evaluate on every call.
-        $allPrimaryApproved = $primaryApprovals->clone()->where('status', '!=', 'approved')->doesntExist();
+        $allPrimaryApproved = $primaryApprovals->clone()->whereNotIn('status', ['approved', 'declined'])->doesntExist();
 
         if ($allPrimaryApproved) {
             DB::transaction(function () use ($offboardingRequest) {
@@ -426,7 +426,7 @@ class ChecklistCompletionService
         // let this method complete the request with regular checklists (and
         // the Final Pay Checklist itself) still outstanding.
         $allFinalPayApproved = $finalPayApprovers->clone()->exists()
-            && $finalPayApprovers->clone()->where('status', '!=', 'approved')->doesntExist();
+            && $finalPayApprovers->clone()->whereNotIn('status', ['approved', 'declined'])->doesntExist();
 
         // Gives the General Signatory track's own Final Pay tier a chance
         // to attach (or self-heal past, if none is configured) right now —
@@ -502,7 +502,7 @@ class ChecklistCompletionService
 
         return $offboardingRequest->generalSignatoryApprovals()
             ->where('is_final_pay_signatory', false)
-            ->where('status', '!=', 'approved')
+            ->whereNotIn('status', ['approved', 'declined'])
             ->doesntExist();
     }
 
@@ -530,7 +530,7 @@ class ChecklistCompletionService
         }
 
         return $offboardingRequest->generalSignatoryApprovals()
-            ->where('status', '!=', 'approved')
+            ->whereNotIn('status', ['approved', 'declined'])
             ->doesntExist();
     }
 

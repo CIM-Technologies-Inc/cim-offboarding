@@ -27,6 +27,8 @@ class ClearanceFormController extends Controller
      */
     public function pdf(OffboardingRequest $offboardingRequest): Response
     {
+        $this->authorizeView($offboardingRequest);
+
         $data = $this->buildPdfData($offboardingRequest);
 
         $pdf = Pdf::loadView('clearance-form.pdf', $data)->setPaper('letter');
@@ -98,12 +100,46 @@ class ClearanceFormController extends Controller
      */
     public function print(OffboardingRequest $offboardingRequest): View
     {
+        $this->authorizeView($offboardingRequest);
+
         $data = $this->buildData($offboardingRequest) + [
             'headerImageSrc' => asset('images/clearance-form/header.png'),
             'footerImageSrc' => asset('images/clearance-form/footer.png'),
         ];
 
         return view('clearance-form.print', $data);
+    }
+
+    /**
+     * Who may view THIS specific request's Clearance Form. Admin/HR
+     * (`offboardees.view`) always can — the existing, unchanged rule this
+     * route used to enforce via route middleware alone. Additionally, the
+     * request's own active Final Approver can too: `ApprovalController::index()`'s
+     * Final Approval card and the emailed confirmation page
+     * (`FinalApprovalController::showEmailApproval()`) both hand them this
+     * exact link as "Supporting documents" to review before approving —
+     * without this, a Final Approver holding only the `approver` role (no
+     * `offboardees.view`) hit a 403 the moment they clicked it, even though
+     * reviewing it is the whole point of that link. Deliberately scoped to
+     * THIS ONE request's own Final Approval row, never a blanket grant —
+     * `finalApproval` reflects who actually signs THIS request, frozen once
+     * approved (see that relation's own docblock), so this check stays
+     * correct even after the active `FinalApprover` config later changes.
+     */
+    private function authorizeView(OffboardingRequest $offboardingRequest): void
+    {
+        $user = auth()->user();
+
+        if ($user->isAdmin() || $user->can('offboardees.view')) {
+            return;
+        }
+
+        $employeeId = $user->employee?->id;
+
+        abort_unless(
+            $employeeId !== null && $offboardingRequest->finalApproval?->employee_id === $employeeId,
+            403
+        );
     }
 
     /**
@@ -223,7 +259,13 @@ class ClearanceFormController extends Controller
                 }
 
                 $signatoryEmployee = $approver?->employee;
-                $isApproved = $approver?->status === 'approved';
+                // A declined checklist is a COMPLETED signatory action, not
+                // an incomplete one — counts exactly like 'approved' for
+                // whether this row's signature shows, same as
+                // `buildEmployeeClearanceStatuses()` below. This is the
+                // defensive per-row fallback path only (used when the
+                // employee is somehow absent from that method's own map).
+                $isApproved = in_array($approver?->status, ['approved', 'declined'], true);
 
                 return [[
                     'employeeId' => $signatoryEmployee?->id,
@@ -231,7 +273,7 @@ class ClearanceFormController extends Controller
                     'signatory' => $signatoryEmployee?->name ?? '—',
                     'signatureUser' => $signatoryEmployee?->user,
                     'isApproved' => $isApproved,
-                    'approvedAt' => $isApproved ? $approver?->approved_at : null,
+                    'approvedAt' => $isApproved ? ($approver?->approved_at ?? $approver?->declined_at) : null,
                     'remarksLabel' => $approver?->clearanceStatusLabel(includeOverdue: false) ?? 'Not Assigned',
                 ]];
             })
@@ -275,14 +317,18 @@ class ClearanceFormController extends Controller
                 // never happen, since this very approval is one of its
                 // inputs — defensive only).
                 $status = $clearanceSignatory ? ($employeeClearanceStatuses[$clearanceSignatory->id] ?? null) : null;
-                $isApproved = $status !== null ? $status['allCleared'] : ($approval?->status === 'approved');
+                // Declined counts exactly like approved — a completed
+                // signatory action, not an incomplete one — same rule as
+                // the checklist rows above; see
+                // `buildEmployeeClearanceStatuses()`'s own widened gate.
+                $isApproved = $status !== null ? $status['allCleared'] : in_array($approval?->status, ['approved', 'declined'], true);
 
                 return [
                     'department' => $clearanceSignatory?->department ?? '—',
                     'signatory' => $clearanceSignatory?->name ?? '—',
                     'signatureDataUri' => $isApproved ? $this->signatureDataUri($clearanceSignatory?->user?->signature_path) : null,
                     'date' => $isApproved
-                        ? ($status['clearedAt'] ?? $approval?->approved_at)?->format('M d, Y')
+                        ? ($status['clearedAt'] ?? $approval?->approved_at ?? $approval?->declined_at)?->format('M d, Y')
                         : null,
                     'remarks' => $status['label'] ?? ($approval?->clearanceStatusLabel() ?? 'Pending'),
                 ];
@@ -723,7 +769,16 @@ class ClearanceFormController extends Controller
 
         foreach ($offboardingRequest->approvers as $approver) {
             if ($approver->employee_id !== null) {
-                $addUnit($approver->employee_id, $approver->status === 'approved', $approver->clearanceStatusLabel(includeOverdue: false), $approver->approved_at);
+                // Declined counts exactly like approved here — a completed
+                // signatory action, not an incomplete one (see
+                // `ChecklistCompletionService`'s matching gates, widened the
+                // same way, and requirement #11's own business rule).
+                $addUnit(
+                    $approver->employee_id,
+                    in_array($approver->status, ['approved', 'declined'], true),
+                    $approver->clearanceStatusLabel(includeOverdue: false),
+                    $approver->approved_at ?? $approver->declined_at,
+                );
             }
 
             $itemsByEmployeeId = ($approver->checklistTemplate?->items ?? collect())
@@ -780,7 +835,12 @@ class ClearanceFormController extends Controller
         foreach ($offboardingRequest->generalSignatoryApprovals as $gsApproval) {
             $clearanceSignatoryId = $gsApproval->generalSignatory?->clearance_signatory_id;
 
-            $addUnit($clearanceSignatoryId, $gsApproval->status === 'approved', $gsApproval->clearanceStatusLabel(), $gsApproval->approved_at);
+            $addUnit(
+                $clearanceSignatoryId,
+                in_array($gsApproval->status, ['approved', 'declined'], true),
+                $gsApproval->clearanceStatusLabel(),
+                $gsApproval->approved_at ?? $gsApproval->declined_at,
+            );
         }
 
         // Not-yet-attached checklists (Final Pay always; a Sync request's

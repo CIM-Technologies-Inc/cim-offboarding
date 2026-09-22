@@ -32,6 +32,8 @@ class OffboardingRequestGeneralSignatory extends Model
         'approved_at',
         'approved_by',
         'remarks',
+        'declined_at',
+        'decline_reason',
     ];
 
     protected function casts(): array
@@ -40,6 +42,7 @@ class OffboardingRequestGeneralSignatory extends Model
             'is_final_pay_signatory' => 'boolean',
             'first_viewed_at' => 'datetime',
             'approved_at' => 'datetime',
+            'declined_at' => 'datetime',
         ];
     }
 
@@ -85,10 +88,18 @@ class OffboardingRequestGeneralSignatory extends Model
     /**
      * This General Signatory's current-state label for the Clearance Form's
      * Remarks column — the General Signatory equivalent of
-     * `OffboardingRequestApprover::clearanceStatusLabel()`.
+     * `OffboardingRequestApprover::clearanceStatusLabel()`. A declined
+     * signatory has still completed their required action (see
+     * `ChecklistCompletionService`'s "declined counts like approved" gates)
+     * — 'Declined' is its own distinct, resolved label, never lumped in
+     * with 'Pending'.
      */
     public function clearanceStatusLabel(): string
     {
-        return $this->status === 'approved' ? 'Cleared' : 'Pending';
+        return match ($this->status) {
+            'approved' => 'Cleared',
+            'declined' => 'Declined',
+            default => 'Pending',
+        };
     }
 }

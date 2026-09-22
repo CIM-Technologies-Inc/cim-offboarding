@@ -170,6 +170,11 @@ class EmailTemplate extends Model
         ?string $cancelledAt = null,
         ?string $offboardingRequestId = null,
         ?string $cancellationReason = null,
+        ?string $declinedBy = null,
+        ?string $declinedAt = null,
+        ?string $declineReason = null,
+        ?string $signatoryType = null,
+        ?string $checklistType = null,
     ): array {
         $values = $this->placeholderValues(
             $approverName, $offboardeeName, $creatorName, $employeeNumber, $checklistName,
@@ -180,6 +185,7 @@ class EmailTemplate extends Model
             $generalSignatoryTasks, $approveButton,
             $originalDueDate, $extensionDays, $extendedDueDate, $clearanceSignatoryName,
             $cancelledBy, $cancelledAt, $offboardingRequestId, $cancellationReason,
+            $declinedBy, $declinedAt, $declineReason, $signatoryType, $checklistType,
         );
 
         return [
@@ -226,6 +232,11 @@ class EmailTemplate extends Model
         ?string $cancelledAt = null,
         ?string $offboardingRequestId = null,
         ?string $cancellationReason = null,
+        ?string $declinedBy = null,
+        ?string $declinedAt = null,
+        ?string $declineReason = null,
+        ?string $signatoryType = null,
+        ?string $checklistType = null,
     ): array {
         return [
             'approver_name' => $approverName,
@@ -262,6 +273,11 @@ class EmailTemplate extends Model
             'cancelled_at' => $cancelledAt ?? '',
             'offboarding_request_id' => $offboardingRequestId ?? '',
             'cancellation_reason' => $cancellationReason ?? '',
+            'declined_by' => $declinedBy ?? '',
+            'declined_at' => $declinedAt ?? '',
+            'decline_reason' => $declineReason ?? '',
+            'signatory_type' => $signatoryType ?? '',
+            'checklist_type' => $checklistType ?? '',
             'offboarding_link' => '<a href="' . route('login') . '">CIM Offboarding</a>',
             'approver' => $approverName,
             'offboardee' => $offboardeeName,
@@ -279,7 +295,8 @@ class EmailTemplate extends Model
             . '|request_date|offboarding_status|username|temporary_password|checklist_summary'
             . '|department_head_name|assigned_signatories|checklist_progress|remaining_items|follow_up_sent_at|general_signatory_tasks|approve_button'
             . '|original_due_date|extension_days|extended_due_date|clearance_signatory_name'
-            . '|cancelled_by|cancelled_at|offboarding_request_id|cancellation_reason)\s*\}\}'
+            . '|cancelled_by|cancelled_at|offboarding_request_id|cancellation_reason'
+            . '|declined_by|declined_at|decline_reason|signatory_type|checklist_type)\s*\}\}'
             . '|\{\s*(approver|offboardee|employee)\s*\}'
             . '|\b(approver|offboardee|employee)\b/i';
 

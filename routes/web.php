@@ -127,6 +127,13 @@ Route::middleware('permission:approvals.view')->group(function () {
     // items (possibly across different checklist assignments) in one
     // submission; see `ChecklistDelegationController::bulkApproveHeadItems()`.
     Route::post('/approvals/head-approvals/bulk-approve', [ChecklistDelegationController::class, 'bulkApproveHeadItems'])->name('approvals.items.bulk-approve-head');
+    // Read-only: this assignment's currently-checked items, straight from
+    // the database — the checklist modal fetches this in the background
+    // every time a card is opened, so reopening a checklist already acted
+    // on this session (or a page or two ago) shows the real persisted
+    // status rather than the page's original static snapshot. See
+    // `ChecklistDelegationController::checkedItemsForAssignment()`.
+    Route::get('/approvals/{offboardingRequestApprover}/items/checked', [ChecklistDelegationController::class, 'checkedItemsForAssignment'])->name('approvals.items.checked');
 
     // combined-card actions: every checklist the same approver is assigned
     // for the same offboarding request, actioned in one request instead of
@@ -144,6 +151,7 @@ Route::middleware('permission:approvals.approve')->group(function () {
     // General Signatory in-app Submit — same permission gate as the
     // checklist approve actions above, independent controller/model.
     Route::post('/general-signatory-approvals/{generalSignatoryApproval}/approve', [GeneralSignatoryApprovalController::class, 'approve'])->name('general-signatory-approvals.approve');
+    Route::post('/general-signatory-approvals/{generalSignatoryApproval}/decline', [GeneralSignatoryApprovalController::class, 'decline'])->name('general-signatory-approvals.decline');
 
     // Final Approval in-app Approve — the Final Approver's own account now
     // has a real approval action alongside the existing emailed-link one
@@ -300,13 +308,22 @@ Route::middleware('permission:employee-master.delete')->group(function () {
     Route::delete('/employee-groups/{employeeGroup}/employees/{employee}', [EmployeeGroupController::class, 'removeEmployee'])->name('employee-groups.employees.remove');
 });
 
-// offboardees (also covers the clearance form — a sub-view of an
-// offboardee's own record, not a separate module)
+// offboardees
 Route::middleware('permission:offboardees.view')->group(function () {
     Route::get('/offboardees', [OffboardeeController::class, 'index'])->name('offboardees.index');
-    Route::get('/offboarding-requests/{offboardingRequest}/clearance-form', [ClearanceFormController::class, 'pdf'])->name('clearance-form.pdf');
-    Route::get('/offboarding-requests/{offboardingRequest}/clearance-form/print', [ClearanceFormController::class, 'print'])->name('clearance-form.print');
 });
+
+// Clearance form — a sub-view of an offboardee's own record, not a
+// separate module, so it's not blanket-gated behind `offboardees.view` the
+// way the rest of the Offboardees page is: Admin/HR still gets in via that
+// permission, but a request's own Final Approver (typically the plain
+// `approver` role, which never has `offboardees.view`) also needs this
+// specific request's own Clearance Form to review before approving — see
+// `ClearanceFormController::authorizeView()` for the actual per-request
+// authorization, now enforced in the controller instead of blanket route
+// middleware.
+Route::get('/offboarding-requests/{offboardingRequest}/clearance-form', [ClearanceFormController::class, 'pdf'])->name('clearance-form.pdf');
+Route::get('/offboarding-requests/{offboardingRequest}/clearance-form/print', [ClearanceFormController::class, 'print'])->name('clearance-form.print');
 
 // Reset Offboarding Request (Offboardee page) — a destructive admin action
 // that wipes all checklist/approval progress and reinitializes the request

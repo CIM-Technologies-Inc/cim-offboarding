@@ -2,13 +2,18 @@
         selected: null,
         processing: false,
         remarksText: '',
+        declining: false,
+        declineReasonDraft: '',
         setSelected(detail) {
             this.processing = false;
+            this.declining = false;
             this.selected = detail;
-            // Reset for every newly opened request — remarks are entered
-            // fresh per approval, never carried over from whichever
-            // request this General Signatory last submitted.
+            // Reset for every newly opened request — remarks (and any
+            // still-unsaved decline reason draft) are entered fresh per
+            // request, never carried over from whichever one this General
+            // Signatory last had open.
             this.remarksText = '';
+            this.declineReasonDraft = '';
         },
         // Same badge color convention as the Approvals page's own
         // `$statusBadges` map (index.blade.php) and the Offboardee page,
@@ -24,6 +29,96 @@
                 'bg-error-50 text-error-700 dark:bg-error-500/15 dark:text-error-400': ['declined', 'cancelled'].includes(this.selected?.requestStatus),
             };
         },
+        // Declining is a COMPLETED signatory action (see
+        // GeneralSignatoryApprovalController::decline()) — same
+        // mandatory-reason confirm + fetch()-based flow as the checklist
+        // modal's own declineChecklist(), so the modal never navigates away
+        // on its own. State is patched into `selected` in place on success
+        // (same convention every other action in this app follows) rather
+        // than reloading — see the button's own :disabled/spinner and the
+        // Declined banner below for how `declining`/`selected.isDeclined`
+        // drive the loading/confirmed states.
+        declineGeneralSignatory() {
+            if (this.declining || !this.selected?.declineUrl) {
+                return;
+            }
+            Swal.fire({
+                title: 'Decline This Checklist?',
+                text: 'This checklist will be declined. This does not stop the offboarding request — it will continue processing normally. Please provide a reason.',
+                icon: 'warning',
+                input: 'textarea',
+                inputLabel: 'Reason for Declining',
+                inputPlaceholder: 'Explain why this checklist is being declined...',
+                inputValue: this.declineReasonDraft,
+                inputValidator: (value) => {
+                    if (!value || !value.trim()) {
+                        return 'A reason is required to decline this checklist.';
+                    }
+                },
+                showCancelButton: true,
+                confirmButtonText: 'Yes, Decline',
+                cancelButtonText: 'Cancel',
+                confirmButtonColor: '#dc2626',
+                cancelButtonColor: '#6b7280',
+                reverseButtons: true,
+            }).then((result) => {
+                if (!result.isConfirmed) {
+                    return;
+                }
+
+                this.declining = true;
+                this.declineReasonDraft = (result.value || '').trim();
+
+                const targetItem = this.selected;
+                const formData = new FormData();
+                formData.append('reason', this.declineReasonDraft);
+
+                window.fetchWithTimeout(targetItem.declineUrl, {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                        'Accept': 'application/json',
+                    },
+                    body: formData,
+                }).then(async (res) => {
+                    const data = await res.json();
+
+                    if (!res.ok) {
+                        throw new Error(data.message || 'request failed');
+                    }
+
+                    this.declining = false;
+
+                    targetItem.isDeclined = true;
+                    targetItem.declinedAt = data.declinedAt;
+                    targetItem.declineReason = this.declineReasonDraft;
+
+                    // Only cleared on genuine success, and only after the
+                    // patch above already read it — a failed attempt (see
+                    // .catch below) deliberately leaves this alone so the
+                    // next Decline click re-opens pre-filled with what was
+                    // already typed.
+                    this.declineReasonDraft = '';
+
+                    window.Swal?.fire({
+                        icon: 'success',
+                        title: 'Checklist Declined Successfully',
+                        text: 'The checklist has been successfully declined and the decline reason has been recorded.',
+                        confirmButtonColor: '#145a3a',
+                    });
+                }).catch((e) => {
+                    this.declining = false;
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'Failed to Decline Checklist',
+                        text: e?.name === 'AbortError'
+                            ? 'This is taking longer than expected. Please check before trying again.'
+                            : (e?.message || 'The checklist could not be declined. Please try again.'),
+                        confirmButtonColor: '#145a3a',
+                    });
+                });
+            });
+        },
     }" @open-general-signatory-modal.window="setSelected($event.detail)">
     <x-ui.modal x-data="{ open: false }" @open-general-signatory-modal.window="open = true" :isOpen="false" class="w-full sm:max-w-[480px]">
         <div class="no-scrollbar relative w-full overflow-y-auto rounded-3xl bg-white p-6 dark:bg-gray-900 lg:p-8" x-show="selected" x-cloak>
@@ -33,6 +128,20 @@
                         <h4 class="text-xl font-semibold text-gray-800 dark:text-white/90" x-text="selected.name"></h4>
                         <!-- <span class="shrink-0 rounded-full px-2.5 py-1 text-xs font-medium" :class="requestStatusClass()" x-text="selected.requestStatusLabel"></span> -->
                     </div>
+
+                    <!-- Declined banner — shown the instant a decline succeeds (patched in place by
+                         declineGeneralSignatory() above, no reload needed). -->
+                    <template x-if="selected.isDeclined">
+                        <div class="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm dark:border-red-500/30 dark:bg-red-500/10">
+                            <p class="font-medium text-red-700 dark:text-red-400">This checklist has been declined.</p>
+                            <p class="mt-1 text-red-600 dark:text-red-400" x-show="selected.declinedAt">
+                                Declined: <span x-text="selected.declinedAt"></span>
+                            </p>
+                            <p class="mt-1 text-red-600 dark:text-red-400" x-show="selected.declineReason">
+                                Reason: <span x-text="selected.declineReason"></span>
+                            </p>
+                        </div>
+                    </template>
                     <p class="mb-5 text-sm text-gray-500 dark:text-gray-400">
                         You are assigned as a General Signatory (Clearance Signatory) on this offboarding request.
                     </p>
@@ -90,23 +199,38 @@
 
                     <form method="POST" :action="selected.submitUrl" @submit="processing = true">
                         @csrf
-                        <div>
-                            <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
-                                Remarks <span class="font-normal text-gray-400">(optional)</span>
-                            </label>
-                            <textarea name="remarks" x-model="remarksText" rows="3" placeholder="Add any remarks before approving..."
-                                class="dark:bg-dark-900 w-full rounded-lg border border-gray-300 bg-transparent px-3 py-2 text-sm text-gray-800 placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30"></textarea>
-                        </div>
+                        <template x-if="!selected.isDeclined">
+                            <div>
+                                <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                                    Remarks <span class="font-normal text-gray-400">(optional)</span>
+                                </label>
+                                <textarea name="remarks" x-model="remarksText" rows="3" placeholder="Add any remarks before approving..."
+                                    class="dark:bg-dark-900 w-full rounded-lg border border-gray-300 bg-transparent px-3 py-2 text-sm text-gray-800 placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30"></textarea>
+                            </div>
+                        </template>
                         <div class="mt-4 flex items-center justify-end gap-3">
                             <button @click="open = false" type="button"
                                 class="flex justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03]">
                                 Cancel
                             </button>
-                            <button type="submit" :disabled="processing" data-turbo-submits-with="Submitting..."
-                                :class="processing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#0f4630]'"
-                                class="flex items-center justify-center gap-1.5 rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white">
-                                Submit
-                            </button>
+                            <!-- Decline: a completed signatory action, not a stop — requires the same
+                                 e-signature Submit does (validated server-side) and a mandatory reason via
+                                 the confirm dialog. Hides once already declined — see selected.isDeclined. -->
+                            <template x-if="!selected.isDeclined">
+                                <button type="button" @click="declineGeneralSignatory()" :disabled="declining"
+                                    :class="declining ? 'opacity-70 cursor-not-allowed' : 'hover:bg-red-50 dark:hover:bg-red-500/10'"
+                                    class="flex items-center justify-center gap-1.5 rounded-lg border border-red-500 px-4 py-2.5 text-sm font-medium text-red-600 dark:border-red-400 dark:text-red-400">
+                                    <span x-show="declining" class="h-4 w-4 animate-spin rounded-full border-2 border-solid border-red-600 border-t-transparent dark:border-red-400"></span>
+                                    <span x-text="declining ? 'Declining...' : 'Decline'"></span>
+                                </button>
+                            </template>
+                            <template x-if="!selected.isDeclined">
+                                <button type="submit" :disabled="processing" data-turbo-submits-with="Submitting..."
+                                    :class="processing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#0f4630]'"
+                                    class="flex items-center justify-center gap-1.5 rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white">
+                                    Submit
+                                </button>
+                            </template>
                         </div>
                     </form>
                 </div>

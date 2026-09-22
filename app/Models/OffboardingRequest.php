@@ -340,8 +340,12 @@ class OffboardingRequest extends Model
      */
     public function hasApprovedOrCompletedProgress(): bool
     {
+        // A declined checklist/General Signatory is real, completed
+        // progress too (its reason and audit trail would be silently lost
+        // on Reset) — counted alongside 'approved', same widening as
+        // `ChecklistCompletionService`'s completion gates.
         $hasApprovedChecklistOrTask = $this->approvers->contains(
-            fn (OffboardingRequestApprover $approver) => $approver->status === 'approved'
+            fn (OffboardingRequestApprover $approver) => in_array($approver->status, ['approved', 'declined'], true)
                 || $approver->itemProgress->contains(fn (ChecklistItemProgress $progress) => (bool) $progress->is_checked)
         );
 
@@ -350,7 +354,7 @@ class OffboardingRequest extends Model
         }
 
         return $this->generalSignatoryApprovals->contains(
-            fn (OffboardingRequestGeneralSignatory $approval) => $approval->status === 'approved'
+            fn (OffboardingRequestGeneralSignatory $approval) => in_array($approval->status, ['approved', 'declined'], true)
         );
     }
 
@@ -772,15 +776,15 @@ class OffboardingRequest extends Model
                 // Approver" picker needs to know which default email
                 // template to pre-select.
                 'isGeneralSignatory' => false,
-                // Populated only once actually approved (never for a merely
-                // pending/viewed/declined row) — the approving employee's
-                // own uploaded e-signature, now guaranteed to exist by the
-                // time any row reaches 'approved' (see
-                // `User::hasUsableSignature()`), recorded here alongside the
-                // existing `approvedAt` timestamp so the admin-facing
-                // timeline shows who signed off and with what signature, not
-                // just when.
-                'approverSignatureUrl' => $assignment->status === 'approved'
+                // Populated once actually approved OR declined (never for a
+                // merely pending/viewed row) — the signatory's own uploaded
+                // e-signature, now guaranteed to exist by the time any row
+                // reaches either terminal state (`hasUsableSignature()` is
+                // required before both `ApprovalController::approve()` and
+                // `decline()`), recorded here alongside `approvedAt`/
+                // `declinedAt` so the admin-facing timeline shows who signed
+                // off (or declined) and with what signature, not just when.
+                'approverSignatureUrl' => in_array($assignment->status, ['approved', 'declined'], true)
                     ? $assignment->employee?->user?->signatureUrl()
                     : null,
                 'done' => in_array($assignment->status, ['approved', 'declined']),
@@ -980,10 +984,17 @@ class OffboardingRequest extends Model
      * from `approval_remarks`/`OffboardingRequestApprover` or any other
      * approver's own remarks column — this is exclusively this General
      * Signatory's own.
+     *
+     * `status` can now also be 'declined' — a General Signatory decline is a
+     * COMPLETED signatory action (see
+     * `GeneralSignatoryApprovalController::decline()`), so `done`/
+     * `approverSignatureUrl`/`canRemind` below all treat it exactly like
+     * 'approved', mirroring `buildRichStep()`'s own widened treatment.
      */
     private function buildGeneralSignatoryRichStep(OffboardingRequestGeneralSignatory $generalSignatoryApproval): array
     {
         $clearanceSignatory = $generalSignatoryApproval->generalSignatory->clearanceSignatory;
+        $isResolved = in_array($generalSignatoryApproval->status, ['approved', 'declined'], true);
 
         return [
             'rich' => true,
@@ -993,20 +1004,21 @@ class OffboardingRequest extends Model
             'assignedAt' => $generalSignatoryApproval->created_at?->format('M d, Y g:i A'),
             'firstViewedAt' => $generalSignatoryApproval->first_viewed_at?->format('M d, Y g:i A'),
             'approvedAt' => $generalSignatoryApproval->approved_at?->format('M d, Y g:i A'),
-            // Same convention as `buildRichStep()` above — only present once
-            // actually approved, now guaranteed to exist by then.
-            'approverSignatureUrl' => $generalSignatoryApproval->status === 'approved'
+            // Same convention as `buildRichStep()` above — present once
+            // resolved (approved or declined), now guaranteed to exist by
+            // then (`hasUsableSignature()` is required before both actions).
+            'approverSignatureUrl' => $isResolved
                 ? $clearanceSignatory?->user?->signatureUrl()
                 : null,
             'remarks' => $generalSignatoryApproval->remarks,
-            'declinedAt' => null,
-            'declineReason' => null,
+            'declinedAt' => $generalSignatoryApproval->declined_at?->format('M d, Y g:i A'),
+            'declineReason' => $generalSignatoryApproval->decline_reason,
             'reminderSentAt' => null,
-            'canRemind' => $generalSignatoryApproval->status !== 'approved',
+            'canRemind' => ! $isResolved,
             'remindUrl' => route('general-signatory-approvals.remind', $generalSignatoryApproval->id),
             'isGeneralSignatory' => true,
-            'done' => $generalSignatoryApproval->status === 'approved',
-            'cancelled' => false,
+            'done' => $isResolved,
+            'cancelled' => $generalSignatoryApproval->status === 'declined',
             'delegatedTo' => null,
             'delegatedToCode' => null,
             'delegationStatus' => null,
