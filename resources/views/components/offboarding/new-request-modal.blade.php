@@ -338,34 +338,79 @@
                         // `disabled` — the admin can never type into it, it
                         // only ever reflects whichever type is picked.
                         noticePeriodDays: @js(optional($separationTypesJs->get((string) $selectedSeparationTypeId))['defaultNoticePeriodDays'] ?? ''),
+                        // Both dates are gated on Separation Type alone
+                        // (never on each other — see the date-pickers' own
+                        // `disabledExpression` below), and start from
+                        // `old(...)` so a validation-error resubmit reopens
+                        // with whatever was actually entered, not blanked
+                        // out.
+                        resignationDate: @js(old('notice_date') ?: null),
+                        lastWorkingDay: @js(old('last_working_day') ?: null),
+                        // Whichever date the admin genuinely typed/picked
+                        // MOST RECENTLY — the anchor the OTHER date is
+                        // always computed FROM. Requirement: either date may
+                        // be the starting point, and a later Separation
+                        // Type change recalculates the non-anchor date from
+                        // this SAME anchor using the new Notice Period,
+                        // never the other way around. Seeded from whichever
+                        // `old(...)` value is present on a validation-error
+                        // resubmit (Resignation Date wins if, implausibly,
+                        // both are — there is no way to know which was
+                        // really last edited across a page reload, and this
+                        // matches the pre-existing default anchor).
+                        lastEditedField: @js(old('notice_date') ? 'resignation' : (old('last_working_day') ? 'lwd' : null)),
+                        // Set for the FULL duration of a programmatic
+                        // set-date-{id} dispatch below — flatpickr's own
+                        // `setDate(value, true)` genuinely fires `onChange`
+                        // (see date-picker.blade.php), which would otherwise
+                        // bounce straight back into `onResignationDateChange()`/
+                        // `onLastWorkingDayChange()` and recompute the
+                        // ORIGINAL anchor right back from the value that was
+                        // just computed FROM it — a needless (and, since
+                        // each direction's rounding could ever so slightly
+                        // disagree, potentially inaccurate) ping-pong this
+                        // flag exists purely to short-circuit.
+                        isSyncing: false,
                         applySeparationType() {
                             const type = this.separationTypesById[this.selectedSeparationTypeId];
                             this.noticePeriodDays = type ? type.defaultNoticePeriodDays : '';
-                            // A Resignation Date already on the form means
-                            // Last Working Day already has a value computed
-                            // from the PREVIOUS Notice Period — that default
-                            // is now stale the moment Notice Period changes,
-                            // so it's refreshed here too, exactly like a
-                            // genuine Resignation Date change would (see
-                            // `refreshLastWorkingDay()`). A no-op while
-                            // Resignation Date is still empty.
-                            this.refreshLastWorkingDay();
+
+                            if (! this.selectedSeparationTypeId) {
+                                // Reverted back to the blank option — both
+                                // dates are about to be disabled again
+                                // (see disabledExpression below); clear
+                                // their displayed values too rather than
+                                // leaving a stale pair behind a disabled
+                                // field.
+                                this.resignationDate = null;
+                                this.lastWorkingDay = null;
+                                this.lastEditedField = null;
+                                window.dispatchEvent(new CustomEvent('set-date-notice_date', { detail: null }));
+                                window.dispatchEvent(new CustomEvent('set-date-last_working_day', { detail: null }));
+                                return;
+                            }
+
+                            // Recompute the NON-anchor date from whichever
+                            // one the admin actually anchored on, using the
+                            // newly-selected Separation Type's own Notice
+                            // Period — never the other direction, and never
+                            // a stale value left over from the previous
+                            // Separation Type.
+                            if (this.lastEditedField === 'lwd') {
+                                this.syncResignationDateFromLastWorkingDay();
+                            } else {
+                                this.syncLastWorkingDayFromResignationDate();
+                            }
                         },
-                        // Last Working Day is disabled (see its own
-                        // `disabledExpression` below) until this has a real
-                        // value — set from `old('notice_date')` so a
-                        // validation-error resubmit reopens with it already
-                        // enabled, matching whatever was actually entered.
-                        resignationDate: @js(old('notice_date') ?: null),
                         // Y-m-d string in, Y-m-d string out (matches the
                         // date-picker's own `dateFormat` both ways) — native
                         // `Date` arithmetic, no library, since this is the
                         // only place in this form that needs it. Returns
                         // null whenever either input isn't yet known (no
-                        // Resignation Date, or Notice Period not resolved
-                        // from a selected Separation Type yet), so the
-                        // caller can tell 'nothing to fill in yet' apart
-                        // from a genuine computed date.
+                        // starting date, or Notice Period not resolved from
+                        // a selected Separation Type yet), so the caller can
+                        // tell 'nothing to fill in yet' apart from a genuine
+                        // computed date.
                         computeLastWorkingDay(resignationDateStr) {
                             const days = parseInt(this.noticePeriodDays, 10);
 
@@ -376,6 +421,24 @@
                             const date = new Date(resignationDateStr + 'T00:00:00');
                             date.setDate(date.getDate() + days);
 
+                            return this.toDateInputValue(date);
+                        },
+                        // The reverse direction — Last Working Day minus
+                        // Notice Period — same null-safety rules as
+                        // `computeLastWorkingDay()` above.
+                        computeResignationDate(lastWorkingDayStr) {
+                            const days = parseInt(this.noticePeriodDays, 10);
+
+                            if (! lastWorkingDayStr || Number.isNaN(days)) {
+                                return null;
+                            }
+
+                            const date = new Date(lastWorkingDayStr + 'T00:00:00');
+                            date.setDate(date.getDate() - days);
+
+                            return this.toDateInputValue(date);
+                        },
+                        toDateInputValue(date) {
                             const yyyy = date.getFullYear();
                             const mm = String(date.getMonth() + 1).padStart(2, '0');
                             const dd = String(date.getDate()).padStart(2, '0');
@@ -386,29 +449,44 @@
                         // Resignation Date + Notice Period and pushes it to
                         // that field via the date-picker's own scoped
                         // `set-date-{id}` event (see date-picker.blade.php).
-                        // The only two callers of this — `applySeparationType()`
-                        // above (Separation Type/Notice Period changed) and
-                        // `onResignationDateChange()` below (Resignation
-                        // Date changed) — are also the ONLY two triggers
-                        // that ever (re)write Last Working Day's value
-                        // anywhere in this form: either one OVERWRITES
-                        // whatever was there (a fresh default per the
-                        // latest inputs, discarding any prior manual edit —
-                        // the explicit spec'd behavior), and a null/empty
-                        // Resignation Date clears it instead of computing a
-                        // bogus date. Nothing else in this form ever
-                        // touches Last Working Day, so a manual edit the
-                        // admin makes afterward is never silently stomped
-                        // on by an unrelated interaction (e.g. picking an
-                        // email template) elsewhere in the modal.
-                        refreshLastWorkingDay() {
-                            window.dispatchEvent(new CustomEvent('set-date-last_working_day', {
-                                detail: this.resignationDate ? this.computeLastWorkingDay(this.resignationDate) : null,
-                            }));
+                        // A null/empty Resignation Date clears Last Working
+                        // Day instead of computing a bogus date.
+                        syncLastWorkingDayFromResignationDate() {
+                            const computed = this.resignationDate ? this.computeLastWorkingDay(this.resignationDate) : null;
+                            this.lastWorkingDay = computed;
+                            this.isSyncing = true;
+                            window.dispatchEvent(new CustomEvent('set-date-last_working_day', { detail: computed }));
+                            this.isSyncing = false;
+                        },
+                        // The reverse direction — Last Working Day is the
+                        // anchor, Resignation Date is recomputed from it.
+                        syncResignationDateFromLastWorkingDay() {
+                            const computed = this.lastWorkingDay ? this.computeResignationDate(this.lastWorkingDay) : null;
+                            this.resignationDate = computed;
+                            this.isSyncing = true;
+                            window.dispatchEvent(new CustomEvent('set-date-notice_date', { detail: computed }));
+                            this.isSyncing = false;
                         },
                         onResignationDateChange(dateStr) {
+                            // A change fired by our OWN syncResignationDateFromLastWorkingDay()
+                            // call above, not a genuine admin edit — ignore
+                            // it, or this would immediately recompute Last
+                            // Working Day right back from the value that was
+                            // just derived FROM it.
+                            if (this.isSyncing) {
+                                return;
+                            }
                             this.resignationDate = dateStr || null;
-                            this.refreshLastWorkingDay();
+                            this.lastEditedField = 'resignation';
+                            this.syncLastWorkingDayFromResignationDate();
+                        },
+                        onLastWorkingDayChange(dateStr) {
+                            if (this.isSyncing) {
+                                return;
+                            }
+                            this.lastWorkingDay = dateStr || null;
+                            this.lastEditedField = 'lwd';
+                            this.syncResignationDateFromLastWorkingDay();
                         },
                     }">
                         <div class="col-span-2 lg:col-span-1">
@@ -473,13 +551,17 @@
                                 placeholder="Select date"
                                 :defaultDate="old('notice_date')"
                                 :required="true"
+                                disabledExpression="!selectedSeparationTypeId"
                             />
+                            <p class="mt-1.5 text-xs text-gray-400" x-show="!selectedSeparationTypeId" x-cloak>
+                                Select a Separation Type first.
+                            </p>
                             @error('notice_date')
                                 <p class="mt-1.5 text-xs text-error-500">{{ $message }}</p>
                             @enderror
                         </div>
 
-                        <div class="col-span-2 lg:col-span-1">
+                        <div class="col-span-2 lg:col-span-1" @date-change="onLastWorkingDayChange($event.detail.dateStr)">
                             <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
                                 Last Working Day <span class="text-error-500">*</span>
                             </label>
@@ -489,10 +571,10 @@
                                 placeholder="Select date"
                                 :defaultDate="old('last_working_day')"
                                 :required="true"
-                                disabledExpression="!resignationDate"
+                                disabledExpression="!selectedSeparationTypeId"
                             />
-                            <p class="mt-1.5 text-xs text-gray-400" x-show="!resignationDate" x-cloak>
-                                Select a Resignation Date first.
+                            <p class="mt-1.5 text-xs text-gray-400" x-show="!selectedSeparationTypeId" x-cloak>
+                                Select a Separation Type first.
                             </p>
                             @error('last_working_day')
                                 <p class="mt-1.5 text-xs text-error-500">{{ $message }}</p>

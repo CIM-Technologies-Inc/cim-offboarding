@@ -48,7 +48,21 @@
       "Bash(node \"C:/Users/apple/AppData/Local/Temp/claude/c--xampp-htdocs-tailadmin-laravel-main-offboarding/74b8fff0-999f-4db0-b38c-24832aae6690/scratchpad/pw/test-modal-state-helper.js\")",
       "Bash(node \"C:/Users/apple/AppData/Local/Temp/claude/c--xampp-htdocs-tailadmin-laravel-main-offboarding/74b8fff0-999f-4db0-b38c-24832aae6690/scratchpad/pw/debug-modal-elements.js\")",
       "Bash(node \"C:/Users/apple/AppData/Local/Temp/claude/c--xampp-htdocs-tailadmin-laravel-main-offboarding/74b8fff0-999f-4db0-b38c-24832aae6690/scratchpad/pw/test-approve-head-final-verify.js\")",
-      "Bash(node \"C:/Users/apple/AppData/Local/Temp/claude/c--xampp-htdocs-tailadmin-laravel-main-offboarding/74b8fff0-999f-4db0-b38c-24832aae6690/scratchpad/pw/test-approve-head-reopen-persist2.js\")"
+      "Bash(node \"C:/Users/apple/AppData/Local/Temp/claude/c--xampp-htdocs-tailadmin-laravel-main-offboarding/74b8fff0-999f-4db0-b38c-24832aae6690/scratchpad/pw/test-approve-head-reopen-persist2.js\")",
+      "Bash(grep -n 'protected $fillable\\\\|default_notice_period' -A 10 app/Models/SeparationType.php)",
+      "Bash(php -l resources/views/components/offboarding/new-request-modal.blade.php)",
+      "Bash(awk 'NR==473,NR==485' resources/views/components/offboarding/new-request-modal.blade.php)",
+      "Bash(awk 'NR>=332 && NR<=491 && /\"/' resources/views/components/offboarding/new-request-modal.blade.php)",
+      "Bash(grep -v 'class=\"contents\" x-data=\"{$')",
+      "Bash(node --check \"C:/Users/apple/AppData/Local/Temp/claude/c--xampp-htdocs-tailadmin-laravel-main-offboarding/74b8fff0-999f-4db0-b38c-24832aae6690/scratchpad/new-request-xdata-check.js\")",
+      "Bash(node \"C:/Users/apple/AppData/Local/Temp/claude/c--xampp-htdocs-tailadmin-laravel-main-offboarding/74b8fff0-999f-4db0-b38c-24832aae6690/scratchpad/extract-new-request-xdata.js\")",
+      "Bash(awk -F: '$1>=332 && $1<=491')",
+      "Bash(node \"C:/Users/apple/AppData/Local/Temp/claude/c--xampp-htdocs-tailadmin-laravel-main-offboarding/74b8fff0-999f-4db0-b38c-24832aae6690/scratchpad/pw/test-new-request-date-calc.js\")",
+      "Bash(node test-new-request-bidirectional.js)",
+      "Bash(node test-new-request-type-change.js)",
+      "Bash(node test-new-request-server-validation.js)",
+      "Bash(node test-new-request-happy-path.js)",
+      "PowerShell(gh pr view --json state,title,url 2>&1)"
     ]
   }
 }

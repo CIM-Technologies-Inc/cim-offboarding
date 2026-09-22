@@ -17,6 +17,7 @@ use App\Services\ChecklistCompletionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -126,6 +127,22 @@ class OffboardingRequestController extends Controller
         // the Separation Type Management page can never change a request
         // that already exists (see `SeparationType`'s own docblock).
         $separationType = SeparationType::findOrFail($validated['separation_type_id']);
+
+        // The New Offboarding Request modal keeps Resignation Date and Last
+        // Working Day in sync client-side (whichever one the admin edits
+        // recalculates the other from the selected Separation Type's own
+        // Notice Period), so this only ever actually fires against a
+        // tampered/JS-disabled submission — but the requirement is explicit
+        // that the server must never trust the client's arithmetic, so this
+        // is checked for real here rather than assumed from the client-side
+        // behavior alone.
+        $actualNoticeDays = (int) Carbon::parse($validated['notice_date'])->diffInDays(Carbon::parse($validated['last_working_day']));
+
+        if ($actualNoticeDays !== $separationType->default_notice_period_days) {
+            return back()->withErrors([
+                'last_working_day' => "The Last Working Day must be exactly {$separationType->default_notice_period_days} day(s) after the Resignation Date, per the {$separationType->title} Separation Type's configured Notice Period.",
+            ])->withInput();
+        }
 
         // Notification Date = the actual moment this request is submitted
         // (right now — never the admin-picked "Resignation Date"/`notice_date`
