@@ -119,6 +119,33 @@
                 });
             });
         },
+        // Live 5-days-before / on-or-after Clearance Signing Due Date
+        // urgency — same reasoning and thresholds as checklist-modal.blade.php's
+        // own clearanceSigningUrgency()/nowTick, kept as an independent
+        // copy since this component has no shared JS module to pull it
+        // from.
+        nowTick: Date.now(),
+        init() {
+            setInterval(() => {
+                this.nowTick = Date.now();
+            }, 60000);
+        },
+        clearanceSigningUrgency(iso) {
+            if (!iso) {
+                return 'none';
+            }
+            const due = new Date(iso).getTime();
+            if (Number.isNaN(due)) {
+                return 'none';
+            }
+            if (this.nowTick >= due) {
+                return 'danger';
+            }
+            if (due - this.nowTick <= 5 * 24 * 60 * 60 * 1000) {
+                return 'warning';
+            }
+            return 'none';
+        },
     }" @open-general-signatory-modal.window="setSelected($event.detail)">
     <x-ui.modal x-data="{ open: false }" @open-general-signatory-modal.window="open = true" :isOpen="false" class="w-full sm:max-w-[480px]">
         <div class="no-scrollbar relative w-full overflow-y-auto rounded-3xl bg-white p-6 dark:bg-gray-900 lg:p-8" x-show="selected" x-cloak>
@@ -171,11 +198,30 @@
                             <span class="text-gray-400">Last Working Day</span>
                             <span class="font-medium text-gray-700 dark:text-gray-300" x-text="selected.lastWorkingDay"></span>
                         </div>
+                        <template x-if="selected.clearanceSigningDueAt">
+                            <div class="flex items-center justify-between"
+                                :class="{
+                                    'text-sm font-semibold text-orange-600 dark:text-orange-400': clearanceSigningUrgency(selected.clearanceSigningDueAtIso) === 'warning',
+                                    'text-base font-bold text-error-600 dark:text-error-400': clearanceSigningUrgency(selected.clearanceSigningDueAtIso) === 'danger',
+                                }">
+                                <span :class="clearanceSigningUrgency(selected.clearanceSigningDueAtIso) === 'none' ? 'text-gray-400' : ''">Clearance Signing Due Date</span>
+                                <span :class="clearanceSigningUrgency(selected.clearanceSigningDueAtIso) === 'none' ? 'font-medium text-gray-700 dark:text-gray-300' : ''">
+                                    <span x-text="selected.clearanceSigningDueAt"></span>
+                                    <span x-show="clearanceSigningUrgency(selected.clearanceSigningDueAtIso) === 'danger'"> — Overdue</span>
+                                </span>
+                            </div>
+                        </template>
                         <div class="flex items-center justify-between">
                             <span class="text-gray-400">Current Offboarding Status</span>
                             <span class="font-medium text-gray-700 dark:text-gray-300" x-text="selected.requestStatusLabel"></span>
                         </div>
                     </div>
+
+                    <template x-if="selected.clearanceSigningDueAt">
+                        <p class="mb-5 -mt-3 text-xs text-gray-500 dark:text-gray-400">
+                            Please complete and approve your assigned checklist on or before the displayed due date.
+                        </p>
+                    </template>
 
                     <template x-if="selected.generalSignatoryTasks && selected.generalSignatoryTasks.length">
                         <div class="mb-5">

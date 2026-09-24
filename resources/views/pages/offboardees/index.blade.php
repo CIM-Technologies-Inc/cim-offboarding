@@ -209,9 +209,22 @@
                             // without a page reload.
                             originalLastWorkingDay: @js($offboardee['originalLastWorkingDay'] ?? '—'),
                             isLastWorkingDayExtended: @js($offboardee['isLastWorkingDayExtended'] ?? false),
+                            // The Offboarding Status/Timeline modal's own
+                            // tab content (every checklist's own due date,
+                            // and the activity list itself) is driven
+                            // entirely by this one field — see the
+                            // Extend Due handler below, which is the only
+                            // place that overwrites it after page load.
+                            // Without a reactive copy here, the dispatch
+                            // below would keep spreading the ORIGINAL
+                            // page-load `@js($offboardee)` timeline forever,
+                            // showing every checklist's PRE-extension due
+                            // date and missing this action's own new
+                            // activity entries until a real page reload.
+                            timeline: @js($offboardee['timeline'] ?? []),
                         }"
                         data-offboardee-card="{{ $offboardee['id'] }}"
-                        @click="if (!cancelling && !extending) $dispatch('open-offboardee-modal', { ...@js($offboardee), status, lastWorkingDay, originalLastWorkingDay, isLastWorkingDayExtended })"
+                        @click="if (!cancelling && !extending) $dispatch('open-offboardee-modal', { ...@js($offboardee), status, lastWorkingDay, originalLastWorkingDay, isLastWorkingDayExtended, timeline })"
                         x-show="search.trim() === '' || @js(Str::lower($offboardee['name'])).includes(search.trim().toLowerCase())"
                         class="group cursor-pointer rounded-2xl border border-gray-200 bg-white p-5 transition-all duration-200 hover:-translate-y-1 hover:border-[#145a3a]/40 hover:shadow-lg dark:border-gray-800 dark:bg-white/[0.03] dark:hover:border-[#3aa876]/40">
                         <div class="flex items-start justify-between">
@@ -296,52 +309,65 @@
                                                 confirmButtonColor: '#dc2626',
                                                 cancelButtonColor: '#6b7280',
                                                 reverseButtons: true,
-                                                preConfirm: () => {
+                                                // Requirement: the dialog itself must show a loading state on
+                                                // its own Confirm Cancellation button and stay open — not close
+                                                // immediately and hand off to a second, separate popup — for
+                                                // the network round trip, only closing on genuine success and
+                                                // staying open (with the error shown inline, via
+                                                // `showValidationMessage`) on failure so the reason stays typed
+                                                // and the user can retry without starting over. Same
+                                                // async-`preConfirm` + `showLoaderOnConfirm` pair the Extend
+                                                // Last Working Day dialog already uses, for consistency.
+                                                showLoaderOnConfirm: true,
+                                                preConfirm: async () => {
                                                     const reason = (document.getElementById('cancel-offboarding-reason-input').value || '').trim();
                                                     if (!reason) {
                                                         Swal.showValidationMessage('A reason is required to cancel this offboarding request.');
                                                         return false;
                                                     }
-                                                    return { reason: reason };
+                                                    cancelling = true;
+                                                    try {
+                                                        const response = await fetch($el.action, {
+                                                            method: 'POST',
+                                                            headers: {
+                                                                'Accept': 'application/json',
+                                                                'X-Requested-With': 'XMLHttpRequest',
+                                                                'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                                                                'Content-Type': 'application/json',
+                                                            },
+                                                            body: JSON.stringify({ reason: reason }),
+                                                        });
+                                                        const data = await response.json().catch(() => ({}));
+                                                        if (!response.ok) {
+                                                            // Same prefer-the-specific-field-error-over-Laravel's-
+                                                            // generic-422-wrapper convention the Extend Due flow
+                                                            // already uses — the client-side check above blocks an
+                                                            // empty reason before this is ever reached in normal use,
+                                                            // but a direct/bypassed request still gets a real message.
+                                                            const fieldError = data.errors ? Object.values(data.errors)[0]?.[0] : null;
+                                                            throw new Error(fieldError || data.message || 'Cancellation failed. Please try again.');
+                                                        }
+                                                        return data;
+                                                    } catch (error) {
+                                                        // Surfaced INSIDE the still-open dialog (SweetAlert2's own
+                                                        // validation-message banner) rather than a separate error
+                                                        // popup — the reason already typed stays exactly as it
+                                                        // was, ready to retry without reopening the dialog.
+                                                        Swal.showValidationMessage(error.message);
+                                                        return false;
+                                                    } finally {
+                                                        cancelling = false;
+                                                    }
                                                 }
                                             }).then((result) => {
                                                 if (!result.isConfirmed) return;
-                                                cancelling = true;
-                                                fetch($el.action, {
-                                                    method: 'POST',
-                                                    headers: {
-                                                        'Accept': 'application/json',
-                                                        'X-Requested-With': 'XMLHttpRequest',
-                                                        'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
-                                                        'Content-Type': 'application/json',
-                                                    },
-                                                    body: JSON.stringify({ reason: result.value.reason }),
-                                                }).then(async (response) => {
-                                                    const data = await response.json().catch(() => ({}));
-                                                    if (!response.ok) {
-                                                        // Same prefer-the-specific-field-error-over-Laravel's-
-                                                        // generic-422-wrapper convention the Extend Due flow
-                                                        // already uses — the client-side check above blocks an
-                                                        // empty reason before this is ever reached in normal use,
-                                                        // but a direct/bypassed request still gets a real message.
-                                                        const fieldError = data.errors ? Object.values(data.errors)[0]?.[0] : null;
-                                                        throw new Error(fieldError || data.message || 'Cancellation failed. Please try again.');
-                                                    }
-                                                    $el.closest('[data-offboardee-card]')?.remove();
-                                                    Swal.fire({
-                                                        icon: 'success',
-                                                        title: 'Cancelled',
-                                                        text: data.message || 'Offboarding request has been successfully cancelled.',
-                                                        confirmButtonColor: '#145a3a',
-                                                    });
-                                                }).catch((error) => {
-                                                    cancelling = false;
-                                                    Swal.fire({
-                                                        icon: 'error',
-                                                        title: 'Cancellation Failed',
-                                                        text: error.message,
-                                                        confirmButtonColor: '#145a3a',
-                                                    });
+                                                const data = result.value;
+                                                $el.closest('[data-offboardee-card]')?.remove();
+                                                Swal.fire({
+                                                    icon: 'success',
+                                                    title: 'Cancelled',
+                                                    text: data.message || 'Offboarding request has been successfully cancelled.',
+                                                    confirmButtonColor: '#145a3a',
                                                 });
                                             });
                                         ">
@@ -398,7 +424,7 @@
                                                 + '&lt;/div&gt;'
                                             )).join('');
                                             Swal.fire({
-                                                title: 'Extend Due Dates',
+                                                title: 'Extend Last Working Day',
                                                 html: '&lt;div style=\'text-align:left;border-bottom:1px solid #e5e7eb;padding-bottom:10px;margin-bottom:10px;\'&gt;'
                                                     + '&lt;p style=\'font-size:15px;font-weight:700;margin:0 0 2px;\'&gt;' + @js($offboardee['name'] ?? '—') + '&lt;/p&gt;'
                                                     + '&lt;p style=\'font-size:12px;color:#6b7280;margin:0;\'&gt;' + @js($offboardee['designation'] ?? '—') + ' &middot; ' + @js($offboardee['department'] ?? '—') + '&lt;/p&gt;'
@@ -459,12 +485,29 @@
                                                     if (extendDueFlatpickr) { extendDueFlatpickr.destroy(); extendDueFlatpickr = null; }
                                                 },
                                                 showCancelButton: true,
-                                                confirmButtonText: 'Extend Due',
+                                                confirmButtonText: 'Extend Date',
                                                 cancelButtonText: 'Cancel',
                                                 confirmButtonColor: '#145a3a',
                                                 cancelButtonColor: '#6b7280',
                                                 reverseButtons: true,
-                                                preConfirm: () => {
+                                                // Requirement: the dialog itself must show a loading state on
+                                                // its own Extend Due button and stay open — not close
+                                                // immediately and hand off to a second, separate popup — for
+                                                // the network round trip, only closing on genuine success and
+                                                // staying open (with the error shown inline, via
+                                                // `showValidationMessage`) on failure so the admin can correct
+                                                // the date/reason and retry without starting over. SweetAlert2's
+                                                // own async-`preConfirm` + `showLoaderOnConfirm` pair is exactly
+                                                // built for this: it disables both buttons and shows a spinner
+                                                // on Extend Due for as long as this returned promise is
+                                                // pending, and only closes the dialog if it resolves to a
+                                                // truthy value — a validation failure inside it (via `return
+                                                // false` after `showValidationMessage`) keeps the dialog open
+                                                // exactly like the two-step date/reason checks below already
+                                                // do, unifying both kinds of not-ready-yet into the same
+                                                // mechanism.
+                                                showLoaderOnConfirm: true,
+                                                preConfirm: async () => {
                                                     const selected = extendDueFlatpickr?.selectedDates?.[0];
                                                     if (!selected) {
                                                         Swal.showValidationMessage('Extend the Last Working Day.');
@@ -491,61 +534,73 @@
                                                     const y = selected.getFullYear();
                                                     const m = String(selected.getMonth() + 1).padStart(2, '0');
                                                     const d = String(selected.getDate()).padStart(2, '0');
-                                                    return { date: y + '-' + m + '-' + d, reason: reason };
+
+                                                    extending = true;
+                                                    try {
+                                                        const response = await fetch($el.action, {
+                                                            method: 'POST',
+                                                            headers: {
+                                                                'Accept': 'application/json',
+                                                                'X-Requested-With': 'XMLHttpRequest',
+                                                                'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                                                                'Content-Type': 'application/json',
+                                                            },
+                                                            body: JSON.stringify({ new_last_working_day: y + '-' + m + '-' + d, reason: reason }),
+                                                        });
+                                                        const data = await response.json().catch(() => ({}));
+                                                        if (!response.ok) {
+                                                            // A 422 validation failure (e.g. the picked date turned
+                                                            // out to be no longer later than the request's CURRENT
+                                                            // Last Working Day — this can genuinely happen if it was
+                                                            // changed elsewhere since the dialog opened) carries its
+                                                            // specific field message under `data.errors`, not
+                                                            // `data.message` (that's just Laravel's own generic
+                                                            // wrapper text) — prefer the first real field error
+                                                            // when present.
+                                                            const fieldError = data.errors ? Object.values(data.errors)[0]?.[0] : null;
+                                                            throw new Error(fieldError || data.message || 'Extending the Last Working Day failed. Please try again.');
+                                                        }
+                                                        return data;
+                                                    } catch (error) {
+                                                        // Surfaced INSIDE the still-open dialog (SweetAlert2's own
+                                                        // validation-message banner) rather than a separate error
+                                                        // popup — the date/reason the admin already entered stay
+                                                        // exactly as they were, ready to correct and retry.
+                                                        Swal.showValidationMessage(error.message);
+                                                        return false;
+                                                    } finally {
+                                                        extending = false;
+                                                    }
                                                 }
                                             }).then((result) => {
                                                 if (!result.isConfirmed) return;
-                                                extending = true;
-                                                fetch($el.action, {
-                                                    method: 'POST',
-                                                    headers: {
-                                                        'Accept': 'application/json',
-                                                        'X-Requested-With': 'XMLHttpRequest',
-                                                        'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
-                                                        'Content-Type': 'application/json',
-                                                    },
-                                                    body: JSON.stringify({ new_last_working_day: result.value.date, reason: result.value.reason }),
-                                                }).then(async (response) => {
-                                                    const data = await response.json().catch(() => ({}));
-                                                    if (!response.ok) {
-                                                        // A 422 validation failure (e.g. the picked date turned
-                                                        // out to be no longer later than the request's CURRENT
-                                                        // Last Working Day — this can genuinely happen if it was
-                                                        // changed elsewhere since the page loaded) carries its
-                                                        // specific field message under `data.errors`, not
-                                                        // `data.message` (that's just Laravel's own generic
-                                                        // wrapper text) — prefer the first real field error
-                                                        // when present.
-                                                        const fieldError = data.errors ? Object.values(data.errors)[0]?.[0] : null;
-                                                        throw new Error(fieldError || data.message || 'Extending the Last Working Day failed. Please try again.');
-                                                    }
-                                                    extending = false;
-                                                    // Reactive update — no page reload. The card's own state
-                                                    // (Last Working Day text, whether Extend Due stays visible,
-                                                    // and the data a SUBSEQUENT click of it would show) all come
-                                                    // straight from this response, matching
-                                                    // `OffboardeeController::index()`'s own fields exactly.
-                                                    if (data.status !== undefined) status = data.status;
-                                                    if (data.lastWorkingDay !== undefined) lastWorkingDay = data.lastWorkingDay;
-                                                    if (data.originalLastWorkingDay !== undefined) originalLastWorkingDay = data.originalLastWorkingDay;
-                                                    if (data.isLastWorkingDayExtended !== undefined) isLastWorkingDayExtended = data.isLastWorkingDayExtended;
-                                                    if (data.canBulkExtendDue !== undefined) canBulkExtendDue = data.canBulkExtendDue;
-                                                    if (data.extendDueChecklists !== undefined) extendDueChecklists = data.extendDueChecklists;
-                                                    if (data.extendDueMinSelectableDateIso !== undefined) extendDueMinSelectableDateIso = data.extendDueMinSelectableDateIso;
-                                                    Swal.fire({
-                                                        icon: 'success',
-                                                        title: 'Last Working Day Extended',
-                                                        text: data.message || 'Last Working Day extended and checklist due dates recalculated.',
-                                                        confirmButtonColor: '#145a3a',
-                                                    });
-                                                }).catch((error) => {
-                                                    extending = false;
-                                                    Swal.fire({
-                                                        icon: 'error',
-                                                        title: 'Extension Failed',
-                                                        text: error.message,
-                                                        confirmButtonColor: '#145a3a',
-                                                    });
+                                                const data = result.value;
+                                                // Reactive update — no page reload. The card's own state
+                                                // (Last Working Day text, whether Extend Due stays visible,
+                                                // and the data a SUBSEQUENT click of it would show) all come
+                                                // straight from this response, matching
+                                                // `OffboardeeController::index()`'s own fields exactly — and
+                                                // since the Offboarding Status/Timeline modal reads this SAME
+                                                // card's reactive state the next time it's opened (see its own
+                                                // `open-offboardee-modal` dispatch above), both tabs pick up
+                                                // the fresh Last Working Day with no separate wiring needed.
+                                                // `timeline` in particular is what makes each checklist's OWN
+                                                // due date and the new extension activity entries themselves
+                                                // show up reactively — every other field above only ever
+                                                // refreshed the pinned header summary, never the tab content.
+                                                if (data.status !== undefined) status = data.status;
+                                                if (data.lastWorkingDay !== undefined) lastWorkingDay = data.lastWorkingDay;
+                                                if (data.originalLastWorkingDay !== undefined) originalLastWorkingDay = data.originalLastWorkingDay;
+                                                if (data.isLastWorkingDayExtended !== undefined) isLastWorkingDayExtended = data.isLastWorkingDayExtended;
+                                                if (data.canBulkExtendDue !== undefined) canBulkExtendDue = data.canBulkExtendDue;
+                                                if (data.extendDueChecklists !== undefined) extendDueChecklists = data.extendDueChecklists;
+                                                if (data.extendDueMinSelectableDateIso !== undefined) extendDueMinSelectableDateIso = data.extendDueMinSelectableDateIso;
+                                                if (data.timeline !== undefined) timeline = data.timeline;
+                                                Swal.fire({
+                                                    icon: 'success',
+                                                    title: 'Last Working Day Extended',
+                                                    text: data.message || 'Last Working Day extended and checklist due dates recalculated.',
+                                                    confirmButtonColor: '#145a3a',
                                                 });
                                             });
                                         ">
@@ -560,7 +615,7 @@
                                                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                                                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
                                             </svg>
-                                            <span x-text="extending ? 'Extending...' : 'Extend Due'"></span>
+                                            <span x-text="extending ? 'Extending...' : 'Extend Last Working Day'"></span>
                                         </button>
                                     </form>
                                 </div>

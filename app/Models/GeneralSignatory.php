@@ -14,6 +14,12 @@ class GeneralSignatory extends Model
         'sequence_type',
         'is_final_pay_signatory',
         'created_by',
+        // How many days after the offboardee's Last Working Day this
+        // General Signatory has to complete/approve their assigned
+        // checklist — the General Signatory equivalent of
+        // `ChecklistTemplate.clearance_signing_deadline_days`. See
+        // `OffboardingRequestGeneralSignatory.due_at`.
+        'due_in_days',
     ];
 
     protected function casts(): array
@@ -21,6 +27,7 @@ class GeneralSignatory extends Model
         return [
             'is_active' => 'boolean',
             'is_final_pay_signatory' => 'boolean',
+            'due_in_days' => 'integer',
         ];
     }
 

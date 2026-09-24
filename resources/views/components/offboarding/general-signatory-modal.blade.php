@@ -1,6 +1,6 @@
 @props(['employees' => [], 'employeeGroups' => []])
 
-<div x-data="generalSignatoryModal(@js($employees), @js($employeeGroups), @js(old('clearance_signatory_id')), @js(old('tasks', [])), @js(old('_general_signatory_id')), @js($errors->any() ? $errors->first() : null), @js(old('checklist_classification', 'primary')))"
+<div x-data="generalSignatoryModal(@js($employees), @js($employeeGroups), @js(old('clearance_signatory_id')), @js(old('tasks', [])), @js(old('_general_signatory_id')), @js($errors->any() ? $errors->first() : null), @js(old('checklist_classification', 'primary')), @js(old('due_in_days', '19')))"
     @open-general-signatory-modal.window="openModal($event.detail)">
     <x-ui.modal x-data="{ open: false }" @open-general-signatory-modal.window="open = true" :isOpen="false" class="w-full sm:w-[70vw] sm:max-w-[70vw]">
         <div class="relative max-h-[85vh] w-full overflow-y-auto rounded-3xl bg-white p-6 dark:bg-gray-900 lg:p-8" x-cloak>
@@ -54,6 +54,17 @@
                             Task Assignees below are automatically restricted to <span x-text="currentGroupName()"></span>'s group members (Employee Master).
                         </p>
                     </template>
+                </div>
+
+                <div class="mt-6">
+                    <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                        Clearance Signing Deadline
+                    </label>
+                    <input type="number" name="due_in_days" x-model="dueInDays" min="0" placeholder="e.g. 19"
+                        class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
+                    <p class="mt-1.5 text-xs text-gray-400">
+                        Days after the offboardee's Last Working Day this General Signatory has to complete/approve their assigned checklist. Leave blank for no clearance signing due date.
+                    </p>
                 </div>
 
                 <div class="mt-6">
@@ -173,13 +184,14 @@
 </div>
 
 <script>
-    function generalSignatoryModal(employees, employeeGroups, oldClearanceSignatoryId, oldTasks, oldEditingId, flashError, oldClassification) {
+    function generalSignatoryModal(employees, employeeGroups, oldClearanceSignatoryId, oldTasks, oldEditingId, flashError, oldClassification, oldDueInDays) {
         return {
             editingId: null,
             clearanceSignatoryId: '',
             clearanceSignatoryQuery: '',
             clearanceSignatoryOpen: false,
             classification: 'primary',
+            dueInDays: '19',
             tasks: [],
             saving: false,
             employees: employees,
@@ -236,6 +248,7 @@
                         this.clearanceSignatoryId = oldClearanceSignatoryId ? String(oldClearanceSignatoryId) : '';
                         this.clearanceSignatoryQuery = this.clearanceLabelFor(this.clearanceSignatoryId);
                         this.classification = oldClassification || 'primary';
+                        this.dueInDays = oldDueInDays ?? '19';
                         this.tasks = (oldTasks && oldTasks.length ? oldTasks : [{ title: '', signatory_id: '' }]).map((t) => ({
                             id: t.id || null,
                             title: t.title || '',
@@ -262,6 +275,7 @@
                     this.clearanceSignatoryId = detail.record.clearanceSignatoryId ? String(detail.record.clearanceSignatoryId) : '';
                     this.clearanceSignatoryQuery = this.clearanceLabelFor(this.clearanceSignatoryId);
                     this.classification = detail.record.classification || 'primary';
+                    this.dueInDays = detail.record.dueInDays ?? '';
                     const source = detail.record.tasks && detail.record.tasks.length ? detail.record.tasks : [{ title: '', signatory_id: '' }];
                     this.tasks = source.map((t) => ({
                         id: t.id || null,
@@ -275,6 +289,7 @@
                     this.clearanceSignatoryId = '';
                     this.clearanceSignatoryQuery = '';
                     this.classification = 'primary';
+                    this.dueInDays = '19';
                     this.tasks = [{ id: null, title: '', signatory_id: '', signatory_query: '', signatory_open: false }];
                 }
                 this.clearanceSignatoryOpen = false;

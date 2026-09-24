@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Carbon;
 
 /**
  * A General Signatory's approval state on one specific offboarding request —
@@ -34,6 +35,18 @@ class OffboardingRequestGeneralSignatory extends Model
         'remarks',
         'declined_at',
         'decline_reason',
+        // Per-request snapshot of the Clearance Signing Due Date — computed
+        // once at attachment (`ChecklistApprovalNotifier::notifyGeneralSignatories()`)
+        // from the offboardee's Last Working Day + this General Signatory's
+        // own `GeneralSignatory.due_in_days`, and recalculated by "Extend
+        // Due" (`ApprovalController::extendAllDue()`) alongside checklists'
+        // own `clearance_signing_due_at`.
+        'due_at',
+        // Guards `app:notify-clearance-signing-due` — set once that command
+        // has emailed/notified this General Signatory for `due_at`, so a
+        // later run never re-sends it for the same due-date event. Mirrors
+        // `OffboardingRequestApprover.clearance_signing_due_notified_at`.
+        'clearance_signing_due_notified_at',
     ];
 
     protected function casts(): array
@@ -43,6 +56,8 @@ class OffboardingRequestGeneralSignatory extends Model
             'first_viewed_at' => 'datetime',
             'approved_at' => 'datetime',
             'declined_at' => 'datetime',
+            'due_at' => 'datetime',
+            'clearance_signing_due_notified_at' => 'datetime',
         ];
     }
 
@@ -101,5 +116,38 @@ class OffboardingRequestGeneralSignatory extends Model
             'declined' => 'Declined',
             default => 'Pending',
         };
+    }
+
+    /**
+     * Recomputes `due_at` from a (possibly just-extended) Last Working Day
+     * and this General Signatory's own `GeneralSignatory.due_in_days` — the
+     * General Signatory equivalent of `OffboardingRequestApprover::recalculateClearanceSigningDueDate()`,
+     * same `->endOfDay()` convention. Called both at initial attachment and
+     * by `ApprovalController::extendAllDue()`. Also clears
+     * `clearance_signing_due_notified_at`, same reasoning as its checklist
+     * counterpart — a freshly recalculated due date must be eligible for
+     * `app:notify-clearance-signing-due` again.
+     */
+    public function recalculateClearanceSigningDueDate(Carbon $lastWorkingDay): void
+    {
+        $days = $this->generalSignatory?->due_in_days;
+
+        $this->update([
+            'due_at' => $days !== null ? $lastWorkingDay->copy()->addDays($days)->endOfDay() : null,
+            'clearance_signing_due_notified_at' => null,
+        ]);
+    }
+
+    /**
+     * True while this General Signatory's own action is still outstanding
+     * past its Clearance Signing Due Date — the display-time "overdue"
+     * styling `checklist-modal.blade.php`'s own "Due: ..." line already
+     * uses for `OffboardingRequestApprover::isOverdue()`, mirrored here.
+     */
+    public function isClearanceSigningOverdue(): bool
+    {
+        return $this->due_at !== null
+            && ! in_array($this->status, ['approved', 'declined'], true)
+            && now()->greaterThan($this->due_at);
     }
 }

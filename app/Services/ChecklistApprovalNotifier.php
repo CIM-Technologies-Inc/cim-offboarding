@@ -150,8 +150,28 @@ class ChecklistApprovalNotifier
                     'employee_id' => $approverEmployeeId,
                     'status' => 'pending',
                     'assigned_at' => now(),
+                    // ->endOfDay() (23:59:59) — a checklist is due UNTIL
+                    // THE END of its due date, never the very start of it
+                    // (see the Offboarding Status/Timeline tabs' own "Until
+                    // End of the Day" label, and `OffboardingRequestApprover::canExtendDue()`,
+                    // which compares `now()` against this exact value to
+                    // decide overdue status). Without this, a checklist
+                    // would already read as overdue the instant its due
+                    // date's calendar day BEGAN, a full day earlier than
+                    // that label promises.
                     'due_at' => $dueAtBasisDate
-                        ? $dueAtBasisDate->copy()->addDays($template->due_in_days ?? 0)
+                        ? $dueAtBasisDate->copy()->addDays($template->due_in_days ?? 0)->endOfDay()
+                        : null,
+                    // Clearance Signing Due Date — a separate, independent
+                    // deadline from `due_at` above (see
+                    // `ChecklistTemplate.clearance_signing_deadline_days`'s
+                    // own migration/docblock). Unlike `due_at`, a template
+                    // with none configured gets no Clearance Signing Due
+                    // Date at all (null) rather than defaulting to the Last
+                    // Working Day itself — this field is purely additive,
+                    // not something every checklist is assumed to need.
+                    'clearance_signing_due_at' => ($dueAtBasisDate && $template->clearance_signing_deadline_days !== null)
+                        ? $dueAtBasisDate->copy()->addDays($template->clearance_signing_deadline_days)->endOfDay()
                         : null,
                 ]
             );
@@ -506,6 +526,14 @@ class ChecklistApprovalNotifier
                     'sequence_type' => $generalSignatory->sequence_type,
                     'is_final_pay_signatory' => $generalSignatory->is_final_pay_signatory,
                     'status' => 'pending',
+                    // Clearance Signing Due Date — the General Signatory
+                    // equivalent of the Core/Primary checklist's own
+                    // `clearance_signing_due_at` above. Null (no deadline
+                    // shown) when this General Signatory has none
+                    // configured, same "purely additive" convention.
+                    'due_at' => $generalSignatory->due_in_days !== null
+                        ? $offboardingRequest->last_working_day->copy()->addDays($generalSignatory->due_in_days)->endOfDay()
+                        : null,
                 ]
             );
         }

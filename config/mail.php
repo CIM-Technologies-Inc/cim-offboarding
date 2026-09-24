@@ -18,6 +18,22 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | QA/Staging Mail Redirect
+    |--------------------------------------------------------------------------
+    |
+    | When set, every outgoing email's To/Cc/Bcc is rewritten to this single
+    | address before sending (see App\Listeners\RedirectMailInNonProduction),
+    | so real employees/approvers never receive test mail from a staging or
+    | QA environment. The original recipient(s) are preserved in the subject
+    | line so testers can still tell who would have received it. Leave unset
+    | in production — this must never redirect real outgoing mail.
+    |
+    */
+
+    'redirect_to' => env('MAIL_REDIRECT_TO'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Mailer Configurations
     |--------------------------------------------------------------------------
     |

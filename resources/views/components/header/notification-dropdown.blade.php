@@ -93,6 +93,7 @@
                 @php
                     $isApproved = $notification->type === 'offboarding_approved';
                     $isOverdue = $notification->type === 'checklist_overdue';
+                    $isClearanceSigningDue = $notification->type === 'clearance_signing_due';
                     $isUnread = $notification->read_at === null;
                 @endphp
                 <li>
@@ -107,6 +108,10 @@
                                 @if ($isOverdue)
                                     <span class="mb-1 block text-theme-sm font-medium text-orange-600 dark:text-orange-400">
                                         Checklist Overdue
+                                    </span>
+                                @elseif ($isClearanceSigningDue)
+                                    <span class="mb-1 block text-theme-sm font-medium text-error-600 dark:text-error-400">
+                                        Clearance Signing Due Date Reached
                                     </span>
                                 @endif
 
@@ -125,6 +130,12 @@
                                         Employee No.: {{ $notification->data['offboardee_employee_code'] ?? '—' }}
                                         &middot; Due: {{ $notification->data['due_at'] ?? '—' }}
                                         &middot; Status: {{ $notification->data['status'] ?? 'Overdue' }}
+                                    </span>
+                                @elseif ($isClearanceSigningDue)
+                                    <span class="mb-1 block text-xs text-gray-500 dark:text-gray-400">
+                                        Employee No.: {{ $notification->data['offboardee_employee_code'] ?? '—' }}
+                                        &middot; Checklist: {{ $notification->data['checklist_title'] ?? '—' }}
+                                        &middot; Due: {{ $notification->data['due_at'] ?? '—' }}
                                     </span>
                                 @endif
 

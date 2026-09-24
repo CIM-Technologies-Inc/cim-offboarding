@@ -249,8 +249,14 @@
                                         <p>Date Assigned: <span x-text="step.assignedAt || '—'"></span></p>
                                         <template x-if="step.dueAt">
                                             <p :class="step.isOverdue ? 'font-medium text-error-600 dark:text-error-400' : ''">
-                                                Due: <span x-text="step.dueAt"></span>
+                                                Until End of the Day: <span x-text="step.dueAt"></span>
                                                 <span x-show="step.isOverdue"> — Overdue</span>
+                                            </p>
+                                        </template>
+                                        <template x-if="step.clearanceSigningDueAt">
+                                            <p :class="step.isClearanceSigningOverdue ? 'font-medium text-error-600 dark:text-error-400' : ''">
+                                                Clearance Signing Due Date: <span x-text="step.clearanceSigningDueAt"></span>
+                                                <span x-show="step.isClearanceSigningOverdue"> — Overdue</span>
                                             </p>
                                         </template>
                                         <p>First Viewed: <span x-text="step.firstViewedAt || 'Not viewed yet'"></span></p>
@@ -299,7 +305,7 @@
                                     <template x-if="step.dueDateExtensions && step.dueDateExtensions.length">
                                         <div class="mt-2 rounded-lg border border-[#145a3a]/30 bg-[#145a3a]/5 px-3 py-2 text-xs dark:border-[#3aa876]/30 dark:bg-[#3aa876]/10">
                                             <p class="font-medium text-[#145a3a] dark:text-[#3aa876]">
-                                                Due Date Extended
+                                                Last Working Day Extended
                                                 <template x-if="step.originalDueDate">
                                                     <span class="font-normal text-gray-500 dark:text-gray-400">
                                                         (Originally due: <span x-text="step.originalDueDate"></span>)
@@ -479,8 +485,14 @@
                                             <p>Date Assigned: <span x-text="step.assignedAt || '—'"></span></p>
                                             <template x-if="step.dueAt">
                                                 <p :class="step.isOverdue ? 'font-medium text-error-600 dark:text-error-400' : ''">
-                                                    Due: <span x-text="step.dueAt"></span>
+                                                    Until End of the Day: <span x-text="step.dueAt"></span>
                                                     <span x-show="step.isOverdue"> — Overdue</span>
+                                                </p>
+                                            </template>
+                                            <template x-if="step.clearanceSigningDueAt">
+                                                <p :class="step.isClearanceSigningOverdue ? 'font-medium text-error-600 dark:text-error-400' : ''">
+                                                    Clearance Signing Due Date: <span x-text="step.clearanceSigningDueAt"></span>
+                                                    <span x-show="step.isClearanceSigningOverdue"> — Overdue</span>
                                                 </p>
                                             </template>
                                             <p>First Viewed: <span x-text="step.firstViewedAt || 'Not viewed yet'"></span></p>

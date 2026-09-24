@@ -3,12 +3,15 @@
 namespace App\Mail;
 
 use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Mail\Mailable;
 use Illuminate\Mail\Mailables\Content;
 use Illuminate\Mail\Mailables\Envelope;
 use Illuminate\Queue\SerializesModels;
 
-class ChecklistItemApproverAssignedMail extends Mailable
+// `ShouldQueue` — sent in the background instead of blocking the request;
+// see `ChecklistSignatoryAnnouncementMail`'s own matching comment for why.
+class ChecklistItemApproverAssignedMail extends Mailable implements ShouldQueue
 {
     use Queueable, SerializesModels;
 

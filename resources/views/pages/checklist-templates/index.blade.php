@@ -305,6 +305,7 @@
                                                     id: {{ $generalSignatory->id }},
                                                     clearanceSignatoryId: @js($generalSignatory->clearance_signatory_id),
                                                     classification: @js($gsClassification),
+                                                    dueInDays: @js($generalSignatory->due_in_days !== null ? (string) $generalSignatory->due_in_days : ''),
                                                     tasks: @js($generalSignatory->tasks->map(fn ($task) => ['id' => $task->id, 'title' => $task->title, 'signatory_id' => $task->signatory_id])),
                                                 },
                                             })"

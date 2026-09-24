@@ -39,6 +39,9 @@ class GeneralSignatoryController extends Controller
             // stages through the exact same Core -> Secondary -> Final Pay
             // pipeline.
             'checklist_classification' => ['required', Rule::in(['primary', 'secondary', 'final_pay'])],
+            // Independent of `ChecklistTemplate.due_in_days` — see
+            // `GeneralSignatory.due_in_days`.
+            'due_in_days' => ['nullable', 'integer', 'min:0', 'max:3650'],
             'tasks' => ['nullable', 'array'],
             'tasks.*.title' => ['nullable', 'string', 'max:255'],
             'tasks.*.signatory_id' => ['nullable', 'exists:employees,id'],
@@ -56,6 +59,7 @@ class GeneralSignatoryController extends Controller
                 'is_active' => true,
                 'sequence_type' => $sequenceType,
                 'is_final_pay_signatory' => $isFinalPaySignatory,
+                'due_in_days' => $validated['due_in_days'] ?: null,
                 'created_by' => $request->user()->id,
             ]);
 
@@ -78,6 +82,7 @@ class GeneralSignatoryController extends Controller
         $validated = $request->validate([
             'clearance_signatory_id' => ['required', 'exists:employees,id'],
             'checklist_classification' => ['required', Rule::in(['primary', 'secondary', 'final_pay'])],
+            'due_in_days' => ['nullable', 'integer', 'min:0', 'max:3650'],
             'tasks' => ['nullable', 'array'],
             'tasks.*.title' => ['nullable', 'string', 'max:255'],
             'tasks.*.signatory_id' => ['nullable', 'exists:employees,id'],
@@ -94,6 +99,7 @@ class GeneralSignatoryController extends Controller
                 'clearance_signatory_id' => $validated['clearance_signatory_id'],
                 'sequence_type' => $sequenceType,
                 'is_final_pay_signatory' => $isFinalPaySignatory,
+                'due_in_days' => $validated['due_in_days'] ?: null,
             ]);
 
             // Delete-and-recreate is safe here (unlike

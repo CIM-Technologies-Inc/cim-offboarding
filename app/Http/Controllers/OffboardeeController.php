@@ -142,15 +142,16 @@ class OffboardeeController extends Controller
             // yet approved/declined, AND actually carrying a due date — a
             // template with no `due_in_days` configured never gets a
             // `due_at` and is excluded rather than counting toward this at
-            // all) must have reached its own due date, computed here from
-            // THIS request's actual `OffboardingRequestApprover` rows,
-            // never the checklist template configuration.
+            // all) must exist. The HR/Admin can extend the Last Working Day
+            // at any time — this no longer requires any checklist to have
+            // actually REACHED its due date first (`canExtendDue()` is still
+            // used, unchanged, purely for the informational "Due"/"Not Due"
+            // badge on each checklist in the Extend Due modal below — see
+            // `extendDueChecklists`).
             'canBulkExtendDue' => (function () use ($employee) {
                 $applicable = $this->extendDueApplicableApprovers($employee);
 
-                return $applicable !== null
-                    && $applicable->isNotEmpty()
-                    && $applicable->contains(fn ($approver) => $approver->canExtendDue());
+                return $applicable !== null && $applicable->isNotEmpty();
             })(),
             // One calendar day AFTER the offboardee's CURRENT Last Working
             // Day — "Extend Due" now extends the Last Working Day itself

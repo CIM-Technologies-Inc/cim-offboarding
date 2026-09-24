@@ -77,7 +77,7 @@
         </div>
 
         <form class="flex flex-col" method="POST" action="{{ route('offboarding-requests.store') }}"
-            x-data="offboardingRequestForm(@js(session('success')), @js($offboardingRequestHasErrors ? $errors->first() : null))"
+            x-data="offboardingRequestForm(@js(session('success')), @js($offboardingRequestHasErrors ? $errors->first() : null), {{ $offboardingRequestHasErrors ? 'true' : 'false' }})"
             @submit="if (!confirmed) {
                 $event.preventDefault();
                 // Read straight off the Employee picker's own visible text
@@ -158,7 +158,8 @@
                                 window.dispatchEvent(new CustomEvent('immediate-head-auto-select', { detail: matchedId ?? null }));
                             },
                         }"
-                        @click="activeDropdown = null">
+                        @click="activeDropdown = null"
+                        @reset-offboarding-request-fields.window="activeDropdown = null">
                         <div>
                             <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
                                 Employee <span class="text-error-500">*</span>
@@ -206,7 +207,9 @@
                                      ever gets a chance to fire for a genuine click on the
                                      modal's backdrop, which already closes the whole modal
                                      anyway. --}}
-                                @click.stop @click.away="activeDropdown = null" class="relative">
+                                @click.stop @click.away="activeDropdown = null"
+                                @reset-offboarding-request-fields.window="query = ''; selectedEmployeeId = ''"
+                                class="relative">
                                 <input type="hidden" name="employee_id" :value="selectedEmployeeId" />
                                 <input type="text" id="offboardeeNameInput" x-model="query" autocomplete="off"
                                     @focus="activeDropdown = 'employee'"
@@ -242,7 +245,7 @@
                                 </div>
                             </div>
                             @error('employee_id')
-                                <p class="mt-1.5 text-xs text-error-500">{{ $message }}</p>
+                                <p class="mt-1.5 text-xs text-error-500" x-show="hasErrors">{{ $message }}</p>
                             @enderror
                         </div>
 
@@ -290,7 +293,9 @@
                                 {{-- Same `activeDropdown`/`@click.stop` pattern as the
                                      Employee picker above — see its comment for why a plain
                                      `@click.away` alone can't close this inside the modal. --}}
-                                @click.stop @click.away="activeDropdown = null" class="relative">
+                                @click.stop @click.away="activeDropdown = null"
+                                @reset-offboarding-request-fields.window="query = ''; selectedEmployeeId = ''"
+                                class="relative">
                                 <input type="hidden" name="immediate_head_id" :value="selectedEmployeeId" />
                                 <input type="text" x-model="query" autocomplete="off"
                                     @focus="activeDropdown = 'immediate_head'"
@@ -316,7 +321,7 @@
                                 </div>
                             </div>
                             @error('immediate_head_id')
-                                <p class="mt-1.5 text-xs text-error-500">{{ $message }}</p>
+                                <p class="mt-1.5 text-xs text-error-500" x-show="hasErrors">{{ $message }}</p>
                             @enderror
                         </div>
                     </div>
@@ -346,31 +351,6 @@
                         // out.
                         resignationDate: @js(old('notice_date') ?: null),
                         lastWorkingDay: @js(old('last_working_day') ?: null),
-                        // Whichever date the admin genuinely typed/picked
-                        // MOST RECENTLY — the anchor the OTHER date is
-                        // always computed FROM. Requirement: either date may
-                        // be the starting point, and a later Separation
-                        // Type change recalculates the non-anchor date from
-                        // this SAME anchor using the new Notice Period,
-                        // never the other way around. Seeded from whichever
-                        // `old(...)` value is present on a validation-error
-                        // resubmit (Resignation Date wins if, implausibly,
-                        // both are — there is no way to know which was
-                        // really last edited across a page reload, and this
-                        // matches the pre-existing default anchor).
-                        lastEditedField: @js(old('notice_date') ? 'resignation' : (old('last_working_day') ? 'lwd' : null)),
-                        // Set for the FULL duration of a programmatic
-                        // set-date-{id} dispatch below — flatpickr's own
-                        // `setDate(value, true)` genuinely fires `onChange`
-                        // (see date-picker.blade.php), which would otherwise
-                        // bounce straight back into `onResignationDateChange()`/
-                        // `onLastWorkingDayChange()` and recompute the
-                        // ORIGINAL anchor right back from the value that was
-                        // just computed FROM it — a needless (and, since
-                        // each direction's rounding could ever so slightly
-                        // disagree, potentially inaccurate) ping-pong this
-                        // flag exists purely to short-circuit.
-                        isSyncing: false,
                         applySeparationType() {
                             const type = this.separationTypesById[this.selectedSeparationTypeId];
                             this.noticePeriodDays = type ? type.defaultNoticePeriodDays : '';
@@ -384,33 +364,29 @@
                                 // field.
                                 this.resignationDate = null;
                                 this.lastWorkingDay = null;
-                                this.lastEditedField = null;
                                 window.dispatchEvent(new CustomEvent('set-date-notice_date', { detail: null }));
                                 window.dispatchEvent(new CustomEvent('set-date-last_working_day', { detail: null }));
                                 return;
                             }
 
-                            // Recompute the NON-anchor date from whichever
-                            // one the admin actually anchored on, using the
-                            // newly-selected Separation Type's own Notice
-                            // Period — never the other direction, and never
-                            // a stale value left over from the previous
-                            // Separation Type.
-                            if (this.lastEditedField === 'lwd') {
-                                this.syncResignationDateFromLastWorkingDay();
-                            } else {
-                                this.syncLastWorkingDayFromResignationDate();
-                            }
+                            // Last Working Day is always recomputed from
+                            // Resignation Date's own current value using the
+                            // newly-selected Separation Type's Notice
+                            // Period. Last Working Day itself is never a
+                            // computation SOURCE — see onLastWorkingDayChange()
+                            // below, which lets the admin/HR pick it freely
+                            // with no side effects on Resignation Date.
+                            this.syncLastWorkingDayFromResignationDate();
                         },
                         // Y-m-d string in, Y-m-d string out (matches the
-                        // date-picker's own `dateFormat` both ways) — native
-                        // `Date` arithmetic, no library, since this is the
-                        // only place in this form that needs it. Returns
-                        // null whenever either input isn't yet known (no
-                        // starting date, or Notice Period not resolved from
-                        // a selected Separation Type yet), so the caller can
-                        // tell 'nothing to fill in yet' apart from a genuine
-                        // computed date.
+                        // date-picker's own `dateFormat`) — native `Date`
+                        // arithmetic, no library, since this is the only
+                        // place in this form that needs it. Returns null
+                        // whenever either input isn't yet known (no
+                        // Resignation Date, or Notice Period not resolved
+                        // from a selected Separation Type yet), so the
+                        // caller can tell 'nothing to fill in yet' apart
+                        // from a genuine computed date.
                         computeLastWorkingDay(resignationDateStr) {
                             const days = parseInt(this.noticePeriodDays, 10);
 
@@ -420,21 +396,6 @@
 
                             const date = new Date(resignationDateStr + 'T00:00:00');
                             date.setDate(date.getDate() + days);
-
-                            return this.toDateInputValue(date);
-                        },
-                        // The reverse direction — Last Working Day minus
-                        // Notice Period — same null-safety rules as
-                        // `computeLastWorkingDay()` above.
-                        computeResignationDate(lastWorkingDayStr) {
-                            const days = parseInt(this.noticePeriodDays, 10);
-
-                            if (! lastWorkingDayStr || Number.isNaN(days)) {
-                                return null;
-                            }
-
-                            const date = new Date(lastWorkingDayStr + 'T00:00:00');
-                            date.setDate(date.getDate() - days);
 
                             return this.toDateInputValue(date);
                         },
@@ -454,48 +415,45 @@
                         syncLastWorkingDayFromResignationDate() {
                             const computed = this.resignationDate ? this.computeLastWorkingDay(this.resignationDate) : null;
                             this.lastWorkingDay = computed;
-                            this.isSyncing = true;
                             window.dispatchEvent(new CustomEvent('set-date-last_working_day', { detail: computed }));
-                            this.isSyncing = false;
-                        },
-                        // The reverse direction — Last Working Day is the
-                        // anchor, Resignation Date is recomputed from it.
-                        syncResignationDateFromLastWorkingDay() {
-                            const computed = this.lastWorkingDay ? this.computeResignationDate(this.lastWorkingDay) : null;
-                            this.resignationDate = computed;
-                            this.isSyncing = true;
-                            window.dispatchEvent(new CustomEvent('set-date-notice_date', { detail: computed }));
-                            this.isSyncing = false;
                         },
                         onResignationDateChange(dateStr) {
-                            // A change fired by our OWN syncResignationDateFromLastWorkingDay()
-                            // call above, not a genuine admin edit — ignore
-                            // it, or this would immediately recompute Last
-                            // Working Day right back from the value that was
-                            // just derived FROM it.
-                            if (this.isSyncing) {
-                                return;
-                            }
                             this.resignationDate = dateStr || null;
-                            this.lastEditedField = 'resignation';
                             this.syncLastWorkingDayFromResignationDate();
                         },
+                        // Last Working Day has NO computation of its own —
+                        // the admin/HR may freely pick any date here, and it
+                        // never recalculates Resignation Date or anything
+                        // else. Only Resignation Date drives the Notice
+                        // Period computation (see onResignationDateChange()/
+                        // applySeparationType() above).
                         onLastWorkingDayChange(dateStr) {
-                            if (this.isSyncing) {
-                                return;
-                            }
                             this.lastWorkingDay = dateStr || null;
-                            this.lastEditedField = 'lwd';
-                            this.syncResignationDateFromLastWorkingDay();
                         },
-                    }">
+                        // Close button: reverts Separation Type back to the
+                        // blank option, which — since the select below is
+                        // now `x-model`-bound both ways — also visually
+                        // resets the dropdown itself, then reuses
+                        // applySeparationType()'s own existing blank-option
+                        // branch to clear Notice Period and both dates
+                        // (including pushing the clears through to the
+                        // flatpickr-controlled inputs) exactly the same way
+                        // manually reverting the dropdown already does.
+                        resetFields() {
+                            this.isOptionSelected = false;
+                            this.selectedSeparationTypeId = '';
+                            this.applySeparationType();
+                        },
+                    }"
+                        @reset-offboarding-request-fields.window="resetFields()">
                         <div class="col-span-2 lg:col-span-1">
                             <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
                                 Separation Type <span class="text-error-500">*</span>
                             </label>
                             <div class="relative z-20 bg-transparent">
                                 <select name="separation_type_id" required
-                                    @change="isOptionSelected = true; selectedSeparationTypeId = $event.target.value; applySeparationType()"
+                                    x-model="selectedSeparationTypeId"
+                                    @change="isOptionSelected = true; applySeparationType()"
                                     :class="isOptionSelected && 'text-gray-800 dark:text-white/90'"
                                     class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-500 shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800">
                                     <option value="" class="text-gray-700 dark:bg-gray-900 dark:text-gray-400">Select a separation type</option>
@@ -513,7 +471,7 @@
                                 </template>
                             </div>
                             @error('separation_type_id')
-                                <p class="mt-1.5 text-xs text-error-500">{{ $message }}</p>
+                                <p class="mt-1.5 text-xs text-error-500" x-show="hasErrors">{{ $message }}</p>
                             @enderror
                         </div>
 
@@ -557,7 +515,7 @@
                                 Select a Separation Type first.
                             </p>
                             @error('notice_date')
-                                <p class="mt-1.5 text-xs text-error-500">{{ $message }}</p>
+                                <p class="mt-1.5 text-xs text-error-500" x-show="hasErrors">{{ $message }}</p>
                             @enderror
                         </div>
 
@@ -577,7 +535,7 @@
                                 Select a Separation Type first.
                             </p>
                             @error('last_working_day')
-                                <p class="mt-1.5 text-xs text-error-500">{{ $message }}</p>
+                                <p class="mt-1.5 text-xs text-error-500" x-show="hasErrors">{{ $message }}</p>
                             @enderror
                         </div>
                     </div>
@@ -617,7 +575,18 @@
                         @enderror
                     </div> -->
 
-                    <div class="col-span-2" x-data="{ showEmailTemplates: {{ $offboardingRequestHasErrors ? 'true' : 'false' }} }">
+                    <div class="col-span-2" x-data="{
+                            showEmailTemplates: {{ $offboardingRequestHasErrors ? 'true' : 'false' }},
+                            // Keyed by field name so a single Close-triggered
+                            // reset can restore every one of these plain
+                            // (non-Alpine-bound-by-default) selects back to
+                            // its own resolved default template in one
+                            // assignment, without needing a DOM lookup per
+                            // select.
+                            emailTemplateDefaults: @js($emailTemplateFunctions->mapWithKeys(fn ($function) => [$function['field'] => (string) ($function['defaultId'] ?? '')])),
+                            emailTemplateSelections: @js($emailTemplateFunctions->mapWithKeys(fn ($function) => [$function['field'] => (string) old($function['field'], $function['defaultId'] ?? '')])),
+                        }"
+                        @reset-offboarding-request-fields.window="showEmailTemplates = false; emailTemplateSelections = { ...emailTemplateDefaults }">
                         <button type="button" @click="showEmailTemplates = !showEmailTemplates"
                             class="flex items-center gap-2 text-sm text-gray-600 hover:text-[#145a3a] dark:text-gray-400 dark:hover:text-[#3aa876]">
                             <svg class="shrink-0" width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -649,6 +618,7 @@
                                         {{ $function['label'] }}
                                     </label>
                                     <select name="{{ $function['field'] }}"
+                                        x-model="emailTemplateSelections['{{ $function['field'] }}']"
                                         class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:focus:border-brand-800">
                                         @forelse ($emailTemplates as $template)
                                             <option value="{{ $template->id }}"
@@ -660,7 +630,7 @@
                                         @endforelse
                                     </select>
                                     @error($function['field'])
-                                        <p class="mt-1.5 text-xs text-error-500">{{ $message }}</p>
+                                        <p class="mt-1.5 text-xs text-error-500" x-show="hasErrors">{{ $message }}</p>
                                     @enderror
                                 </div>
                             @endforeach
@@ -670,7 +640,7 @@
                 </div>
             </div>
             <div class="flex items-center gap-3 px-2 mt-6 lg:justify-end">
-                <button @click="open = false" type="button" :disabled="submitting"
+                <button @click="open = false; resetForm()" type="button" :disabled="submitting"
                     class="flex w-full justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03] sm:w-auto">
                     Close
                 </button>

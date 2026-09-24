@@ -17,7 +17,6 @@ use App\Services\ChecklistCompletionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -32,7 +31,12 @@ class OffboardingRequestController extends Controller
             'employee_id' => ['required', 'exists:employees,id'],
             'immediate_head_id' => ['nullable', 'exists:employees,id', 'different:employee_id'],
             'notice_date' => ['required', 'date'],
-            'last_working_day' => ['required', 'date', 'after_or_equal:notice_date'],
+            // No `after_or_equal:notice_date` — Last Working Day is picked
+            // freely (see new-request-modal.blade.php's own Separation
+            // Type/Dates block) and the HR/Admin team may submit even when
+            // Resignation Date falls after it; this is intentionally not
+            // treated as an error.
+            'last_working_day' => ['required', 'date'],
             // Only the Separation Type is trusted from the client — its
             // title, Description/Definition, and Default Notice Period are
             // always looked up server-side from THIS id below, never taken
@@ -127,22 +131,6 @@ class OffboardingRequestController extends Controller
         // the Separation Type Management page can never change a request
         // that already exists (see `SeparationType`'s own docblock).
         $separationType = SeparationType::findOrFail($validated['separation_type_id']);
-
-        // The New Offboarding Request modal keeps Resignation Date and Last
-        // Working Day in sync client-side (whichever one the admin edits
-        // recalculates the other from the selected Separation Type's own
-        // Notice Period), so this only ever actually fires against a
-        // tampered/JS-disabled submission — but the requirement is explicit
-        // that the server must never trust the client's arithmetic, so this
-        // is checked for real here rather than assumed from the client-side
-        // behavior alone.
-        $actualNoticeDays = (int) Carbon::parse($validated['notice_date'])->diffInDays(Carbon::parse($validated['last_working_day']));
-
-        if ($actualNoticeDays !== $separationType->default_notice_period_days) {
-            return back()->withErrors([
-                'last_working_day' => "The Last Working Day must be exactly {$separationType->default_notice_period_days} day(s) after the Resignation Date, per the {$separationType->title} Separation Type's configured Notice Period.",
-            ])->withInput();
-        }
 
         // Notification Date = the actual moment this request is submitted
         // (right now — never the admin-picked "Resignation Date"/`notice_date`
@@ -473,16 +461,19 @@ class OffboardingRequestController extends Controller
             // `ChecklistOverdueNotification`) embed `offboarding_request_id`
             // inside their JSON `data` payload rather than a real foreign
             // key, so they can't be cleaned up via cascade or a plain
-            // `where()` column match — decode each row and compare in PHP
-            // instead. Without this, a stale notification would keep
-            // linking to a now-retracted request (and, via the Offboardee
-            // Page's deep-link fallback, could still surface the employee
-            // there after their card should have disappeared).
-            $staleNotificationIds = DB::table('notifications')
-                ->get(['id', 'data'])
-                ->filter(fn ($row) => (json_decode($row->data, true)['offboarding_request_id'] ?? null) === $offboardingRequest->id)
-                ->pluck('id');
-            DB::table('notifications')->whereIn('id', $staleNotificationIds)->delete();
+            // `where()` column match. Filtered via a JSON-path `where`
+            // clause (`data->offboarding_request_id`) so MySQL does the
+            // matching itself as a single DELETE — never pulling every
+            // notification row in the ENTIRE system (every user, all time)
+            // into PHP to `json_decode()` one by one, which is what this
+            // used to do and got slower as that table grew. Without this
+            // cleanup, a stale notification would keep linking to a
+            // now-retracted request (and, via the Offboardee Page's
+            // deep-link fallback, could still surface the employee there
+            // after their card should have disappeared).
+            DB::table('notifications')
+                ->where('data->offboarding_request_id', $offboardingRequest->id)
+                ->delete();
 
             $offboardingRequest->update([
                 'status' => 'cancelled',

@@ -237,6 +237,21 @@ class OffboardingRequest extends Model
     }
 
     /**
+     * The General Signatory equivalent of `extendDueApplicableApprovers()`
+     * above — every still-outstanding (not yet approved/declined) General
+     * Signatory on this request that actually has a Clearance Signing Due
+     * Date configured (`OffboardingRequestGeneralSignatory.due_at`).
+     * Assumes `generalSignatoryApprovals.generalSignatory` is already
+     * loaded/loadable on `$this`.
+     */
+    public function extendDueApplicableGeneralSignatories(): Collection
+    {
+        return $this->generalSignatoryApprovals
+            ->reject(fn (OffboardingRequestGeneralSignatory $assignment) => in_array($assignment->status, ['approved', 'declined'], true))
+            ->filter(fn (OffboardingRequestGeneralSignatory $assignment) => $assignment->due_at !== null);
+    }
+
+    /**
      * Whether "Extend Due" has ever pushed this request's Last Working Day
      * forward from its original value. `original_last_working_day` is set
      * once at creation and never touched again (see
@@ -795,6 +810,12 @@ class OffboardingRequest extends Model
                 'delegateCompletedAt' => $assignment->delegate_completed_at?->format('M d, Y g:i A'),
                 'dueAt' => $assignment->due_at?->format('M d, Y g:i A'),
                 'isOverdue' => $assignment->isOverdue(),
+                // Clearance Signing Due Date — independent of `dueAt`/
+                // `isOverdue` above, see `OffboardingRequestApprover.clearance_signing_due_at`'s
+                // own migration/docblock for why these are two separate
+                // fields rather than the same value shown twice.
+                'clearanceSigningDueAt' => $assignment->clearance_signing_due_at?->format('M d, Y g:i A'),
+                'isClearanceSigningOverdue' => $assignment->isClearanceSigningOverdue(),
                 // Extend Due history block (Offboarding Status tab) — the
                 // checklist's very first due date (see
                 // `OffboardingRequestApprover::originalDueDate()`'s own
@@ -1025,6 +1046,13 @@ class OffboardingRequest extends Model
             'delegateCompletedAt' => null,
             'dueAt' => null,
             'isOverdue' => false,
+            // Clearance Signing Due Date — the General Signatory
+            // equivalent of the checklist rich step's own
+            // `clearanceSigningDueAt`/`isClearanceSigningOverdue`, see
+            // `OffboardingRequestGeneralSignatory.due_at`'s own migration/
+            // docblock.
+            'clearanceSigningDueAt' => $generalSignatoryApproval->due_at?->format('M d, Y g:i A'),
+            'isClearanceSigningOverdue' => $generalSignatoryApproval->isClearanceSigningOverdue(),
             'usesPerItemApprovers' => false,
             'checklistItems' => [],
         ];

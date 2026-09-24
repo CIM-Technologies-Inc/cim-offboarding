@@ -21,7 +21,7 @@
 
     <x-common.page-breadcrumb pageTitle="Edit Checklist Template" />
 
-    <div x-data="checklistBuilder(@js(old('title', $template->title)), @js(old('employee_group_id', (string) ($template->employee_group_id ?? ''))), @js((bool) old('is_immediate_head_checklist', $template->is_immediate_head_checklist)), @js((bool) old('use_task_assignee_as_signatory', $template->use_task_assignee_as_signatory)), @js(old('department', $template->department ?? '')), @js(old('due_in_days', (string) ($template->due_in_days ?? ''))), @js(old('items', $template->items->map(fn ($item) => ['id' => $item->id, 'title' => $item->title, 'signatory_id' => (string) $item->signatory_id, 'notify_enabled' => $item->notify_enabled, 'email_template_id' => (string) ($item->email_template_id ?? ''), 'notify_timing' => $item->notify_timing, 'notify_days' => (string) ($item->notify_days ?? '')])->values())), @js($employees->map(fn ($employee) => ['id' => (string) $employee->id, 'name' => $employee->name, 'department' => $employee->department])), @js($employeeGroups), @js($errors->any() ? $errors->first() : null))"
+    <div x-data="checklistBuilder(@js(old('title', $template->title)), @js(old('employee_group_id', (string) ($template->employee_group_id ?? ''))), @js((bool) old('is_immediate_head_checklist', $template->is_immediate_head_checklist)), @js((bool) old('use_task_assignee_as_signatory', $template->use_task_assignee_as_signatory)), @js(old('department', $template->department ?? '')), @js(old('due_in_days', (string) ($template->due_in_days ?? ''))), @js(old('clearance_signing_deadline_days', (string) ($template->clearance_signing_deadline_days ?? ''))), @js(old('items', $template->items->map(fn ($item) => ['id' => $item->id, 'title' => $item->title, 'signatory_id' => (string) $item->signatory_id, 'notify_enabled' => $item->notify_enabled, 'email_template_id' => (string) ($item->email_template_id ?? ''), 'notify_timing' => $item->notify_timing, 'notify_days' => (string) ($item->notify_days ?? '')])->values())), @js($employees->map(fn ($employee) => ['id' => (string) $employee->id, 'name' => $employee->name, 'department' => $employee->department])), @js($employeeGroups), @js($errors->any() ? $errors->first() : null))"
         class="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-white/[0.03] lg:p-6">
         <form method="POST" action="{{ route('checklist-templates.update', $template) }}" class="flex flex-col">
             @csrf
@@ -81,6 +81,17 @@
                         Signatories below are automatically restricted to <span x-text="currentGroupName()"></span>'s group members (Employee Master).
                     </p>
                 </template>
+            </div>
+
+            <div class="mt-5">
+                <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                    Clearance Signing Deadline
+                </label>
+                <input type="number" name="clearance_signing_deadline_days" x-model="clearanceSigningDeadlineDays" min="0" placeholder="e.g. 19"
+                    class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
+                <p class="mt-1.5 text-xs text-gray-400">
+                    Days after the offboardee's Last Working Day that assigned Clearance Signatories and General Signatories have to complete/approve their assigned checklist. Leave blank for no clearance signing due date.
+                </p>
             </div>
 
             <div class="mt-5">
@@ -369,7 +380,7 @@
     </div>
 
     <script>
-        function checklistBuilder(initialTitle, initialEmployeeGroupId, initialIsImmediateHead, initialUseTaskAssigneeAsSignatory, initialDepartment, initialDueInDays, initialItems, employees, employeeGroups, flashError = null) {
+        function checklistBuilder(initialTitle, initialEmployeeGroupId, initialIsImmediateHead, initialUseTaskAssigneeAsSignatory, initialDepartment, initialDueInDays, initialClearanceSigningDeadlineDays, initialItems, employees, employeeGroups, flashError = null) {
             return {
                 title: initialTitle,
                 employeeGroupId: initialEmployeeGroupId,
@@ -377,6 +388,7 @@
                 useTaskAssigneeAsSignatory: initialUseTaskAssigneeAsSignatory,
                 department: initialDepartment,
                 dueInDays: initialDueInDays,
+                clearanceSigningDeadlineDays: initialClearanceSigningDeadlineDays,
                 employees: employees,
                 employeeGroups: employeeGroups,
                 items: [],

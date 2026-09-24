@@ -2,13 +2,16 @@
 
 namespace App\Services;
 
+use App\Mail\ChecklistSignatoryAnnouncementMail;
 use App\Models\ChecklistTemplate;
 use App\Models\EmailTemplate;
 use App\Models\GeneralSignatory;
 use App\Models\OffboardingRequest;
 use App\Models\OffboardingRequestApprover;
+use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 
 class ChecklistCompletionService
 {
@@ -17,6 +20,13 @@ class ChecklistCompletionService
      * regular checklist has been approved.
      */
     private const FINAL_PAY_APPROVAL_TEMPLATE = 'Final Pay Checklist Approval';
+
+    /**
+     * Email template used to notify admins/the request creator once the
+     * Final Pay Checklist itself has been fully completed — see
+     * `sendFinalPayCompletionNotification()`.
+     */
+    private const FINAL_PAY_COMPLETION_TEMPLATE = 'Final Pay Checklist Completed';
 
     /**
      * Dispatches to whichever gate actually applies for THIS request's own
@@ -455,7 +465,14 @@ class ChecklistCompletionService
             return;
         }
 
-        DB::transaction(function () use ($offboardingRequest) {
+        // Tracked outside the transaction so the completion email fires
+        // exactly once — only for the call that actually performed this
+        // transition, never for a concurrent/retried call that finds the
+        // request already completed (same "was this MY transition" guard
+        // `attachFinalPayGeneralSignatoriesIfReady()`'s own lock uses).
+        $justCompleted = false;
+
+        DB::transaction(function () use ($offboardingRequest, &$justCompleted) {
             $locked = OffboardingRequest::whereKey($offboardingRequest->id)
                 ->where('status', '!=', 'completed')
                 ->lockForUpdate()
@@ -474,7 +491,79 @@ class ChecklistCompletionService
                 'status' => 'completed',
                 'comment' => 'All required Final Pay Checklist approvals have been completed.',
             ]);
+
+            $justCompleted = true;
         });
+
+        if ($justCompleted) {
+            $this->sendFinalPayCompletionNotification($offboardingRequest->fresh());
+        }
+    }
+
+    /**
+     * Emails admins and this request's creator once the Final Pay Checklist
+     * has been fully completed — a dedicated, brand-new notification (never
+     * reused from Approve/Assignment/Overdue/Cancellation/Decline, since
+     * this specifically announces the offboarding process itself finishing).
+     * Same recipients/never-lets-a-mail-failure-fail-the-caller convention as
+     * `ApprovalController::sendDeclineNotification()`.
+     */
+    private function sendFinalPayCompletionNotification(OffboardingRequest $offboardingRequest): void
+    {
+        $offboardee = $offboardingRequest->employee;
+
+        $recipients = User::role(User::ROLE_ADMIN)->get();
+
+        if ($offboardingRequest->creator && $offboardingRequest->creator->email) {
+            $recipients = $recipients->push($offboardingRequest->creator);
+        }
+
+        $recipients = $recipients->filter(fn (User $recipient) => $recipient->email && filter_var($recipient->email, FILTER_VALIDATE_EMAIL))
+            ->unique('id');
+
+        if ($recipients->isEmpty()) {
+            return;
+        }
+
+        $emailTemplate = EmailTemplate::where('is_active', true)
+            ->where('template_name', self::FINAL_PAY_COMPLETION_TEMPLATE)
+            ->latest('updated_at')
+            ->first();
+
+        if (! $emailTemplate) {
+            Log::warning('No "'.self::FINAL_PAY_COMPLETION_TEMPLATE.'" email template found — Final Pay completion notifications were not sent.', [
+                'offboarding_request_id' => $offboardingRequest->id,
+            ]);
+
+            return;
+        }
+
+        $completedAt = $offboardingRequest->completed_at?->format('M d, Y g:i A') ?? now()->format('M d, Y g:i A');
+
+        foreach ($recipients as $recipient) {
+            try {
+                [$subject, $body] = $emailTemplate->render(
+                    approverName: $recipient->name,
+                    offboardeeName: $offboardee->name,
+                    employeeNumber: $offboardee->employee_code,
+                    department: $offboardee->department,
+                    position: $offboardee->designation,
+                    separationDate: $offboardingRequest->last_working_day?->format('M d, Y'),
+                    reason: $offboardingRequest->reason,
+                    checklistName: 'Final Pay Checklist',
+                    offboardingRequestId: (string) $offboardingRequest->id,
+                    completedAt: $completedAt,
+                );
+
+                Mail::to($recipient->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+            } catch (\Throwable $e) {
+                Log::error('Failed to send Final Pay Checklist completion notification.', [
+                    'offboarding_request_id' => $offboardingRequest->id,
+                    'recipient' => $recipient->email,
+                    'exception' => $e->getMessage(),
+                ]);
+            }
+        }
     }
 
     /**

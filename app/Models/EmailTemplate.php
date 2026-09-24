@@ -125,7 +125,12 @@ class EmailTemplate extends Model
      * notification sent once `OffboardingRequestController::cancel()`
      * commits (that same call also passes the offboardee's Original Last
      * Working Day via "{{separation_date}}", same generic token every
-     * other Last-Working-Day-bearing template already uses) — plus the legacy
+     * other Last-Working-Day-bearing template already uses), "{{declined_by}}"
+     * / "{{declined_at}}" / "{{decline_reason}}" / "{{signatory_type}}" /
+     * "{{checklist_type}}" for the Checklist Signatory Declined notification,
+     * and "{{completed_at}}" for the Final Pay Checklist Completed
+     * notification sent once `ChecklistCompletionService::checkFinalPayCompletion()`
+     * transitions the request to `completed` — plus the legacy
      * bare-word / single-brace "approver" /
      * "offboardee" / "employee" placeholders still used by the
      * drag-and-drop email template editor. A placeholder with no value
@@ -175,6 +180,7 @@ class EmailTemplate extends Model
         ?string $declineReason = null,
         ?string $signatoryType = null,
         ?string $checklistType = null,
+        ?string $completedAt = null,
     ): array {
         $values = $this->placeholderValues(
             $approverName, $offboardeeName, $creatorName, $employeeNumber, $checklistName,
@@ -186,6 +192,7 @@ class EmailTemplate extends Model
             $originalDueDate, $extensionDays, $extendedDueDate, $clearanceSignatoryName,
             $cancelledBy, $cancelledAt, $offboardingRequestId, $cancellationReason,
             $declinedBy, $declinedAt, $declineReason, $signatoryType, $checklistType,
+            $completedAt,
         );
 
         return [
@@ -237,6 +244,7 @@ class EmailTemplate extends Model
         ?string $declineReason = null,
         ?string $signatoryType = null,
         ?string $checklistType = null,
+        ?string $completedAt = null,
     ): array {
         return [
             'approver_name' => $approverName,
@@ -278,6 +286,7 @@ class EmailTemplate extends Model
             'decline_reason' => $declineReason ?? '',
             'signatory_type' => $signatoryType ?? '',
             'checklist_type' => $checklistType ?? '',
+            'completed_at' => $completedAt ?? '',
             'offboarding_link' => '<a href="' . route('login') . '">CIM Offboarding</a>',
             'approver' => $approverName,
             'offboardee' => $offboardeeName,
@@ -296,7 +305,7 @@ class EmailTemplate extends Model
             . '|department_head_name|assigned_signatories|checklist_progress|remaining_items|follow_up_sent_at|general_signatory_tasks|approve_button'
             . '|original_due_date|extension_days|extended_due_date|clearance_signatory_name'
             . '|cancelled_by|cancelled_at|offboarding_request_id|cancellation_reason'
-            . '|declined_by|declined_at|decline_reason|signatory_type|checklist_type)\s*\}\}'
+            . '|declined_by|declined_at|decline_reason|signatory_type|checklist_type|completed_at)\s*\}\}'
             . '|\{\s*(approver|offboardee|employee)\s*\}'
             . '|\b(approver|offboardee|employee)\b/i';
 

@@ -27,8 +27,8 @@
             <form method="POST" action="{{ route('approvals.update-display-preference') }}" class="flex items-center gap-2">
                 @csrf
                 @method('PATCH')
-                <span class="text-xs font-medium {{ $combineChecklists ? 'text-[#145a3a] dark:text-[#3aa876]' : 'text-gray-400' }}">
-                    Combined Checklist
+                <span class="text-xs font-medium {{ !$combineChecklists ? 'text-[#145a3a] dark:text-[#3aa876]' : 'text-gray-400' }}">
+                    Separate Checklist
                 </span>
                 <label class="relative inline-flex cursor-pointer items-center">
                     <input type="checkbox" name="separate_checklists" value="1" class="peer sr-only disabled:cursor-not-allowed disabled:opacity-50"
@@ -142,6 +142,34 @@
                 hasMatches() {
                     const query = this.search.trim().toLowerCase();
                     return query === '' || this.haystacks.some((haystack) => haystack.includes(query));
+                },
+                // Live 5-days-before / on-or-after Clearance Signing Due
+                // Date urgency for every card's Clearance Signing Due row
+                // below — same thresholds as the checklist/General Signatory
+                // modals' own clearanceSigningUrgency(), shared here across
+                // every card via one tick instead of one setInterval per
+                // card.
+                nowTick: Date.now(),
+                init() {
+                    setInterval(() => {
+                        this.nowTick = Date.now();
+                    }, 60000);
+                },
+                clearanceSigningUrgency(iso) {
+                    if (!iso) {
+                        return 'none';
+                    }
+                    const due = new Date(iso).getTime();
+                    if (Number.isNaN(due)) {
+                        return 'none';
+                    }
+                    if (this.nowTick >= due) {
+                        return 'danger';
+                    }
+                    if (due - this.nowTick <= 5 * 24 * 60 * 60 * 1000) {
+                        return 'warning';
+                    }
+                    return 'none';
                 },
             }">
                 {{-- Search + Filter toolbar. Search matches instantly,
@@ -325,6 +353,22 @@
                                 <div class="flex items-center justify-between text-xs">
                                     <span class="text-gray-400">Checklist Due</span>
                                     <span class="font-medium {{ $approval['isOverdue'] ? 'text-error-600 dark:text-error-400' : 'text-gray-700 dark:text-gray-300' }}">{{ $approval['dueAt'] }}</span>
+                                </div>
+                            @endif
+                            {{-- Clearance Signing Due Date is the Clearance Signatory's/General
+                                 Signatory's OWN deadline — shown only to whoever that actually
+                                 is (`isPrimaryApprover`), never to a delegate, a monitoring
+                                 Group/Immediate/Department Head, or a plain per-item Task
+                                 Assignee's own card. --}}
+                            @if (!empty($approval['isPrimaryApprover']) && !empty($approval['clearanceSigningDueAt']))
+                                <div class="flex items-center justify-between"
+                                    :class="{
+                                        'text-xs': clearanceSigningUrgency(@js($approval['clearanceSigningDueAtIso'] ?? null)) === 'none',
+                                        'text-sm font-semibold text-orange-600 dark:text-orange-400': clearanceSigningUrgency(@js($approval['clearanceSigningDueAtIso'] ?? null)) === 'warning',
+                                        'text-base font-bold text-error-600 dark:text-error-400': clearanceSigningUrgency(@js($approval['clearanceSigningDueAtIso'] ?? null)) === 'danger',
+                                    }">
+                                    <span :class="clearanceSigningUrgency(@js($approval['clearanceSigningDueAtIso'] ?? null)) === 'none' ? 'text-gray-400' : ''">Clearance Signing Due</span>
+                                    <span :class="clearanceSigningUrgency(@js($approval['clearanceSigningDueAtIso'] ?? null)) === 'none' ? 'font-medium text-gray-700 dark:text-gray-300' : ''">{{ $approval['clearanceSigningDueAt'] }}</span>
                                 </div>
                             @endif
                             @if (!empty($approval['delegations']))

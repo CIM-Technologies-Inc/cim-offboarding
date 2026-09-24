@@ -78,6 +78,9 @@ class ChecklistTemplateController extends Controller
             // at once.
             'checklist_classification' => ['required', Rule::in(['primary', 'secondary', 'final_pay'])],
             'due_in_days' => ['nullable', 'integer', 'min:0', 'max:3650'],
+            // Independent of `due_in_days` above — see
+            // `ChecklistTemplate.clearance_signing_deadline_days`.
+            'clearance_signing_deadline_days' => ['nullable', 'integer', 'min:0', 'max:3650'],
             'items' => ['required', 'array', 'min:1'],
             'items.*.title' => ['required', 'string', 'max:255'],
             'items.*.signatory_id' => ['nullable', 'exists:employees,id'],
@@ -126,6 +129,7 @@ class ChecklistTemplateController extends Controller
                 'is_final_pay_checklist' => $isFinalPayChecklist,
                 'sequence_type' => $sequenceType,
                 'due_in_days' => $validated['due_in_days'] ?: null,
+                'clearance_signing_deadline_days' => $validated['clearance_signing_deadline_days'] ?: null,
                 'is_active' => true,
                 'created_by' => $request->user()->id,
                 ...$notificationSchedule,
@@ -184,6 +188,7 @@ class ChecklistTemplateController extends Controller
             'department' => ['nullable', 'string', Rule::in($this->departmentOptions($checklistTemplate->department))],
             'checklist_classification' => ['required', Rule::in(['primary', 'secondary', 'final_pay'])],
             'due_in_days' => ['nullable', 'integer', 'min:0', 'max:3650'],
+            'clearance_signing_deadline_days' => ['nullable', 'integer', 'min:0', 'max:3650'],
             'items' => ['required', 'array', 'min:1'],
             'items.*.id' => ['nullable', 'integer', Rule::exists('checklist_items', 'id')->where('checklist_template_id', $checklistTemplate->id)],
             'items.*.title' => ['required', 'string', 'max:255'],
@@ -217,6 +222,7 @@ class ChecklistTemplateController extends Controller
                 'is_final_pay_checklist' => $isFinalPayChecklist,
                 'sequence_type' => $sequenceType,
                 'due_in_days' => $validated['due_in_days'] ?: null,
+                'clearance_signing_deadline_days' => $validated['clearance_signing_deadline_days'] ?: null,
                 ...$notificationSchedule,
             ]);
 

@@ -29,6 +29,8 @@ class OffboardingRequestApprover extends Model
         'delegated_at',
         'delegate_completed_at',
         'due_at',
+        'clearance_signing_due_at',
+        'clearance_signing_due_notified_at',
         'ready_for_approval_notified_at',
         'overdue_notified_at',
     ];
@@ -44,6 +46,8 @@ class OffboardingRequestApprover extends Model
             'delegated_at' => 'datetime',
             'delegate_completed_at' => 'datetime',
             'due_at' => 'datetime',
+            'clearance_signing_due_at' => 'datetime',
+            'clearance_signing_due_notified_at' => 'datetime',
             'ready_for_approval_notified_at' => 'datetime',
             'overdue_notified_at' => 'datetime',
         ];
@@ -648,6 +652,47 @@ class OffboardingRequestApprover extends Model
         ]);
 
         return $extension;
+    }
+
+    /**
+     * Recomputes `clearance_signing_due_at` from a (possibly just-extended)
+     * Last Working Day and this checklist's own `clearance_signing_deadline_days`
+     * — the exact same `->endOfDay()` "due until the END of that day"
+     * convention `due_at` itself uses (see `ChecklistApprovalNotifier::attachAndNotify()`'s
+     * own matching comment). Called both at initial attachment and by
+     * `ApprovalController::extendAllDue()`, so a Last Working Day extension
+     * keeps this in step with `due_at` automatically. A template with no
+     * `clearance_signing_deadline_days` configured clears this back to
+     * null, exactly like `due_in_days` already does for `due_at` — never
+     * left stale from a previous value.
+     *
+     * `clearance_signing_due_notified_at` is cleared here too, same
+     * reasoning as `extendDueTo()`'s own reset of `overdue_notified_at`
+     * above: a checklist just granted a fresh Clearance Signing Due Date
+     * must be eligible for `app:notify-clearance-signing-due` again if
+     * THAT new date also passes without completion.
+     */
+    public function recalculateClearanceSigningDueDate(Carbon $lastWorkingDay): void
+    {
+        $days = $this->checklistTemplate?->clearance_signing_deadline_days;
+
+        $this->update([
+            'clearance_signing_due_at' => $days !== null ? $lastWorkingDay->copy()->addDays($days)->endOfDay() : null,
+            'clearance_signing_due_notified_at' => null,
+        ]);
+    }
+
+    /**
+     * True while this checklist's own signatory action is still outstanding
+     * past its Clearance Signing Due Date — the display-time "overdue"
+     * styling counterpart to `isOverdue()` above, scoped to this
+     * independent field.
+     */
+    public function isClearanceSigningOverdue(): bool
+    {
+        return $this->clearance_signing_due_at !== null
+            && ! in_array($this->status, ['approved', 'declined'], true)
+            && now()->greaterThan($this->clearance_signing_due_at);
     }
 
     /**

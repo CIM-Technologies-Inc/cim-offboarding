@@ -3,6 +3,7 @@
 namespace App\Mail;
 
 use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Mail\Mailable;
 use Illuminate\Mail\Mailables\Content;
 use Illuminate\Mail\Mailables\Envelope;
@@ -15,8 +16,11 @@ use Illuminate\Queue\SerializesModels;
  * `ChecklistGroupApprovedMail`'s exact shape/purpose (a completion
  * confirmation back to whoever needs to know work finished), just for the
  * one-time Final Approval step instead of a department checklist group.
+ *
+ * `ShouldQueue` — sent in the background instead of blocking the request;
+ * see `ChecklistSignatoryAnnouncementMail`'s own matching comment for why.
  */
-class FinalApprovalCompletedMail extends Mailable
+class FinalApprovalCompletedMail extends Mailable implements ShouldQueue
 {
     use Queueable, SerializesModels;
 

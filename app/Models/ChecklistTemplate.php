@@ -33,6 +33,13 @@ class ChecklistTemplate extends Model
         'is_active',
         'created_by',
         'due_in_days',
+        // How many days after the offboardee's Last Working Day the
+        // assigned Clearance Signatory has to complete/approve this
+        // checklist — deliberately separate from `due_in_days` above (which
+        // drives the overdue badge / "Extend Due"), a distinct value shown
+        // to the signatory as their own "Clearance Signing Due Date" — see
+        // `OffboardingRequestApprover.clearance_signing_due_at`.
+        'clearance_signing_deadline_days',
         // "Schedule Email/Notification" at the CHECKLIST level — timed off
         // this checklist's own due date on a given request
         // (`OffboardingRequestApprover::due_at`), independent of the
@@ -56,6 +63,7 @@ class ChecklistTemplate extends Model
             'is_immediate_head_checklist' => 'boolean',
             'use_task_assignee_as_signatory' => 'boolean',
             'due_in_days' => 'integer',
+            'clearance_signing_deadline_days' => 'integer',
             'notification_enabled' => 'boolean',
             'notification_days_before' => 'integer',
             'notification_time' => 'datetime:H:i',

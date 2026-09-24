@@ -9,6 +9,20 @@
         selectedApprove: {},
         doneBulkProcessing: false,
         approveBulkProcessing: false,
+        // True from the instant a card is opened until `refreshCheckedItems()`'s
+        // fetch(es) below have all settled — gates the entire task list
+        // (Select checkboxes, status text, Hold/Done/Submit) behind a
+        // loading skeleton (see the template below) so the approver only
+        // ever sees ONE, already-validated UI state instead of the stale
+        // page-load snapshot flashing first and then flipping once the real
+        // persisted state comes back a few milliseconds later.
+        selectedLoading: false,
+        // Bumped on every `setSelected()` call and captured per-call as
+        // `token` below — guards against a slow fetch from a PREVIOUSLY
+        // opened card resolving after the approver has already closed it
+        // and opened a different one, which would otherwise incorrectly
+        // clear `selectedLoading` (or patch stale data into) the new card.
+        selectedLoadToken: 0,
         setSelected(detail) {
             const checked = {};
             const remarks = {};
@@ -46,6 +60,7 @@
             // opened afterward.
             this.declineReasonDraft = '';
             this.selected = detail;
+            this.selectedLoading = true;
             this.refreshCheckedItems();
         },
         // The page's own checklist data is a static snapshot baked into the
@@ -53,38 +68,47 @@
         // reopening a card already acted on earlier this session (bulk-
         // submitted, held, approved) would otherwise show it as pending
         // again. Fetches the real persisted state for every distinct
-        // assignment on this card in the background (never blocks the
-        // initial open) and patches it in, the same `Object.assign`
-        // convention every other fetch()-driven action here already uses.
+        // assignment on this card BEFORE the task list/Select checkboxes
+        // are ever shown (see `selectedLoading` above) and patches it in,
+        // the same `Object.assign` convention every other fetch()-driven
+        // action here already uses.
         refreshCheckedItems() {
+            const token = ++this.selectedLoadToken;
             const urls = new Set((this.selected?.checklistItems || []).map((item) => item.checkedItemsUrl).filter(Boolean));
 
-            urls.forEach((url) => {
-                window.fetchWithTimeout(url, {
-                    headers: { 'Accept': 'application/json' },
-                }).then(async (res) => {
-                    if (!res.ok) {
-                        return;
+            const requests = Array.from(urls).map((url) => window.fetchWithTimeout(url, {
+                headers: { 'Accept': 'application/json' },
+            }).then(async (res) => {
+                if (!res.ok) {
+                    return;
+                }
+                const data = await res.json();
+
+                (data.items || []).forEach((patch) => {
+                    const target = (this.selected?.checklistItems || []).find((i) => i.id === patch.id);
+
+                    if (target) {
+                        Object.assign(target, patch);
+                        this.checked[target.id] = true;
                     }
-                    const data = await res.json();
-
-                    (data.items || []).forEach((patch) => {
-                        const target = (this.selected?.checklistItems || []).find((i) => i.id === patch.id);
-
-                        if (target) {
-                            Object.assign(target, patch);
-                            this.checked[target.id] = true;
-                        }
-                    });
-
-                    if (this.selected) {
-                        this.selected.allItemsCompleted = (this.selected.checklistItems || []).every((i) => this.checked[i.id]);
-                    }
-                }).catch(() => {
-                    // Silent — this is a background freshness check, not a
-                    // user-initiated action; the static snapshot already on
-                    // screen stays exactly as good as it was before.
                 });
+            }).catch(() => {
+                // Silent — a missing/failed freshness check simply leaves
+                // that assignment's items at their already-correct
+                // page-load snapshot rather than blocking the whole
+                // checklist from ever leaving its loading state.
+            }));
+
+            Promise.allSettled(requests).then(() => {
+                // A newer `setSelected()` call already bumped the token —
+                // this stale resolution must not touch the now-different
+                // card's `selected`/`selectedLoading` state.
+                if (token !== this.selectedLoadToken || !this.selected) {
+                    return;
+                }
+
+                this.selected.allItemsCompleted = (this.selected.checklistItems || []).every((i) => this.checked[i.id]);
+                this.selectedLoading = false;
             });
         },
         // Submits the Done click via `fetch()` instead of a real form
@@ -173,8 +197,22 @@
         myDoneEligibleItems() {
             return (this.selected?.checklistItems || []).filter((item) => item.editable && !item.checked && !!item.usesPerItemApprovers && !!item.isOwnItem);
         },
+        // True only when this card's per-item-approver items are split
+        // across more than one approver — i.e. at least one item belongs
+        // to someone else. When every item on the list is this viewer's
+        // own (a per-item-approver checklist that happens to be assigned
+        // entirely to one person), canEditAll() already covers the same
+        // check-everything action via the plain Select All checkbox
+        // above, so Select All My Tasks would be a redundant, confusing
+        // duplicate of it and must stay hidden.
+        hasOtherApproverItems() {
+            return (this.selected?.checklistItems || []).some((item) => !!item.usesPerItemApprovers && !item.isOwnItem);
+        },
         showDoneSelectAll() {
-            return this.myDoneEligibleItems().length > 1;
+            if (this.isBulkSelectRestrictedToHead()) {
+                return false;
+            }
+            return this.hasOtherApproverItems() && this.myDoneEligibleItems().length > 1;
         },
         // Selection lives ENTIRELY on `checked[item.id]` — the exact same
         // checkbox each task's own row already renders next to Hold/Done —
@@ -666,8 +704,38 @@
                 if (item.editable) this.checked[item.id] = value;
             });
         },
+        // On a Core/Primary checklist, bulk selection (both this and Select
+        // All My Tasks below) is reserved for whoever is recorded as this
+        // checklist's own Immediate/Group/Department Head (isPrimaryApprover
+        // — an admin counts too, same as everywhere else it's used) — never
+        // a regular Task Assignee/per-item signatory, no matter how many of
+        // the individual tasks happen to belong to them alone. Secondary and
+        // Final Pay checklists (isCorePrimaryChecklist false) are untouched
+        // by this and keep their existing behavior.
+        isBulkSelectRestrictedToHead() {
+            return !!this.selected?.isCorePrimaryChecklist && !this.selected?.isPrimaryApprover;
+        },
         canEditAll() {
+            if (this.isBulkSelectRestrictedToHead()) {
+                return false;
+            }
             return !!this.selected && (this.selected.checklistItems || []).every((item) => item.editable);
+        },
+        // Save Progress follows the same Core/Primary Head-only rule as the
+        // bulk-selection checkboxes above, with one addition: on a Core/
+        // Primary checklist it is withheld from a delegate too, not just a
+        // regular Task Assignee/per-item signatory -- someone the Head
+        // forwarded the whole checklist to is still not themselves an
+        // Immediate/Group/Department Head. Secondary and Final Pay
+        // checklists (isBulkSelectRestrictedToHead() always false there)
+        // keep the original isDelegate-or-isPrimaryApprover behavior, where
+        // a delegate's Save Progress access is their only way to persist
+        // partial work since they have no Submit authority of their own.
+        canSaveProgress() {
+            if (this.isBulkSelectRestrictedToHead()) {
+                return false;
+            }
+            return !!(this.selected?.isDelegate || this.selected?.isPrimaryApprover);
         },
         canApprove() {
             // The Department Head (primary approver) may submit once every
@@ -754,14 +822,15 @@
 
                     this.declining = false;
 
-                    // Patched in place — same convention every other action
-                    // in this file already follows (submitDone(),
-                    // approveHeadItem(), etc. never reload either) — so the
-                    // modal reflects Declined status immediately without a
-                    // page refresh. The underlying card behind this modal is
-                    // server-rendered and won't itself update until the
-                    // page is next loaded, same as it already doesn't for
-                    // any other in-modal action.
+                    // Patched in place first, exactly like approveHeadItem()
+                    // above, so `selected` is already correct for the brief
+                    // moment the modal takes to actually close (its own
+                    // fade/transition) — then closed automatically via the
+                    // same close-checklist-modal window event, and the now-
+                    // resolved (no longer pending/viewed) card is removed
+                    // from the underlying queue too, same as an approval
+                    // does. It was declined, not merely edited in place, so
+                    // this must not linger open the way Hold/Done do.
                     targetItem.isDeclined = true;
                     targetItem.declinedAt = data.declinedAt;
                     targetItem.declineReason = this.declineReasonDraft;
@@ -776,10 +845,13 @@
                     // already typed.
                     this.declineReasonDraft = '';
 
+                    window.dispatchEvent(new CustomEvent('close-checklist-modal'));
+                    this.removeListCard(targetItem?.id);
+
                     window.Swal?.fire({
                         icon: 'success',
                         title: 'Checklist Declined Successfully',
-                        text: 'The checklist has been successfully declined and the decline reason has been recorded.',
+                        text: 'The checklist has been successfully declined and the decline reason has been recorded. The offboarding request will continue processing normally.',
                         confirmButtonColor: '#145a3a',
                     });
                 }).catch((e) => {
@@ -795,6 +867,34 @@
                 });
             });
         },
+        // Live 5-days-before / on-or-after Clearance Signing Due Date
+        // urgency, recomputed off the wall clock rather than once at page
+        // load — nowTick ticks every minute so a signatory who leaves this
+        // modal open sees the label/value escalate to orange then red
+        // without needing to refresh. Day-level thresholds only, so a
+        // one-minute tick is far more than enough granularity.
+        nowTick: Date.now(),
+        init() {
+            setInterval(() => {
+                this.nowTick = Date.now();
+            }, 60000);
+        },
+        clearanceSigningUrgency(iso) {
+            if (!iso) {
+                return 'none';
+            }
+            const due = new Date(iso).getTime();
+            if (Number.isNaN(due)) {
+                return 'none';
+            }
+            if (this.nowTick >= due) {
+                return 'danger';
+            }
+            if (due - this.nowTick <= 5 * 24 * 60 * 60 * 1000) {
+                return 'warning';
+            }
+            return 'none';
+        },
     }" @open-checklist-modal.window="setSelected($event.detail)">
     <x-ui.modal x-data="{ open: false }" @open-checklist-modal.window="open = true" @close-checklist-modal.window="open = false" :isOpen="false" class="w-full sm:max-w-[50vw]">
         <!-- Flexible height: compact for a short checklist, growing up to
@@ -808,6 +908,22 @@
                 <div class="flex min-h-0 flex-1 flex-col">
                 <div class="shrink-0 p-6 pb-0 lg:p-8 lg:pb-0">
                     <h4 class="text-xl font-semibold text-gray-800 dark:text-white/90" x-text="selected.name"></h4>
+
+                    <!-- Loading skeleton — shown from the instant this card opens until
+                         refreshCheckedItems() confirms the REAL, current task state (checked/
+                         completed/assigned) from the server. Everything below that depends on
+                         that state (Select checkboxes, status text, Hold/Done/Submit) stays
+                         hidden until then, so the approver only ever sees one, already-correct
+                         UI state instead of the stale page-load snapshot briefly flashing first. -->
+                    <div x-show="selectedLoading" class="animate-pulse space-y-3 pb-6" aria-hidden="true">
+                        <div class="h-4 w-2/3 rounded-md bg-gray-200 dark:bg-gray-800"></div>
+                        <div class="h-10 rounded-lg bg-gray-200 dark:bg-gray-800"></div>
+                        <div class="h-16 rounded-lg bg-gray-200 dark:bg-gray-800"></div>
+                        <div class="h-16 rounded-lg bg-gray-200 dark:bg-gray-800"></div>
+                        <div class="h-16 rounded-lg bg-gray-200 dark:bg-gray-800"></div>
+                    </div>
+
+                    <div x-show="!selectedLoading">
 
                     <!-- Declined banner — shown the instant a decline succeeds (patched in place by
                          declineChecklist() above, no reload needed), same "current terminal state"
@@ -836,10 +952,33 @@
                     </template>
 
                     <template x-if="selected.dueAt">
-                        <p class="mb-1 text-xs mb-2" :class="selected.isOverdue ? 'font-medium text-error-600 dark:text-error-400' : 'text-[#145a3a] dark:text-[#3aa876]'">
-                            Due: <span x-text="selected.dueAt"></span>
+                        <p class="mb-1 text-sm font-semibold mb-2" :class="selected.isOverdue ? 'font-medium text-error-600 dark:text-error-400' : 'text-[#145a3a] dark:text-[#3aa876]'">
+                            Checklist Due Date: <span x-text="selected.dueAt"></span>
                             <span x-show="selected.isOverdue"> — Overdue</span>
                         </p>
+                    </template>
+
+                    <!-- Clearance Signing Due Date is the Clearance Signatory's OWN
+                         deadline (see `ChecklistTemplate.clearance_signing_deadline_days`)
+                         — shown only to whoever that actually is (`isPrimaryApprover`),
+                         never to a delegate, a monitoring Group/Immediate/Department
+                         Head watching someone else's checklist, or a plain per-item
+                         Task Assignee, none of whom carry this deadline themselves. -->
+                    <template x-if="selected.isPrimaryApprover && selected.clearanceSigningDueAt">
+                        <div class="mb-2">
+                            <p class="mb-1"
+                                :class="{
+                                    'text-sm font-medium text-[#145a3a] dark:text-[#3aa876]': clearanceSigningUrgency(selected.clearanceSigningDueAtIso) === 'none',
+                                    'text-sm font-semibold text-orange-600 dark:text-orange-400': clearanceSigningUrgency(selected.clearanceSigningDueAtIso) === 'warning',
+                                    'text-base font-bold text-error-600 dark:text-error-400': clearanceSigningUrgency(selected.clearanceSigningDueAtIso) === 'danger',
+                                }">
+                                Clearance Signing Due Date: <span x-text="selected.clearanceSigningDueAt"></span>
+                                <span x-show="clearanceSigningUrgency(selected.clearanceSigningDueAtIso) === 'danger'"> — Overdue</span>
+                            </p>
+                            <p class="text-xs text-gray-500 dark:text-gray-400">
+                                Please complete and approve your assigned checklist on or before the displayed due date.
+                            </p>
+                        </div>
                     </template>
 
                     <p class="mb-5 text-sm text-gray-500 dark:text-gray-400" x-show="selected.isMonitoring">
@@ -942,9 +1081,10 @@
                             </template>
                         </div>
                     </template>
+                    </div>
                 </div>
 
-                <form method="POST" :action="selected.saveProgressUrl"
+                <form method="POST" :action="selected.saveProgressUrl" x-show="!selectedLoading"
                     id="checklistProgressForm" x-data="{ processing: false, remarksResolved: false, approvalRemarks: '' }" @submit="processing = true"
                     class="flex min-h-0 flex-1 flex-col">
                         @csrf
@@ -1087,14 +1227,16 @@
                                 Close
                             </button> -->
 
-                            <!-- Save Progress: delegates (no Submit authority of their own — this is their only way to persist work for
-                                 the Department Head to review), and the Department Head themselves on ANY checklist with items — every
-                                 checklist now requires all items checked before Submit enables (see
-                                 `OffboardingRequestApprover::requiresAllItemsCompletedBeforeApproval()`), so the Department Head needs a way
-                                 to persist partial progress (check some items now, the rest later) on a "legacy" single-approver checklist
-                                 exactly like they already could on a per-item-approver one — without this, checking 3 of 5 items and closing
-                                 the modal before Submit is even enabled would lose that work. A checklist item signatory only ever sees Done. -->
-                            <template x-if="(selected.isDelegate || selected.isPrimaryApprover) && selected.checklistItems && selected.checklistItems.length && !selected.isDeclined">
+                            <!-- Save Progress: the Head themselves on ANY checklist with items — every checklist now requires all items
+                                 checked before Submit enables (see `OffboardingRequestApprover::requiresAllItemsCompletedBeforeApproval()`),
+                                 so the Head needs a way to persist partial progress (check some items now, the rest later) on a "legacy"
+                                 single-approver checklist exactly like they already could on a per-item-approver one — without this,
+                                 checking 3 of 5 items and closing the modal before Submit is even enabled would lose that work. Also shown
+                                 to a delegate (no Submit authority of their own — this is their only way to persist work for the Head to
+                                 review), but ONLY on Secondary/Final Pay checklists — see canSaveProgress()'s own comment for why a Core/
+                                 Primary checklist withholds this from a delegate too, same as the bulk-selection checkboxes above. A
+                                 checklist item signatory only ever sees Done. -->
+                            <template x-if="canSaveProgress() && selected.checklistItems && selected.checklistItems.length && !selected.isDeclined">
                                 <button type="submit" :formaction="selected.saveProgressUrl" :disabled="processing" data-turbo-submits-with="Saving..."
                                     :class="processing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50 dark:hover:bg-white/5'"
                                     class="flex items-center justify-center gap-1.5 rounded-lg border border-gray-300 px-4 py-2.5 text-sm font-medium text-gray-700 dark:border-gray-700 dark:text-gray-300">
