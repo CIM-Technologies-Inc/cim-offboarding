@@ -476,43 +476,24 @@ Docker Compose runs the web application, database-backed queue worker, scheduler
 
 #### Try it on a laptop first
 
-Docker Desktop is enough; PHP, Composer, Node.js, and MySQL do not need to be installed on the laptop. From the project directory:
+Docker Desktop is enough; PHP, Composer, Node.js, and MySQL do not need to be installed. From the project directory:
 
 ```powershell
-if (!(Test-Path .env)) { Copy-Item .env.docker.example .env }
-docker compose build
-```
-
-If `APP_KEY` is empty in `.env`, generate one before opening the application:
-
-```powershell
-$key = docker compose run --rm --no-deps -e APP_KEY= -e RUN_MIGRATIONS=false app php artisan key:generate --show
-((Get-Content .env) -replace '^APP_KEY=.*$', "APP_KEY=$key") | Set-Content .env
-```
-
-Start and check the local stack:
-
-```powershell
-docker compose up -d
+docker compose up -d --build
 docker compose ps
 ```
 
-Open `http://localhost:8080`. Docker overrides the host `.env` database credentials with the dedicated `cim_offboarding` MySQL user, so an XAMPP setting such as `DB_USERNAME=root` does not break the container database. The queue worker, scheduler, and MySQL are included. View logs with `docker compose logs -f app queue scheduler`; stop the containers without deleting the database with `docker compose down`.
+No `.env` is required for a local run. On the first start the app container automatically:
 
-```bash
-copy .env.docker.example .env   # Windows; use cp on Linux
-php artisan key:generate        # only if PHP/Composer is available locally
-docker compose build
-docker compose up -d
-```
+1. generates an `APP_KEY` (kept in the `app-storage` volume, unless `APP_KEY` is set in `.env`);
+2. runs all migrations, which also seed roles, permissions, email templates and other baseline data;
+3. creates the default admin account (`admin` / `123456`) — only when no admin exists yet, so restarts never reset its password. Set `SEED_ADMIN=false` in `.env` to skip this.
 
-If PHP is not installed on the server, generate the application key before starting the stack with a one-off container:
+Wait until `app` shows `healthy`, then open `http://localhost:8080` and sign in. The queue worker, scheduler, and MySQL are included. View logs with `docker compose logs -f app queue scheduler`; stop the containers without deleting the database with `docker compose down`.
 
-```bash
-docker compose run --rm --no-deps -e APP_KEY= -e RUN_MIGRATIONS=false app php artisan key:generate --show
-```
+To browse the database in DBeaver (or any MySQL client), connect to host `127.0.0.1`, port `3307`, database `cim_offboarding`, user `cim_offboarding`, password `change-this-database-password` (or your `MYSQL_APP_PASSWORD`). If DBeaver reports `Public Key Retrieval is not allowed`, set the driver properties `allowPublicKeyRetrieval=true` and `useSSL=false`.
 
-Put the returned `base64:...` value in `.env` as `APP_KEY`, then run `docker compose up -d`. The web application will be available at `http://localhost:8080` (or the `APP_PORT` configured in `.env`). The first startup runs migrations automatically through `RUN_MIGRATIONS=true`.
+To customise settings (SMTP, `APP_URL`, passwords, ports), copy `.env.docker.example` to `.env` and edit it before the first start. If `registry.npmjs.org` is blocked on your network, build with `docker compose build --build-arg NPM_REGISTRY=https://registry.npmmirror.com/` and then run `docker compose up -d`.
 
 Before production use, set a strong database password, configure the real SMTP settings, change `APP_URL`, and place the server behind HTTPS. Keep `mysql-data` and `app-storage` backed up; they contain the application database and uploaded signatures/photos. To update an existing deployment:
 
@@ -521,7 +502,7 @@ docker compose build --pull
 docker compose up -d
 ```
 
-The scheduler container invokes `php artisan schedule:run` every minute, while the queue container continuously processes queued mail. Frontend assets are built inside the image, so rebuild the image whenever frontend files change. View service logs with `docker compose logs -f app queue scheduler`.
+The scheduler container runs `php artisan schedule:work`, while the queue container continuously processes queued mail. Frontend assets are built inside the image, so rebuild the image whenever frontend files change. View service logs with `docker compose logs -f app queue scheduler`.
 
 ### CI/CD pipeline
 

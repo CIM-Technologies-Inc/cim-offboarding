@@ -66,7 +66,9 @@ COPY docker/entrypoint.sh /usr/local/bin/docker-entrypoint
 
 RUN chmod +x /usr/local/bin/docker-entrypoint \
     && mkdir -p storage/framework/cache storage/framework/sessions storage/framework/views storage/logs bootstrap/cache \
-    && chown -R www-data:www-data storage bootstrap/cache
+    && chown -R www-data:www-data storage bootstrap/cache \
+    && mkdir -p /var/www/.config \
+    && chown www-data:www-data /var/www/.config
 
 ENTRYPOINT ["docker-entrypoint"]
 CMD ["apache2-foreground"]

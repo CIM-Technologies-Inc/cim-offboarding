@@ -45,7 +45,7 @@ docker compose up -d
 docker compose ps
 ```
 
-Wait until `mysql` and `app` show `healthy`.
+Wait until `mysql` and `app` show `healthy`. The first start also generates `APP_KEY` automatically when `.env` does not set one; no `key:generate` step is needed.
 
 The app container automatically runs migrations because the Compose app service has `RUN_MIGRATIONS=true`.
 
@@ -57,9 +57,11 @@ docker compose exec -u www-data app php artisan migrate:status
 
 Never use `migrate:fresh` in production.
 
-## 5. Run the Admin Seeder
+## 5. Admin Account
 
-The admin seeder is separate from the normal application startup. Run it explicitly:
+On startup the app container creates the default admin account automatically, but only when no user with the admin role exists yet. Restarts never reset an existing admin's password. Set `SEED_ADMIN=false` in `.env` to turn this off.
+
+To re-run the seeder by hand (this resets the `admin` password to the default):
 
 ```powershell
 docker compose exec -u www-data app php artisan db:seed --class=AdminUserSeeder --force
@@ -109,12 +111,12 @@ Do not use `docker compose down -v` unless you intentionally want to delete the 
 
 ## 7. Open the Database in DBeaver
 
-Create a MySQL connection with:
+The database is already migrated when the app container is healthy; DBeaver only needs to connect. Create a MySQL connection with:
 
 ```text
 Host:     127.0.0.1
 Port:     3307
-Database: cim_db
+Database: cim_db   (the DB_DATABASE value in .env; cim_offboarding if not set)
 User:     cim_offboarding
 Password: change-this-database-password
 ```
@@ -186,11 +188,7 @@ Check migrations:
 docker compose exec -u www-data app php artisan migrate:status
 ```
 
-Run the admin seeder only if it is explicitly approved for that environment:
-
-```bash
-docker compose exec -u www-data app php artisan db:seed --class=AdminUserSeeder --force
-```
+The first start creates the default `admin` / `123456` account. Sign in and change that password immediately, or set `SEED_ADMIN=false` in `.env` before the first start if the admin account will be created another way.
 
 ## 10. Production Updates
 
