@@ -29,30 +29,44 @@
                 'bg-error-50 text-error-700 dark:bg-error-500/15 dark:text-error-400': ['declined', 'cancelled'].includes(this.selected?.requestStatus),
             };
         },
+        // Removes this General Signatory's own card from the underlying
+        // Approvals queue once declining it resolves the card entirely —
+        // same convention `checklist-modal.blade.php`'s own
+        // `removeListCard()` already uses, so a declined General Signatory
+        // assignment disappears immediately, with no page reload required.
+        // Removes it directly by the `data-card-id` `pages/approvals/index.blade.php`
+        // stamps on every card (same id as `selected.id`, e.g.
+        // `general-signatory-123`) — a no-op if the card isn't on screen
+        // (e.g. a filtered-out search result) or already gone.
+        removeListCard(cardId) {
+            if (!cardId) {
+                return;
+            }
+            document.querySelector(`[data-card-id='${CSS.escape(String(cardId))}']`)?.remove();
+        },
         // Declining is a COMPLETED signatory action (see
         // GeneralSignatoryApprovalController::decline()) — same
         // mandatory-reason confirm + fetch()-based flow as the checklist
-        // modal's own declineChecklist(), so the modal never navigates away
-        // on its own. State is patched into `selected` in place on success
-        // (same convention every other action in this app follows) rather
-        // than reloading — see the button's own :disabled/spinner and the
-        // Declined banner below for how `declining`/`selected.isDeclined`
-        // drive the loading/confirmed states.
+        // modal's own declineChecklist(), including closing the modal and
+        // removing the now-resolved card from the underlying queue on
+        // success (it was declined, not merely edited in place, so this
+        // must not linger open the way other in-place patches do) — see
+        // the button's own :disabled/spinner for the loading state.
         declineGeneralSignatory() {
             if (this.declining || !this.selected?.declineUrl) {
                 return;
             }
             Swal.fire({
-                title: 'Decline This Checklist?',
-                text: 'This checklist will be declined. This does not stop the offboarding request — it will continue processing normally. Please provide a reason.',
+                title: 'Decline This Offboarding Request?',
+                text: 'Your assigned clearance for this offboarding request will be declined. This does not stop the offboarding request — it will continue processing normally. Please provide a reason.',
                 icon: 'warning',
                 input: 'textarea',
                 inputLabel: 'Reason for Declining',
-                inputPlaceholder: 'Explain why this checklist is being declined...',
+                inputPlaceholder: 'Explain why this offboarding request is being declined...',
                 inputValue: this.declineReasonDraft,
                 inputValidator: (value) => {
                     if (!value || !value.trim()) {
-                        return 'A reason is required to decline this checklist.';
+                        return 'A reason is required to decline this offboarding request.';
                     }
                 },
                 showCancelButton: true,
@@ -100,20 +114,34 @@
                     // already typed.
                     this.declineReasonDraft = '';
 
+                    // Closed and removed from the underlying queue only on
+                    // genuine success, same order `checklist-modal.blade.php`'s
+                    // own declineChecklist() already uses — it was declined,
+                    // not merely edited in place, so it must not linger open
+                    // or keep showing in the list until a manual reload.
+                    window.dispatchEvent(new CustomEvent('close-general-signatory-modal'));
+                    this.removeListCard(targetItem?.id);
+
                     window.Swal?.fire({
                         icon: 'success',
-                        title: 'Checklist Declined Successfully',
-                        text: 'The checklist has been successfully declined and the decline reason has been recorded.',
+                        title: 'Declined Successfully',
+                        text: 'This offboarding request has been successfully declined and the decline reason has been recorded.',
                         confirmButtonColor: '#145a3a',
                     });
                 }).catch((e) => {
+                    // Modal deliberately stays open, `declining` is cleared
+                    // (re-enabling the button, clearing the loader), and the
+                    // card is NOT removed — this must only ever happen on
+                    // genuine success, never on a failed attempt, so the
+                    // General Signatory can correct/retry without losing
+                    // their place or their already-typed reason.
                     this.declining = false;
                     Swal.fire({
                         icon: 'error',
-                        title: 'Failed to Decline Checklist',
+                        title: 'Failed to Decline',
                         text: e?.name === 'AbortError'
                             ? 'This is taking longer than expected. Please check before trying again.'
-                            : (e?.message || 'The checklist could not be declined. Please try again.'),
+                            : (e?.message || 'This offboarding request could not be declined. Please try again.'),
                         confirmButtonColor: '#145a3a',
                     });
                 });
@@ -147,7 +175,7 @@
             return 'none';
         },
     }" @open-general-signatory-modal.window="setSelected($event.detail)">
-    <x-ui.modal x-data="{ open: false }" @open-general-signatory-modal.window="open = true" :isOpen="false" class="w-full sm:max-w-[480px]">
+    <x-ui.modal x-data="{ open: false }" @open-general-signatory-modal.window="open = true" @close-general-signatory-modal.window="open = false" :isOpen="false" class="w-full sm:max-w-[480px]">
         <div class="no-scrollbar relative w-full overflow-y-auto rounded-3xl bg-white p-6 dark:bg-gray-900 lg:p-8" x-show="selected" x-cloak>
             <template x-if="selected">
                 <div>

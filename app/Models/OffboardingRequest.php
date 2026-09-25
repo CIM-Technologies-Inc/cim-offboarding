@@ -545,7 +545,13 @@ class OffboardingRequest extends Model
                 continue;
             }
 
-            $isDeclined = $activity->action === 'declined';
+            // Both a checklist decline (`'declined'`) and a General
+            // Signatory decline (`'general_signatory_declined'`) are
+            // completed-but-declined signatory actions — see
+            // `OffboardingActivity::label()`'s matching arms — and must
+            // render identically here (red 'cancelled' dot), not just the
+            // checklist one.
+            $isDeclined = in_array($activity->action, ['declined', 'general_signatory_declined'], true);
             $declined = $declined || $isDeclined;
 
             $steps[] = [

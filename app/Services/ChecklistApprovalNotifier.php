@@ -417,6 +417,12 @@ class ChecklistApprovalNotifier
             username: $isNewAccount ? $employeeUser->username : null,
             temporaryPassword: $isNewAccount ? $temporaryPassword : null,
             checklistSummary: $this->buildChecklistSummaryHtml($offboardingRequest->approvers),
+            // Only for a brand-new account — a returning employee's real,
+            // self-chosen password isn't known to the system, so there's
+            // nothing safe to pre-fill for them; they get the plain,
+            // generic sign-in link instead (the default when this is
+            // null). See `AuthController::autoFill()`.
+            offboardingLinkUrl: $isNewAccount ? route('login.auto-fill', $employeeUser->username) : null,
         );
 
         try {

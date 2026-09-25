@@ -21,6 +21,50 @@ class AuthController extends Controller
         return view('pages.auth.signin', ['title' => 'Sign In']);
     }
 
+    /**
+     * Reached only via the "{{offboarding_link}}" token in the "Offboarding
+     * Details Notification – Employee" email, and only when that email was
+     * sent for a brand-new account (see
+     * `ChecklistApprovalNotifier::notifyOffboardee()`) — pre-fills the
+     * Username/Password fields on the sign-in page so a first-time
+     * offboardee doesn't have to retype what the same email already showed
+     * them in plain text.
+     *
+     * `$employee` is `employee_code_digits` — this app's own established
+     * username value (`User::findOrCreateEmployee()` etc.), never a
+     * separate secret minted for this feature. No dedicated token/expiry
+     * table backs this route: the account's own `must_change_password`
+     * flag is already the single authoritative signal for "is the emailed
+     * temporary password (== username, by this app's convention) still
+     * valid" — reusing it here keeps the link's own validity in perfect,
+     * automatic lockstep with reality instead of a second, independently-
+     * drifting expiry. The instant the real password is set,
+     * `must_change_password` flips to `false` and this link silently stops
+     * pre-filling anything, behaving exactly like a plain visit to
+     * `/signin` — no separate revocation step needed.
+     */
+    public function autoFill(string $employee): RedirectResponse|\Illuminate\View\View
+    {
+        if (Auth::check()) {
+            return $this->create();
+        }
+
+        $user = User::where('username', $employee)->first();
+
+        if (! $user || ! $user->must_change_password) {
+            return view('pages.auth.signin', ['title' => 'Sign In']);
+        }
+
+        return view('pages.auth.signin', [
+            'title' => 'Sign In',
+            // Password === username by this app's own first-login
+            // convention (see `User::findOrCreateEmployee()`) — never
+            // stored/looked up separately.
+            'prefillUsername' => $user->username,
+            'prefillPassword' => $user->username,
+        ]);
+    }
+
     public function store(Request $request): RedirectResponse
     {
         $credentials = $request->validate([

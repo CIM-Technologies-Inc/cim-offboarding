@@ -31,6 +31,15 @@ use App\Http\Controllers\SeparationTypeController;
 
 // authentication pages
 Route::get('/signin', [AuthController::class, 'create'])->name('login');
+// First-login auto-fill — reached via the "{{offboarding_link}}" token in
+// the "Offboarding Details Notification – Employee" email only (see
+// ChecklistApprovalNotifier::notifyOffboardee()). {employee} is the same
+// employee_code_digits value already used as the account's own username —
+// never a separate secret — and this route only ever pre-fills anything
+// while the account is still genuinely at its first-login state (see
+// AuthController::autoFill()'s own docblock for why no separate
+// token/expiry table is needed on top of that).
+Route::get('/signin/{employee}', [AuthController::class, 'autoFill'])->name('login.auto-fill');
 Route::post('/login', [AuthController::class, 'store'])->name('login.store');
 Route::post('/logout', [AuthController::class, 'destroy'])->name('logout');
 

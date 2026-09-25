@@ -137,6 +137,13 @@ class EmailTemplate extends Model
      * available at this call site (e.g. "{{due_date}}" when the caller has
      * no specific assignment in scope) is simply replaced with an empty
      * string, never left as a raw, unresolved token in the sent email.
+     * `$offboardingLinkUrl` overrides what "{{offboarding_link}}" itself
+     * points to — every caller except `ChecklistApprovalNotifier::notifyOffboardee()`'s
+     * first-account-creation case leaves it null, which keeps the plain,
+     * generic sign-in page; that one caller instead passes a per-employee
+     * auto-fill URL (`AuthController::autoFill()`) so a first-time
+     * offboardee's Username/Password fields are pre-filled from the same
+     * credentials this email already shows them in plain text.
      *
      * @return array{0: string, 1: string} [subject, body]
      */
@@ -181,6 +188,7 @@ class EmailTemplate extends Model
         ?string $signatoryType = null,
         ?string $checklistType = null,
         ?string $completedAt = null,
+        ?string $offboardingLinkUrl = null,
     ): array {
         $values = $this->placeholderValues(
             $approverName, $offboardeeName, $creatorName, $employeeNumber, $checklistName,
@@ -192,7 +200,7 @@ class EmailTemplate extends Model
             $originalDueDate, $extensionDays, $extendedDueDate, $clearanceSignatoryName,
             $cancelledBy, $cancelledAt, $offboardingRequestId, $cancellationReason,
             $declinedBy, $declinedAt, $declineReason, $signatoryType, $checklistType,
-            $completedAt,
+            $completedAt, $offboardingLinkUrl,
         );
 
         return [
@@ -245,6 +253,7 @@ class EmailTemplate extends Model
         ?string $signatoryType = null,
         ?string $checklistType = null,
         ?string $completedAt = null,
+        ?string $offboardingLinkUrl = null,
     ): array {
         return [
             'approver_name' => $approverName,
@@ -287,7 +296,13 @@ class EmailTemplate extends Model
             'signatory_type' => $signatoryType ?? '',
             'checklist_type' => $checklistType ?? '',
             'completed_at' => $completedAt ?? '',
-            'offboarding_link' => '<a href="' . route('login') . '">CIM Offboarding</a>',
+            // Defaults to the plain, generic sign-in page for every caller
+            // except `ChecklistApprovalNotifier::notifyOffboardee()`'s
+            // first-account-creation case, which passes a per-employee
+            // auto-fill URL instead (see `AuthController::autoFill()`) so
+            // the offboardee doesn't have to retype the username/password
+            // this same email already shows them in plain text.
+            'offboarding_link' => '<a href="' . ($offboardingLinkUrl ?? route('login')) . '">CIM Offboarding</a>',
             'approver' => $approverName,
             'offboardee' => $offboardeeName,
             'employee' => $creatorName,
