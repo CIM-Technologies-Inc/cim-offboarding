@@ -3,10 +3,10 @@ set -e
 
 cd /var/www/html
 
+php artisan storage:link --quiet || true
+
 chown -R www-data:www-data storage bootstrap/cache
 chmod -R ug+rwX storage bootstrap/cache
-
-php artisan storage:link --quiet || true
 
 if [ "${RUN_MIGRATIONS:-false}" = "true" ]; then
     runuser -u www-data -- php artisan migrate --force
@@ -16,7 +16,7 @@ fi
 # scheduler, artisan commands) as www-data so files it creates in storage
 # stay writable by the web server.
 if [ "$1" != "apache2-foreground" ] && [ "$(id -u)" = "0" ]; then
-    exec runuser -u www-data -- "$@"
+    exec setpriv --reuid=www-data --regid=www-data --init-groups -- "$@"
 fi
 
 exec "$@"
