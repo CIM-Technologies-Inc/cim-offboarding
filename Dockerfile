@@ -23,6 +23,19 @@ WORKDIR /app
 COPY composer.json composer.lock ./
 RUN composer install --no-dev --no-interaction --prefer-dist --no-progress --optimize-autoloader --no-scripts
 
+FROM node:22-slim AS assets
+
+WORKDIR /app
+
+ARG NPM_REGISTRY=https://registry.npmjs.org/
+
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund --registry="$NPM_REGISTRY"
+
+COPY . .
+COPY --from=vendor /app/vendor ./vendor
+RUN npm run build
+
 FROM php:8.3-apache
 
 ENV APACHE_DOCUMENT_ROOT=/var/www/html/public
@@ -47,6 +60,7 @@ WORKDIR /var/www/html
 
 COPY --from=vendor /app/vendor ./vendor
 COPY . .
+COPY --from=assets /app/public/build ./public/build
 COPY docker/apache.conf /etc/apache2/sites-available/000-default.conf
 COPY docker/entrypoint.sh /usr/local/bin/docker-entrypoint
 

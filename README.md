@@ -480,14 +480,13 @@ Docker Desktop is enough; PHP, Composer, Node.js, and MySQL do not need to be in
 
 ```powershell
 if (!(Test-Path .env)) { Copy-Item .env.docker.example .env }
-npm run build
 docker compose build
 ```
 
 If `APP_KEY` is empty in `.env`, generate one before opening the application:
 
 ```powershell
-$key = docker compose run --rm --no-deps -e APP_KEY= app php artisan key:generate --show
+$key = docker compose run --rm --no-deps -e APP_KEY= -e RUN_MIGRATIONS=false app php artisan key:generate --show
 ((Get-Content .env) -replace '^APP_KEY=.*$', "APP_KEY=$key") | Set-Content .env
 ```
 
@@ -510,7 +509,7 @@ docker compose up -d
 If PHP is not installed on the server, generate the application key before starting the stack with a one-off container:
 
 ```bash
-docker compose run --rm --no-deps -e APP_KEY= app php artisan key:generate --show
+docker compose run --rm --no-deps -e APP_KEY= -e RUN_MIGRATIONS=false app php artisan key:generate --show
 ```
 
 Put the returned `base64:...` value in `.env` as `APP_KEY`, then run `docker compose up -d`. The web application will be available at `http://localhost:8080` (or the `APP_PORT` configured in `.env`). The first startup runs migrations automatically through `RUN_MIGRATIONS=true`.
@@ -522,7 +521,7 @@ docker compose build --pull
 docker compose up -d
 ```
 
-The scheduler container invokes `php artisan schedule:run` every minute, while the queue container continuously processes queued mail. Run `npm run build` whenever frontend files change, before rebuilding the image. View service logs with `docker compose logs -f app queue scheduler`.
+The scheduler container invokes `php artisan schedule:run` every minute, while the queue container continuously processes queued mail. Frontend assets are built inside the image, so rebuild the image whenever frontend files change. View service logs with `docker compose logs -f app queue scheduler`.
 
 ### CI/CD pipeline
 

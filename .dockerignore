@@ -5,8 +5,7 @@
 !.env.docker.example
 node_modules
 public/build
-!public/build/
-!public/build/**
+public/hot
 vendor
 storage/logs/*
 storage/framework/cache/*

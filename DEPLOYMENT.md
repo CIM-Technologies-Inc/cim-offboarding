@@ -8,10 +8,8 @@ Install:
 
 - Docker Desktop
 - Git
-- Node.js 20 or newer
-- npm
 
-PHP, Composer, and MySQL do not need to be installed locally when using Docker.
+PHP, Composer, Node.js, and MySQL do not need to be installed locally when using Docker.
 
 ## 2. Pull the Latest Code
 
@@ -27,20 +25,14 @@ Do not pull over uncommitted changes that you still need. Commit or stash them f
 
 ## 3. Build Frontend Assets
 
-The Docker image packages the Vite output from `public/build`. Build it before building Docker:
+The Docker image builds the Vite assets itself, so no local `npm run build` is needed. A local `public/build` folder is ignored by the Docker build.
+
+If `registry.npmjs.org` is blocked on your network (the build fails at `npm ci` with `Exit handler never called!` or `ECONNRESET`), build through a mirror:
 
 ```powershell
-npm install --registry=https://registry.npmmirror.com
-npm run build
+docker compose build --build-arg NPM_REGISTRY=https://registry.npmmirror.com/
+docker compose up -d
 ```
-
-Confirm that the output exists:
-
-```powershell
-Test-Path public\build
-```
-
-The result should be `True`.
 
 ## 4. Test Migrations Locally From a Clean Database
 
@@ -177,8 +169,6 @@ Put the server behind HTTPS and back up these Docker volumes:
 From the project directory on the production server:
 
 ```bash
-npm install
-npm run build
 docker compose build --pull
 docker compose up -d
 docker compose ps
@@ -208,8 +198,6 @@ For an approved update:
 
 ```bash
 git pull --ff-only origin main
-npm install
-npm run build
 docker compose build --pull
 docker compose up -d
 docker compose ps
