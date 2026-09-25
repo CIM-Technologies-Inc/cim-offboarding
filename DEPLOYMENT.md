@@ -52,7 +52,7 @@ The app container automatically runs migrations because the Compose app service 
 Check the migration state:
 
 ```powershell
-docker compose exec app php artisan migrate:status
+docker compose exec -u www-data app php artisan migrate:status
 ```
 
 Never use `migrate:fresh` in production.
@@ -62,7 +62,7 @@ Never use `migrate:fresh` in production.
 The admin seeder is separate from the normal application startup. Run it explicitly:
 
 ```powershell
-docker compose exec app php artisan db:seed --class=AdminUserSeeder --force
+docker compose exec -u www-data app php artisan db:seed --class=AdminUserSeeder --force
 ```
 
 The current development credentials are:
@@ -183,13 +183,13 @@ curl -I http://localhost:8080
 Check migrations:
 
 ```bash
-docker compose exec app php artisan migrate:status
+docker compose exec -u www-data app php artisan migrate:status
 ```
 
 Run the admin seeder only if it is explicitly approved for that environment:
 
 ```bash
-docker compose exec app php artisan db:seed --class=AdminUserSeeder --force
+docker compose exec -u www-data app php artisan db:seed --class=AdminUserSeeder --force
 ```
 
 ## 10. Production Updates
@@ -270,10 +270,10 @@ docker compose logs -f queue
 docker compose logs -f scheduler
 
 # Run migrations
-docker compose exec app php artisan migrate --force
+docker compose exec -u www-data app php artisan migrate --force
 
 # Run one specific seeder
-docker compose exec app php artisan db:seed --class=AdminUserSeeder --force
+docker compose exec -u www-data app php artisan db:seed --class=AdminUserSeeder --force
 
 # Stop services and preserve data
 docker compose down

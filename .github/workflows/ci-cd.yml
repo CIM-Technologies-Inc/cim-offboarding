@@ -40,9 +40,6 @@ jobs:
           cp .env.example .env
           php artisan key:generate
 
-      - name: Run tests
-        run: php artisan test
-
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
@@ -54,6 +51,9 @@ jobs:
 
       - name: Build frontend assets
         run: npm run build
+
+      - name: Run tests
+        run: php artisan test
 
       - name: Log in to GHCR
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

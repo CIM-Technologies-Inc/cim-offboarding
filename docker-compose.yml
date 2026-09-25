@@ -63,7 +63,7 @@ services:
       DB_USERNAME: cim_offboarding
       DB_PASSWORD: ${MYSQL_APP_PASSWORD:-change-this-database-password}
       RUN_MIGRATIONS: "false"
-    command: sh -c 'while true; do php artisan schedule:run --verbose --no-interaction; sleep 60; done'
+    command: php artisan schedule:work
     volumes:
       - app-storage:/var/www/html/storage
     depends_on:
@@ -81,7 +81,7 @@ services:
       MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD:-change-this-database-password}
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-this-root-password}
     ports:
-      - "${DB_PUBLISH_PORT:-3307}:3306"
+      - "127.0.0.1:${DB_PUBLISH_PORT:-3307}:3306"
     volumes:
       - mysql-data:/var/lib/mysql
     healthcheck:
