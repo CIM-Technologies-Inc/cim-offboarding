@@ -470,6 +470,90 @@ All 5 command classes in `app/Console/Commands/` are wired into the schedule abo
 - **Node.js** + npm (for Vite/Tailwind build)
 - **MySQL** (the app is configured for MySQL specifically — `config/database.php`'s own fallback is `sqlite`, but `.env.example` explicitly sets `mysql`)
 
+### Docker deployment
+
+Docker Compose runs the web application, database-backed queue worker, scheduler, and MySQL with persistent volumes. This is the recommended starting point for an in-house server:
+
+#### Try it on a laptop first
+
+Docker Desktop is enough; PHP, Composer, Node.js, and MySQL do not need to be installed on the laptop. From the project directory:
+
+```powershell
+if (!(Test-Path .env)) { Copy-Item .env.docker.example .env }
+npm run build
+docker compose build
+```
+
+If `APP_KEY` is empty in `.env`, generate one before opening the application:
+
+```powershell
+$key = docker compose run --rm --no-deps -e APP_KEY= app php artisan key:generate --show
+((Get-Content .env) -replace '^APP_KEY=.*$', "APP_KEY=$key") | Set-Content .env
+```
+
+Start and check the local stack:
+
+```powershell
+docker compose up -d
+docker compose ps
+```
+
+Open `http://localhost:8080`. Docker overrides the host `.env` database credentials with the dedicated `cim_offboarding` MySQL user, so an XAMPP setting such as `DB_USERNAME=root` does not break the container database. The queue worker, scheduler, and MySQL are included. View logs with `docker compose logs -f app queue scheduler`; stop the containers without deleting the database with `docker compose down`.
+
+```bash
+copy .env.docker.example .env   # Windows; use cp on Linux
+php artisan key:generate        # only if PHP/Composer is available locally
+docker compose build
+docker compose up -d
+```
+
+If PHP is not installed on the server, generate the application key before starting the stack with a one-off container:
+
+```bash
+docker compose run --rm --no-deps -e APP_KEY= app php artisan key:generate --show
+```
+
+Put the returned `base64:...` value in `.env` as `APP_KEY`, then run `docker compose up -d`. The web application will be available at `http://localhost:8080` (or the `APP_PORT` configured in `.env`). The first startup runs migrations automatically through `RUN_MIGRATIONS=true`.
+
+Before production use, set a strong database password, configure the real SMTP settings, change `APP_URL`, and place the server behind HTTPS. Keep `mysql-data` and `app-storage` backed up; they contain the application database and uploaded signatures/photos. To update an existing deployment:
+
+```bash
+docker compose build --pull
+docker compose up -d
+```
+
+The scheduler container invokes `php artisan schedule:run` every minute, while the queue container continuously processes queued mail. Run `npm run build` whenever frontend files change, before rebuilding the image. View service logs with `docker compose logs -f app queue scheduler`.
+
+### CI/CD pipeline
+
+The intended release flow is:
+
+```text
+Developer branch -> Pull Request -> QA validation/approval -> merge to main -> deploy
+```
+
+`.github/workflows/ci-cd.yml` runs on pull requests and pushes to `main`. It installs PHP and frontend dependencies, runs the Laravel test suite, builds the Vite assets, and builds the Docker image. Pull requests validate the proposed code but do not publish or deploy an image. A push to `main` publishes commit-tagged and `latest` images to GitHub Container Registry (`ghcr.io`).
+
+Recommended GitHub repository settings for this flow:
+
+1. Developers work on branches such as `feature/...`, `fix/...`, or `hotfix/...`; do not push directly to `main`.
+2. Protect `main` under **Settings -> Branches -> Branch protection rules**.
+3. Require a pull request, require the `test-build-publish` status check, require at least one QA/team approval, and dismiss stale approvals after new commits.
+4. Restrict who can push to `main` and require the branch to be up to date before merging.
+5. After QA approves and the pull request merges, the `main` workflow publishes the image. The in-house deployment server should then pull that commit-tagged image and run the release steps.
+
+QA can validate a developer branch by selecting the pull request's branch in the QA checkout, or by testing the pull request preview environment if one is added later. QA should approve the pull request only after the workflow is green and the functional checks are complete. The pull request checklist is stored in `.github/pull_request_template.md`.
+
+The deployment server should pull the commit-tagged image, run migrations, run only explicitly approved idempotent seeders, and then restart the web, queue, and scheduler services. Seeder execution is intentionally separate from image building:
+
+```bash
+docker compose run --rm --no-deps app php artisan migrate --force
+docker compose run --rm --no-deps app php artisan db:seed --class=AdminUserSeeder --force
+docker compose up -d
+```
+
+Do not run the fixed `admin` / `123456` seeder in production without replacing that credential strategy with a secret-managed account or a mandatory password rotation.
+
 ### Steps
 
 1. **Clone and install dependencies**

@@ -1,0 +1,95 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USERNAME: cim_offboarding
+      DB_PASSWORD: ${MYSQL_APP_PASSWORD:-change-this-database-password}
+      RUN_MIGRATIONS: "true"
+    ports:
+      - "${APP_PORT:-8080}:80"
+    volumes:
+      - app-storage:/var/www/html/storage
+    healthcheck:
+      test: ["CMD", "php", "-r", "$$socket = @fsockopen('127.0.0.1', 80); exit($$socket ? 0 : 1);"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  queue:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USERNAME: cim_offboarding
+      DB_PASSWORD: ${MYSQL_APP_PASSWORD:-change-this-database-password}
+      RUN_MIGRATIONS: "false"
+    command: php artisan queue:work --sleep=3 --tries=3 --timeout=120
+    volumes:
+      - app-storage:/var/www/html/storage
+    depends_on:
+      mysql:
+        condition: service_healthy
+      app:
+        condition: service_healthy
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USERNAME: cim_offboarding
+      DB_PASSWORD: ${MYSQL_APP_PASSWORD:-change-this-database-password}
+      RUN_MIGRATIONS: "false"
+    command: sh -c 'while true; do php artisan schedule:run --verbose --no-interaction; sleep 60; done'
+    volumes:
+      - app-storage:/var/www/html/storage
+    depends_on:
+      mysql:
+        condition: service_healthy
+      app:
+        condition: service_healthy
+
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${DB_DATABASE:-cim_offboarding}
+      MYSQL_USER: cim_offboarding
+      MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD:-change-this-database-password}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-this-root-password}
+    ports:
+      - "${DB_PUBLISH_PORT:-3307}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  app-storage:
+  mysql-data:

@@ -1,4 +1,8 @@
 {{-- Notification Dropdown Component --}}
+@php
+    $notifications = $notifications ?? collect();
+    $unreadCount = $unreadCount ?? $notifications->whereNull('read_at')->count();
+@endphp
 <div class="relative" x-data="{
     dropdownOpen: false,
     toggleDropdown() {
