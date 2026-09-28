@@ -43,10 +43,17 @@ class OffboardeeController extends Controller
         // NOT included here — cancellation retracts the request entirely,
         // so the employee must disappear from this listing immediately and
         // only reappear once a genuinely new request is created for them.
+        // Sorted by the offboarding REQUEST's own `created_at`, newest
+        // first — never alphabetically by name/employee number/any other
+        // field. `orderBy()` on the `employees` query itself can't reach
+        // into the related `offboarding_requests` row, so this is a
+        // collection-level sort applied after eager loading rather than a
+        // DB-level `orderBy` on this query.
         $employees = Employee::whereIn('status', ['offboarding', 'offboarded'])
             ->with(['latestOffboardingRequest.checklistTemplates', 'latestOffboardingRequest.approvers.checklistTemplate', 'latestOffboardingRequest.approvers.employee', 'latestOffboardingRequest.approvers.itemProgress', 'latestOffboardingRequest.generalSignatoryApprovals', 'latestOffboardingRequest.immediateHead', 'latestOffboardingRequest.finalApproval.employee'])
-            ->orderBy('name')
-            ->get();
+            ->get()
+            ->sortByDesc(fn (Employee $employee) => $employee->latestOffboardingRequest?->created_at)
+            ->values();
 
         $departments = $employees->pluck('department')->unique()->sort()->values();
 
