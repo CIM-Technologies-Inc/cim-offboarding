@@ -97,7 +97,9 @@ return [
 
     'cipher' => 'AES-256-CBC',
 
-    'key' => env('APP_KEY'),
+    // Falls back to the key the Docker entrypoint generates on first start
+    // when APP_KEY is not set.
+    'key' => env('APP_KEY') ?: (is_file(storage_path('app/.app_key')) ? trim(file_get_contents(storage_path('app/.app_key'))) : null),
 
     'previous_keys' => [
         ...array_filter(

@@ -1,0 +1,15 @@
+.git
+.github
+.env
+.env.*
+!.env.docker.example
+node_modules
+public/build
+public/hot
+vendor
+storage/logs/*
+storage/framework/cache/*
+storage/framework/sessions/*
+storage/framework/views/*
+docker-compose.override.yml
+tailadmin-laravel.png
