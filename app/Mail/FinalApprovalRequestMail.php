@@ -30,13 +30,25 @@ class FinalApprovalRequestMail extends Mailable implements ShouldQueue
 {
     use Queueable, SerializesModels;
 
+    // Stored base64-encoded, not raw — this Mailable is queued (ShouldQueue),
+    // and Laravel JSON-encodes its public properties to persist the job in
+    // the `jobs` table. Raw PDF/PNG bytes aren't valid UTF-8, which makes
+    // that JSON encoding fail with "Malformed UTF-8 characters". See
+    // attachments() below, which decodes it back.
+    public string $pdfBytes;
+
+    public ?string $pngBytes;
+
     public function __construct(
         public string $emailSubject,
         public string $emailBody,
-        public string $pdfBytes,
+        string $pdfBytes,
         public string $offboardeeName,
-        public ?string $pngBytes = null,
-    ) {}
+        ?string $pngBytes = null,
+    ) {
+        $this->pdfBytes = base64_encode($pdfBytes);
+        $this->pngBytes = $pngBytes !== null ? base64_encode($pngBytes) : null;
+    }
 
     public function envelope(): Envelope
     {
@@ -62,12 +74,12 @@ class FinalApprovalRequestMail extends Mailable implements ShouldQueue
     public function attachments(): array
     {
         $attachments = [
-            Attachment::fromData(fn () => $this->pdfBytes, 'Clearance Form - ' . $this->offboardeeName . '.pdf')
+            Attachment::fromData(fn () => base64_decode($this->pdfBytes), 'Clearance Form - ' . $this->offboardeeName . '.pdf')
                 ->withMime('application/pdf'),
         ];
 
         if ($this->pngBytes !== null) {
-            $attachments[] = Attachment::fromData(fn () => $this->pngBytes, 'Clearance Form - ' . $this->offboardeeName . '.png')
+            $attachments[] = Attachment::fromData(fn () => base64_decode($this->pngBytes), 'Clearance Form - ' . $this->offboardeeName . '.png')
                 ->withMime('image/png');
         }
 
