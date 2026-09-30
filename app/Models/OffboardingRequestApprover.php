@@ -23,6 +23,9 @@ class OffboardingRequestApprover extends Model
         'approval_remarks',
         'declined_at',
         'decline_reason',
+        'on_hold_removed_at',
+        'on_hold_removed_by',
+        'on_hold_removal_reason',
         'reminder_sent_at',
         'delegated_employee_id',
         'delegation_status',
@@ -42,6 +45,7 @@ class OffboardingRequestApprover extends Model
             'first_viewed_at' => 'datetime',
             'approved_at' => 'datetime',
             'declined_at' => 'datetime',
+            'on_hold_removed_at' => 'datetime',
             'reminder_sent_at' => 'datetime',
             'delegated_at' => 'datetime',
             'delegate_completed_at' => 'datetime',
@@ -76,6 +80,17 @@ class OffboardingRequestApprover extends Model
     public function firstViewedBy(): BelongsTo
     {
         return $this->belongsTo(Employee::class, 'first_viewed_by_employee_id');
+    }
+
+    /**
+     * Who removed this checklist's "On Hold" state — set only once per
+     * hold, alongside `on_hold_removed_at`/`on_hold_removal_reason` (see
+     * `ApprovalController::removeHold()`), the same signatory-authorized
+     * action that placed it on hold in the first place.
+     */
+    public function onHoldRemovedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'on_hold_removed_by');
     }
 
     public function itemProgress(): HasMany
@@ -496,7 +511,7 @@ class OffboardingRequestApprover extends Model
     public function isOverdue(): bool
     {
         return $this->due_at !== null
-            && ! in_array($this->status, ['approved', 'declined'], true)
+            && $this->status !== 'approved'
             && now()->greaterThan($this->due_at);
     }
 
@@ -557,6 +572,14 @@ class OffboardingRequestApprover extends Model
             return 'Declined';
         }
 
+        // Checklist-level hold (see `ApprovalController::decline()`) — a
+        // whole different concept from the per-ITEM hold branch just below,
+        // which only ever reads `ChecklistItemProgress.status`, never this
+        // row's own `status` column.
+        if ($this->status === 'on_hold') {
+            return 'On Hold';
+        }
+
         $this->loadMissing('itemProgress');
 
         if ($this->itemProgress->contains(fn (ChecklistItemProgress $progress) => $progress->status === 'hold')) {
@@ -602,7 +625,7 @@ class OffboardingRequestApprover extends Model
     public function canExtendDue(): bool
     {
         return $this->due_at !== null
-            && ! in_array($this->status, ['approved', 'declined'], true)
+            && $this->status !== 'approved'
             && now()->greaterThanOrEqualTo($this->due_at);
     }
 
@@ -691,7 +714,7 @@ class OffboardingRequestApprover extends Model
     public function isClearanceSigningOverdue(): bool
     {
         return $this->clearance_signing_due_at !== null
-            && ! in_array($this->status, ['approved', 'declined'], true)
+            && $this->status !== 'approved'
             && now()->greaterThan($this->clearance_signing_due_at);
     }
 

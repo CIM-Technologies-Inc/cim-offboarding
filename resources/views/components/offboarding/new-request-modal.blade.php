@@ -209,6 +209,14 @@
                                      anyway. --}}
                                 @click.stop @click.away="activeDropdown = null"
                                 @reset-offboarding-request-fields.window="query = ''; selectedEmployeeId = ''"
+                                {{-- Dispatched by the Offboardee page's own Retract success
+                                     handler the instant a retraction succeeds (that employee's
+                                     `status` reverts to 'active' server-side at the same
+                                     moment) — pushed straight into this already-rendered list so
+                                     they're selectable again with no page reload. Guarded
+                                     against a duplicate push if this same employee were somehow
+                                     already present. --}}
+                                @employee-available-for-offboarding.window="if (!employees.some((e) => e.id === $event.detail.id)) { employees.push($event.detail); }"
                                 class="relative">
                                 <input type="hidden" name="employee_id" :value="selectedEmployeeId" />
                                 <input type="text" id="offboardeeNameInput" x-model="query" autocomplete="off"
@@ -295,6 +303,10 @@
                                      `@click.away` alone can't close this inside the modal. --}}
                                 @click.stop @click.away="activeDropdown = null"
                                 @reset-offboarding-request-fields.window="query = ''; selectedEmployeeId = ''"
+                                {{-- Same reasoning as the Employee picker above's identical
+                                     listener — a retraction makes that employee eligible as an
+                                     Immediate Head again too, reactively, with no page reload. --}}
+                                @employee-available-for-offboarding.window="if (!employees.some((e) => e.id === $event.detail.id)) { employees.push($event.detail); }"
                                 class="relative">
                                 <input type="hidden" name="immediate_head_id" :value="selectedEmployeeId" />
                                 <input type="text" x-model="query" autocomplete="off"

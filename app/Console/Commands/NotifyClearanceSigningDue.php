@@ -69,7 +69,7 @@ class NotifyClearanceSigningDue extends Command
     private function notifyChecklistAssignments(?EmailTemplate $emailTemplate): int
     {
         $due = OffboardingRequestApprover::query()
-            ->whereNotIn('status', ['approved', 'declined'])
+            ->where('status', '!=', 'approved')
             ->whereNotNull('clearance_signing_due_at')
             ->where('clearance_signing_due_at', '<=', now())
             ->whereNull('clearance_signing_due_notified_at')
@@ -118,7 +118,7 @@ class NotifyClearanceSigningDue extends Command
     private function notifyGeneralSignatoryAssignments(?EmailTemplate $emailTemplate): int
     {
         $due = OffboardingRequestGeneralSignatory::query()
-            ->whereNotIn('status', ['approved', 'declined'])
+            ->where('status', '!=', 'approved')
             ->whereNotNull('due_at')
             ->where('due_at', '<=', now())
             ->whereNull('clearance_signing_due_notified_at')

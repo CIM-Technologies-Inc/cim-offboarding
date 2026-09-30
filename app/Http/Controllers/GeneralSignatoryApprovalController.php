@@ -74,6 +74,12 @@ class GeneralSignatoryApprovalController extends Controller
     {
         $this->authorizeAssignment($generalSignatoryApproval);
 
+        abort_if(
+            $generalSignatoryApproval->offboardingRequest->isReadOnly(),
+            422,
+            'This offboarding request has been retracted and can no longer be actioned.'
+        );
+
         if (! auth()->user()->hasUsableSignature()) {
             return redirect()->route('profile')->with('error', self::MISSING_SIGNATURE_MESSAGE);
         }
@@ -102,21 +108,21 @@ class GeneralSignatoryApprovalController extends Controller
 
     /**
      * In-app Decline — the General Signatory equivalent of
-     * `ApprovalController::decline()`, same completed-action semantics:
-     * requires an e-signature (declining is still a signed-off decision)
-     * and a mandatory reason, never blocks the offboarding request, and
-     * counts as this General Signatory's required action being done (see
-     * `ChecklistCompletionService`'s gates, widened to accept 'declined'
-     * alongside 'approved').
+     * `ApprovalController::decline()`: places this General Signatory's
+     * approval On Hold (`status = 'on_hold'`), NOT a completed action. No
+     * signature required (declining isn't a final signed-off decision,
+     * just a pause) — a mandatory reason still is. Never advances the
+     * offboarding request; blocks Submit/Decline again until the SAME
+     * signatory calls `removeHold()` below.
      */
     public function decline(Request $request, OffboardingRequestGeneralSignatory $generalSignatoryApproval): RedirectResponse|JsonResponse
     {
         $this->authorizeAssignment($generalSignatoryApproval);
 
-        if (! auth()->user()->hasUsableSignature()) {
+        if ($generalSignatoryApproval->offboardingRequest->isReadOnly()) {
             return $request->wantsJson()
-                ? response()->json(['message' => self::MISSING_SIGNATURE_MESSAGE], 422)
-                : redirect()->route('profile')->with('error', self::MISSING_SIGNATURE_MESSAGE);
+                ? response()->json(['message' => 'This offboarding request has been retracted and can no longer be actioned.'], 422)
+                : abort(422, 'This offboarding request has been retracted and can no longer be actioned.');
         }
 
         abort_unless($generalSignatoryApproval->status === 'pending', 422, 'This has already been actioned.');
@@ -149,12 +155,12 @@ class GeneralSignatoryApprovalController extends Controller
 
         if ($request->wantsJson()) {
             return response()->json([
-                'message' => 'Declined.',
+                'message' => 'Placed on hold.',
                 'declinedAt' => $generalSignatoryApproval->fresh()->declined_at->format('M d, Y g:i A'),
             ]);
         }
 
-        return back()->with('success', $generalSignatoryApproval->offboardingRequest->employee->name . '\'s General Signatory checklist was declined.');
+        return back()->with('success', $generalSignatoryApproval->offboardingRequest->employee->name . '\'s General Signatory checklist was placed on hold.');
     }
 
     /**
@@ -177,6 +183,12 @@ class GeneralSignatoryApprovalController extends Controller
     public function remind(Request $request, OffboardingRequestGeneralSignatory $generalSignatoryApproval): RedirectResponse
     {
         abort_unless(auth()->user()->isAdmin(), 403);
+
+        abort_if(
+            $generalSignatoryApproval->offboardingRequest->isReadOnly(),
+            422,
+            'This offboarding request has been retracted and can no longer be actioned.'
+        );
 
         abort_if(
             $generalSignatoryApproval->status === 'approved',
@@ -224,7 +236,7 @@ class GeneralSignatoryApprovalController extends Controller
             ]);
 
             return redirect()
-                ->route('offboardees.index', ['offboardee' => $offboardingRequest->employee_id])
+                ->route('offboardees.index', ['offboardee' => $offboardingRequest->id])
                 ->with('success', 'Notification resent to ' . $clearanceSignatory->name . '.');
         } catch (\Throwable $e) {
             Log::error('Failed to resend General Signatory offboarding notification email.', [
@@ -404,15 +416,17 @@ class GeneralSignatoryApprovalController extends Controller
     }
 
     /**
-     * The decline counterpart to `finalizeApproval()` — same shape, same
-     * completion cascade (a decline is just as much "this General
-     * Signatory's own track can advance" as an approval is), different
-     * terminal status/columns and activity action.
+     * The decline counterpart to `finalizeApproval()` — places this General
+     * Signatory's approval On Hold. Unlike `finalizeApproval()`, this
+     * deliberately runs NO completion cascade: a hold must never advance
+     * this General Signatory's own Core -> Secondary -> Final Pay staging,
+     * nor the checklist track, nor overall completion — only a genuine
+     * approval (after `removeHold()` below) does that.
      */
     private function finalizeDecline(OffboardingRequestGeneralSignatory $assignment, ?User $actor, string $reason): void
     {
         $assignment->update([
-            'status' => 'declined',
+            'status' => 'on_hold',
             'declined_at' => now(),
             'decline_reason' => $reason,
         ]);
@@ -426,16 +440,69 @@ class GeneralSignatoryApprovalController extends Controller
             'status' => $offboardingRequest->status,
             'comment' => 'Declined by General Signatory: ' . $signatoryName . '. Reason: ' . $reason,
         ]);
-
-        $completionService = app(ChecklistCompletionService::class);
-        $completionService->checkRegularChecklistsCompletion($offboardingRequest);
-        $completionService->checkRegularGeneralSignatoriesCompletion($offboardingRequest);
-        $completionService->checkFinalPayCompletion($offboardingRequest);
     }
 
     /**
-     * Emails admins and this request's creator that this General Signatory
-     * has declined — same dedicated template and recipient rule as
+     * The SAME General Signatory who declined resumes their approval — the
+     * only way out of "On Hold" (see `decline()`/`finalizeDecline()`
+     * above). Mirrors `ApprovalController::removeHold()`'s exact shape:
+     * mandatory reason, resets `status` back to `'pending'` (no dedicated
+     * "resumed" value needed — `clearanceStatusLabel()` already falls
+     * through to `'Pending'` for anything besides `approved`/`declined`/
+     * `on_hold`), no completion cascade (reopening isn't itself a
+     * resolution).
+     */
+    public function removeHold(Request $request, OffboardingRequestGeneralSignatory $generalSignatoryApproval): RedirectResponse|JsonResponse
+    {
+        $this->authorizeAssignment($generalSignatoryApproval);
+
+        abort_unless($generalSignatoryApproval->status === 'on_hold', 422, 'This is not on hold.');
+
+        if ($request->has('reason')) {
+            $request->merge(['reason' => trim((string) $request->input('reason'))]);
+        }
+
+        $validated = $request->validate([
+            'reason' => ['required', 'string', 'max:2000'],
+        ], [
+            'reason.required' => 'A reason is required to remove this hold.',
+        ]);
+
+        $reason = $validated['reason'];
+        $actor = auth()->user();
+
+        $generalSignatoryApproval->update([
+            'status' => 'pending',
+            'on_hold_removed_at' => now(),
+            'on_hold_removed_by' => $actor->id,
+            'on_hold_removal_reason' => $reason,
+        ]);
+
+        $offboardingRequest = $generalSignatoryApproval->offboardingRequest;
+        $signatoryName = $generalSignatoryApproval->generalSignatory->clearanceSignatory?->name ?? 'Unknown';
+
+        $offboardingRequest->activities()->create([
+            'user_id' => $actor->id,
+            'action' => 'general_signatory_on_hold_removed',
+            'status' => $offboardingRequest->status,
+            'comment' => 'On Hold removed by General Signatory: ' . $signatoryName . '. Reason: ' . $reason,
+        ]);
+
+        if ($request->wantsJson()) {
+            return response()->json([
+                'message' => 'Hold removed. Available for review again.',
+                'status' => $generalSignatoryApproval->status,
+                'onHoldRemovedAt' => $generalSignatoryApproval->on_hold_removed_at->format('M d, Y g:i A'),
+            ]);
+        }
+
+        return back()->with('success', $offboardingRequest->employee->name . '\'s General Signatory checklist is available for review again.');
+    }
+
+    /**
+     * Emails the Admin/HR user who CREATED this offboarding request — and
+     * only them, per spec — that this General Signatory has placed their
+     * approval On Hold. Same dedicated template and recipient rule as
      * `ApprovalController::sendDeclineNotification()` (kept as a separate
      * copy, matching this controller's own established independence from
      * that one). A General Signatory has no `ChecklistTemplate` of its own
@@ -448,18 +515,18 @@ class GeneralSignatoryApprovalController extends Controller
         $offboardee = $offboardingRequest->employee;
         $generalSignatory = $generalSignatoryApproval->generalSignatory;
 
-        $recipients = User::role(User::ROLE_ADMIN)->get();
+        $creator = $offboardingRequest->creator;
 
-        if ($offboardingRequest->creator && $offboardingRequest->creator->email) {
-            $recipients = $recipients->push($offboardingRequest->creator);
-        }
+        if (! $creator || ! $creator->email || ! filter_var($creator->email, FILTER_VALIDATE_EMAIL)) {
+            Log::warning('Offboarding request creator has no usable email — General Signatory decline notification was not sent.', [
+                'offboarding_request_general_signatory_id' => $generalSignatoryApproval->id,
+                'offboarding_request_id' => $offboardingRequest->id,
+            ]);
 
-        $recipients = $recipients->filter(fn (User $recipient) => $recipient->email && filter_var($recipient->email, FILTER_VALIDATE_EMAIL))
-            ->unique('id');
-
-        if ($recipients->isEmpty()) {
             return;
         }
+
+        $recipients = collect([$creator]);
 
         $emailTemplate = EmailTemplate::where('is_active', true)
             ->where('template_name', 'Checklist Signatory Declined')

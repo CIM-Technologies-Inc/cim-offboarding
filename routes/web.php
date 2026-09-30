@@ -96,6 +96,7 @@ Route::delete('/profile/photo', [ProfileController::class, 'removeProfilePhoto']
 // notifications
 Route::post('/notifications/{notification}/read', [NotificationController::class, 'read'])->name('notifications.read');
 Route::post('/notifications/mark-all-read', [NotificationController::class, 'readAll'])->name('notifications.read-all');
+Route::delete('/notifications/clear-all', [NotificationController::class, 'clearAll'])->name('notifications.clear-all');
 
 // Calendar and Approvals: gated purely by permission now, not by a
 // hardcoded admin/approver role check — a custom role (e.g. one created on
@@ -155,12 +156,16 @@ Route::middleware('permission:approvals.view')->group(function () {
 Route::middleware('permission:approvals.approve')->group(function () {
     Route::post('/approvals/{offboardingRequestApprover}/approve', [ApprovalController::class, 'approve'])->name('approvals.approve');
     Route::post('/approvals/{offboardingRequestApprover}/decline', [ApprovalController::class, 'decline'])->name('approvals.decline');
+    // The only way out of the "On Hold" state `decline()` above sets — same
+    // signatory, same permission gate.
+    Route::post('/approvals/{offboardingRequestApprover}/remove-hold', [ApprovalController::class, 'removeHold'])->name('approvals.remove-hold');
     Route::post('/approvals/group/{offboardingRequest}/{employee}/approve', [ApprovalController::class, 'approveGroup'])->name('approvals.group.approve');
 
     // General Signatory in-app Submit — same permission gate as the
     // checklist approve actions above, independent controller/model.
     Route::post('/general-signatory-approvals/{generalSignatoryApproval}/approve', [GeneralSignatoryApprovalController::class, 'approve'])->name('general-signatory-approvals.approve');
     Route::post('/general-signatory-approvals/{generalSignatoryApproval}/decline', [GeneralSignatoryApprovalController::class, 'decline'])->name('general-signatory-approvals.decline');
+    Route::post('/general-signatory-approvals/{generalSignatoryApproval}/remove-hold', [GeneralSignatoryApprovalController::class, 'removeHold'])->name('general-signatory-approvals.remove-hold');
 
     // Final Approval in-app Approve — the Final Approver's own account now
     // has a real approval action alongside the existing emailed-link one

@@ -64,8 +64,18 @@
             this[prop] = true;
             setTimeout(() => { this[prop] = false; }, 2500);
         },
+        // Bumped every time this modal opens (see the event handler right
+        // below) — folded into the checklist accordion's own :key below so
+        // Alpine always tears down and recreates every panel's own open/
+        // collapsed scope on open, rather than reusing a previous panel's
+        // DOM node (and its already-toggled state) just because it happens
+        // to land on the same array index. Without this, reopening the
+        // SAME request — or opening a DIFFERENT one with the same
+        // checklist count — would silently keep whichever panels were
+        // left expanded from the last time this modal was open.
+        openGeneration: 0,
     }"
-    @open-offboardee-modal.window="selected = $event.detail; activeTab = hideStatusTab ? 'timeline' : 'status'">
+    @open-offboardee-modal.window="selected = $event.detail; activeTab = hideStatusTab ? 'timeline' : 'status'; openGeneration++">
     <x-ui.modal x-data="{ open: false }" @open-offboardee-modal.window="open = true" :isOpen="$initial !== null" class="w-full sm:w-[60vw] sm:max-w-[60vw]">
         <div class="relative flex max-h-[85vh] w-full sm:max-w-[60vw] flex-col rounded-3xl bg-white dark:bg-gray-900" x-show="selected" x-cloak>
             <template x-if="selected">
@@ -132,7 +142,7 @@
                                     </div>
                                 </div>
                             </template>
-                            <template x-if="selected.notificationDate">
+                            <!-- <template x-if="selected.notificationDate">
                                 <div class="contents">
                                     <div class="h-8 w-px bg-gray-200 dark:bg-gray-700"></div>
                                     <div>
@@ -149,7 +159,7 @@
                                         </div>
                                     </div>
                                 </div>
-                            </template>
+                            </template> -->
                         </div>
 
                         <template x-if="selected.checklistTemplates && selected.checklistTemplates.length">
@@ -183,7 +193,7 @@
                         </template>
 
                         <template x-if="!hideStatusTab">
-                            <div class="mt-7 flex items-center gap-6 border-b border-gray-200 dark:border-gray-800">
+                            <div class="mt-7 mb-4 flex items-center gap-6 border-b border-gray-200 dark:border-gray-800">
                                 <button type="button" @click="activeTab = 'status'"
                                     class="border-b-2 pb-3 text-sm font-medium transition-colors"
                                     :class="activeTab === 'status'
@@ -227,23 +237,50 @@
                             <p class="py-8 text-center text-sm text-gray-400">No checklists assigned yet.</p>
                         </template>
                         <div class="space-y-4">
-                            <template x-for="(step, index) in richSteps()" :key="index">
-                                <div class="rounded-xl border border-gray-200 p-4 dark:border-gray-800">
-                                    <div class="flex flex-wrap items-center justify-between gap-2">
-                                        <div>
+                            <template x-for="(step, index) in richSteps()" :key="openGeneration + '-' + index">
+                                <div class="rounded-xl border border-gray-200 dark:border-gray-800" x-data="{ open: false }">
+                                    <!-- Collapsed header — always visible: Checklist Title, assigned
+                                         Clearance/General Signatory, and Status. Click anywhere to
+                                         expand/collapse this checklist independently of any other
+                                         (each step has its own `open` state via x-data above, so
+                                         opening one never affects the others). -->
+                                    <button type="button" @click="open = !open"
+                                        class="flex w-full flex-wrap items-center justify-between gap-2 p-4 text-left">
+                                        <div class="min-w-0">
                                             <p class="text-sm font-semibold text-gray-800 dark:text-white/90" x-text="step.department || 'Department'"></p>
-                                            <p class="text-xs text-gray-500 dark:text-gray-400">Clearance Signatory: <span x-text="step.approverName"></span></p>
+                                            <p class="text-xs text-gray-500 dark:text-gray-400">
+                                                <span x-text="step.isGeneralSignatory ? 'General Signatory' : 'Clearance Signatory'"></span>: <span x-text="step.approverName"></span>
+                                            </p>
                                         </div>
-                                        <span class="shrink-0 rounded-full px-2.5 py-1 text-xs font-medium"
-                                            :class="{
-                                                'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300': step.status === 'pending' && !step.isOverdue,
-                                                'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400': step.status === 'viewed' && !step.isOverdue,
-                                                'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]': step.status === 'approved' && !step.wasCompletedLate,
-                                                'bg-error-50 text-error-700 dark:bg-error-500/15 dark:text-error-400': (step.status === 'approved' && step.wasCompletedLate) || step.status === 'declined',
-                                                'bg-orange-50 text-orange-700 dark:bg-orange-500/15 dark:text-orange-400': step.isOverdue
-                                            }"
-                                            x-text="step.isOverdue ? 'Overdue' : (step.status === 'approved' ? (step.wasCompletedLate ? 'Completed' : 'Cleared') : (step.status === 'viewed' ? 'In Progress' : (step.status.charAt(0).toUpperCase() + step.status.slice(1))))"></span>
-                                    </div>
+                                        <div class="flex shrink-0 items-center gap-3">
+                                            <span class="rounded-full px-2.5 py-1 text-xs font-medium"
+                                                :class="{
+                                                    'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300': step.status === 'pending' && !step.isOverdue,
+                                                    'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400': step.status === 'viewed' && !step.isOverdue,
+                                                    'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]': step.status === 'approved' && !step.wasCompletedLate,
+                                                    'bg-error-50 text-error-700 dark:bg-error-500/15 dark:text-error-400': (step.status === 'approved' && step.wasCompletedLate) || step.status === 'declined',
+                                                    'bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400': step.status === 'on_hold' && !step.isOverdue,
+                                                    'bg-orange-50 text-orange-700 dark:bg-orange-500/15 dark:text-orange-400': step.isOverdue
+                                                }"
+                                                x-text="step.isOverdue ? 'Overdue' : (step.status === 'approved' ? (step.wasCompletedLate ? 'Completed' : 'Cleared') : (step.status === 'viewed' ? 'In Progress' : (step.status === 'on_hold' ? 'On Hold' : (step.status.charAt(0).toUpperCase() + step.status.slice(1)))))"></span>
+                                            <svg class="h-4 w-4 shrink-0 text-gray-400 transition-transform duration-200 dark:text-gray-500"
+                                                :class="open ? 'rotate-180' : ''"
+                                                fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                            </svg>
+                                        </div>
+                                    </button>
+
+                                    <!-- Expanded body — full checklist details, unchanged from before;
+                                         only its visibility (and independent open/close state) is new. -->
+                                    <div x-show="open" x-cloak
+                                        x-transition:enter="transition ease-out duration-200"
+                                        x-transition:enter-start="opacity-0 -translate-y-1"
+                                        x-transition:enter-end="opacity-100 translate-y-0"
+                                        x-transition:leave="transition ease-in duration-150"
+                                        x-transition:leave-start="opacity-100 translate-y-0"
+                                        x-transition:leave-end="opacity-0 -translate-y-1"
+                                        class="border-t border-gray-100 px-4 pb-4 dark:border-gray-800">
 
                                     <div class="mt-2 space-y-1 text-xs text-gray-500 dark:text-gray-400">
                                         <p>Date Assigned: <span x-text="step.assignedAt || '—'"></span></p>
@@ -259,10 +296,9 @@
                                                 <span x-show="step.isClearanceSigningOverdue"> — Overdue</span>
                                             </p>
                                         </template>
-                                        <p>First Viewed: <span x-text="step.firstViewedAt || 'Not viewed yet'"></span></p>
-                                        <template x-if="step.firstViewedByName">
-                                            <p>First Viewed By: <span x-text="step.firstViewedByName"></span></p>
-                                        </template>
+                                        <p>First Viewed: <span x-text="step.firstViewedAt || 'Not viewed yet'"></span>
+                                            <span x-show="step.firstViewedByName"> by <span x-text="step.firstViewedByName"></span></span>
+                                        </p>
                                         <template x-if="step.status === 'approved'">
                                             <p :class="step.wasCompletedLate ? 'font-medium text-error-600 dark:text-error-400' : ''">
                                                 Cleared: <span x-text="step.approvedAt"></span>
@@ -289,11 +325,29 @@
                                                 Remarks: <span x-text="step.approvalRemarks"></span>
                                             </p>
                                         </template>
-                                        <template x-if="step.status === 'declined'">
-                                            <p>Declined: <span x-text="step.declinedAt"></span></p>
+                                        <!-- Orange text — same color the Legend's own "Hold" dot uses
+                                             (bg-orange-500 above) — so a declined/on-hold checklist
+                                             reads as an alert to the admin/HR at a glance, not just
+                                             another neutral-gray line among everything else. -->
+                                        <template x-if="step.declinedAt">
+                                            <p class="font-medium text-orange-600 dark:text-orange-400">On Hold: <span x-text="step.declinedAt"></span>
+                                                <span x-show="step.declinedByName"> by <span x-text="step.declinedByName"></span></span>
+                                            </p>
                                         </template>
                                         <template x-if="step.declineReason">
-                                            <p>Reason: <span x-text="step.declineReason"></span></p>
+                                            <p class="font-medium text-orange-600 dark:text-orange-400">Reason: <span x-text="step.declineReason"></span></p>
+                                        </template>
+                                        <!-- "On Hold Removed" — permanent audit-trail entry (see
+                                             `ApprovalController::removeHold()`), shown alongside the
+                                             decline info above regardless of whether the checklist is
+                                             currently on hold or was later resumed/approved. -->
+                                        <template x-if="step.onHoldRemovedAt">
+                                            <p>On Hold Removed: <span x-text="step.onHoldRemovedAt"></span>
+                                                <span x-show="step.onHoldRemovedByName"> by <span x-text="step.onHoldRemovedByName"></span></span>
+                                            </p>
+                                        </template>
+                                        <template x-if="step.onHoldRemovalReason">
+                                            <p>Hold Removal Reason: <span x-text="step.onHoldRemovalReason"></span></p>
                                         </template>
                                     </div>
 
@@ -321,6 +375,9 @@
                                                         <span class="text-gray-400">(+<span x-text="extension.additionalDays"></span> day<span x-show="extension.additionalDays !== 1">s</span>)</span>
                                                         by <span class="font-medium text-gray-700 dark:text-gray-300" x-text="extension.extendedBy"></span>
                                                         <span class="text-gray-400" x-text="'on ' + extension.extendedAt"></span>
+                                                        <template x-if="extension.reason">
+                                                            <div class="mt-0.5 text-gray-500 dark:text-gray-400">Reason: <span x-text="extension.reason"></span></div>
+                                                        </template>
                                                     </li>
                                                 </template>
                                             </ul>
@@ -360,7 +417,7 @@
                                              `items-start` keeps every item pinned to the top of this row
                                              regardless of how tall either sibling becomes. -->
                                         <div class="flex flex-wrap items-start gap-2">
-                                        <template x-if="isAdmin && step.canRemind">
+                                        <template x-if="isAdmin && step.canRemind && selected.status !== 'cancelled'">
                                             <div x-data="{ confirmed: false, showEmailPicker: false, selectedTemplateId: defaultTemplateIdFor(step) }">
                                                 <div class="flex items-center gap-2">
                                                     <form method="POST" :action="step.remindUrl"
@@ -385,19 +442,19 @@
                                                         <input type="hidden" name="_token" :value="csrfToken" />
                                                         <input type="hidden" name="email_template_id" :value="selectedTemplateId" />
                                                         <button type="submit" :disabled="confirmed || !emailTemplates.length" data-turbo-submits-with="Sending..."
-                                                            class="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
+                                                            class="mb-4 rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
                                                             Notify Approver
                                                         </button>
                                                     </form>
                                                     <button type="button" title="Choose Email Template" @click="showEmailPicker = !showEmailPicker"
-                                                        class="rounded-lg border border-gray-300 p-1.5 text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
+                                                        class="mb-4 rounded-lg border border-gray-300 p-1.5 text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
                                                         <svg width="14" height="14" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
                                                             <path d="M2.25 5.25C2.25 4.42157 2.92157 3.75 3.75 3.75H14.25C15.0784 3.75 15.75 4.42157 15.75 5.25V12.75C15.75 13.5784 15.0784 14.25 14.25 14.25H3.75C2.92157 14.25 2.25 13.5784 2.25 12.75V5.25Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
                                                             <path d="M2.75 5L9 9.75L15.25 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
                                                         </svg>
                                                     </button>
                                                 </div>
-                                                <div x-show="showEmailPicker" x-cloak class="mt-2 rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900"
+                                                <div x-show="showEmailPicker" x-cloak class="mb-4 rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900"
                                                     x-transition:enter="transition ease-out duration-200"
                                                     x-transition:enter-start="opacity-0 -translate-y-1"
                                                     x-transition:enter-end="opacity-100 translate-y-0"
@@ -422,8 +479,9 @@
                                                 </div>
                                             </div>
                                         </template>
-                                       
+
                                         </div>
+                                    </div>
                                     </div>
                                 </div>
                             </template>
@@ -439,7 +497,7 @@
                                     x-show="index < selected.timeline.length - 1"></div>
                                 <div class="relative z-10 flex h-6 w-6 shrink-0 items-center justify-center rounded-full"
                                     :class="step.rich
-                                        ? (step.status === 'declined' ? 'bg-error-500' : step.status === 'approved' ? (step.wasCompletedLate ? 'bg-error-500' : 'bg-[#145a3a]') : step.status === 'viewed' ? 'bg-blue-500' : 'bg-gray-200 dark:bg-gray-700')
+                                        ? (step.status === 'declined' ? 'bg-error-500' : step.status === 'on_hold' ? 'bg-amber-500' : step.status === 'approved' ? (step.wasCompletedLate ? 'bg-error-500' : 'bg-[#145a3a]') : step.status === 'viewed' ? 'bg-blue-500' : 'bg-gray-200 dark:bg-gray-700')
                                         : (step.cancelled ? 'bg-error-500' : (step.hold ? 'bg-amber-500' : (step.done ? 'bg-[#145a3a]' : 'bg-gray-200 dark:bg-gray-700')))">
                                     <svg x-show="step.done" width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
                                         <path fill-rule="evenodd" clip-rule="evenodd" d="M13.4767 4.10714C13.7788 4.38292 13.8008 4.85162 13.5257 5.15436L6.83817 12.5211C6.69758 12.6759 6.49882 12.7644 6.29008 12.7644C6.08134 12.7644 5.88258 12.6759 5.74199 12.5211L2.47426 8.9211C2.19916 8.61836 2.22119 8.14966 2.52326 7.87388C2.82533 7.5981 3.29283 7.62018 3.56793 7.92292L6.29008 10.9184L12.4321 4.15582C12.7072 3.85308 13.1746 3.83137 13.4767 4.10714Z" fill="white" />
@@ -476,9 +534,10 @@
                                                     'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400': step.status === 'viewed' && !step.isOverdue,
                                                     'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]': step.status === 'approved' && !step.wasCompletedLate,
                                                     'bg-error-50 text-error-700 dark:bg-error-500/15 dark:text-error-400': (step.status === 'approved' && step.wasCompletedLate) || step.status === 'declined',
+                                                    'bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400': step.status === 'on_hold' && !step.isOverdue,
                                                     'bg-orange-50 text-orange-700 dark:bg-orange-500/15 dark:text-orange-400': step.isOverdue
                                                 }"
-                                                x-text="step.isOverdue ? 'Overdue' : (step.status === 'approved' ? (step.wasCompletedLate ? 'Completed' : 'Cleared') : (step.status === 'viewed' ? 'In Progress' : (step.status.charAt(0).toUpperCase() + step.status.slice(1))))"></span>
+                                                x-text="step.isOverdue ? 'Overdue' : (step.status === 'approved' ? (step.wasCompletedLate ? 'Completed' : 'Cleared') : (step.status === 'viewed' ? 'In Progress' : (step.status === 'on_hold' ? 'On Hold' : (step.status.charAt(0).toUpperCase() + step.status.slice(1)))))"></span>
                                         </div>
 
                                         <div class="mt-2 space-y-1 text-xs text-gray-500 dark:text-gray-400">
@@ -495,10 +554,9 @@
                                                     <span x-show="step.isClearanceSigningOverdue"> — Overdue</span>
                                                 </p>
                                             </template>
-                                            <p>First Viewed: <span x-text="step.firstViewedAt || 'Not viewed yet'"></span></p>
-                                            <template x-if="step.firstViewedByName">
-                                                <p>First Viewed By: <span x-text="step.firstViewedByName"></span></p>
-                                            </template>
+                                            <p>First Viewed: <span x-text="step.firstViewedAt || 'Not viewed yet'"></span>
+                                                <span x-show="step.firstViewedByName"> by <span x-text="step.firstViewedByName"></span></span>
+                                            </p>
                                             <template x-if="step.status === 'approved'">
                                                 <p :class="step.wasCompletedLate ? 'font-medium text-error-600 dark:text-error-400' : ''">
                                                     Cleared: <span x-text="step.approvedAt"></span>
@@ -523,13 +581,57 @@
                                                     Remarks: <span x-text="step.approvalRemarks"></span>
                                                 </p>
                                             </template>
-                                            <template x-if="step.status === 'declined'">
-                                                <p>Declined: <span x-text="step.declinedAt"></span></p>
+                                            <!-- Orange text — same color the Legend's own "Hold" dot uses
+                                                 — so a declined/on-hold checklist reads as an alert at a
+                                                 glance, matching the Status tab's identical treatment. -->
+                                            <template x-if="step.declinedAt">
+                                                <p class="font-medium text-orange-600 dark:text-orange-400">On Hold: <span x-text="step.declinedAt"></span>
+                                                    <span x-show="step.declinedByName"> by <span x-text="step.declinedByName"></span></span>
+                                                </p>
                                             </template>
                                             <template x-if="step.declineReason">
-                                                <p>Reason: <span x-text="step.declineReason"></span></p>
+                                                <p class="font-medium text-orange-600 dark:text-orange-400">Reason: <span x-text="step.declineReason"></span></p>
+                                            </template>
+                                            <template x-if="step.onHoldRemovedAt">
+                                                <p>On Hold Removed: <span x-text="step.onHoldRemovedAt"></span>
+                                                    <span x-show="step.onHoldRemovedByName"> by <span x-text="step.onHoldRemovedByName"></span></span>
+                                                </p>
+                                            </template>
+                                            <template x-if="step.onHoldRemovalReason">
+                                                <p>Hold Removal Reason: <span x-text="step.onHoldRemovalReason"></span></p>
                                             </template>
                                         </div>
+
+                                        <!-- Due Date Extension History — same block the Offboarding
+                                             Status tab shows, mirrored here so admins/HR can see the
+                                             extension reason from the Timeline tab too, not just Status. -->
+                                        <template x-if="step.dueDateExtensions && step.dueDateExtensions.length">
+                                            <div class="mt-2 rounded-lg border border-[#145a3a]/30 bg-[#145a3a]/5 px-3 py-2 text-xs dark:border-[#3aa876]/30 dark:bg-[#3aa876]/10">
+                                                <p class="font-medium text-[#145a3a] dark:text-[#3aa876]">
+                                                    Last Working Day Extended
+                                                    <template x-if="step.originalDueDate">
+                                                        <span class="font-normal text-gray-500 dark:text-gray-400">
+                                                            (Originally due: <span x-text="step.originalDueDate"></span>)
+                                                        </span>
+                                                    </template>
+                                                </p>
+                                                <ul class="mt-1.5 space-y-1 text-gray-600 dark:text-gray-300">
+                                                    <template x-for="(extension, extensionIndex) in step.dueDateExtensions" :key="extensionIndex">
+                                                        <li>
+                                                            <span x-text="extension.previousDueDate"></span>
+                                                            &rarr;
+                                                            <span class="font-medium text-gray-800 dark:text-white/90" x-text="extension.newDueDate"></span>
+                                                            <span class="text-gray-400">(+<span x-text="extension.additionalDays"></span> day<span x-show="extension.additionalDays !== 1">s</span>)</span>
+                                                            by <span class="font-medium text-gray-700 dark:text-gray-300" x-text="extension.extendedBy"></span>
+                                                            <span class="text-gray-400" x-text="'on ' + extension.extendedAt"></span>
+                                                            <template x-if="extension.reason">
+                                                                <div class="mt-0.5 text-gray-500 dark:text-gray-400">Reason: <span x-text="extension.reason"></span></div>
+                                                            </template>
+                                                        </li>
+                                                    </template>
+                                                </ul>
+                                            </div>
+                                        </template>
 
                                         @include('components.offboarding.partials.checklist-item-status-list')
 
@@ -559,7 +661,7 @@
                                                  the button row even once the "Select Email Template"
                                                  picker panel expands the sibling block's height. -->
                                             <div class="flex flex-wrap items-start gap-2">
-                                            <template x-if="isAdmin && step.canRemind">
+                                            <template x-if="isAdmin && step.canRemind && selected.status !== 'cancelled'">
                                                 <div x-data="{ confirmed: false, showEmailPicker: false, selectedTemplateId: defaultTemplateIdFor(step) }">
                                                     <div class="flex items-center gap-2">
                                                         <form method="POST" :action="step.remindUrl"

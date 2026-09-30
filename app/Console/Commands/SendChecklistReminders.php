@@ -49,7 +49,7 @@ class SendChecklistReminders extends Command
     {
         $assignments = OffboardingRequestApprover::query()
             ->whereHas('checklistTemplate', fn ($q) => $q->where('notification_enabled', true))
-            ->whereNotIn('status', ['approved', 'declined'])
+            ->where('status', '!=', 'approved')
             ->whereNotNull('due_at')
             ->whereHas('offboardingRequest', fn ($q) => $q->whereIn('status', ['pending', 'in_progress']))
             ->with([
@@ -106,13 +106,12 @@ class SendChecklistReminders extends Command
                 continue;
             }
 
-            // Guards the narrow window where the checklist was submitted/
-            // approved AFTER this run's initial fetch but before this
-            // specific assignment was reached — the base query above
-            // already excludes an approved/declined checklist entirely on
-            // its NEXT run, so this is the only place that case is ever
-            // actually seen.
-            $isComplete = in_array($assignment->fresh()->status, ['approved', 'declined'], true);
+            // Guards the narrow window where the checklist was approved
+            // AFTER this run's initial fetch but before this specific
+            // assignment was reached — the base query above already
+            // excludes an approved checklist entirely on its NEXT run, so
+            // this is the only place that case is ever actually seen.
+            $isComplete = $assignment->fresh()->status === 'approved';
 
             foreach ($pendingRecipients as $recipient) {
                 $status = $this->processRecipient($assignment, $template, $emailTemplate, $recipient, $cycle, $scheduledAt, $isComplete);

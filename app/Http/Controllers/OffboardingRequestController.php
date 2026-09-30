@@ -247,9 +247,11 @@ class OffboardingRequestController extends Controller
     public function reset(Request $request, OffboardingRequest $offboardingRequest): RedirectResponse
     {
         abort_if(
-            $offboardingRequest->status === 'completed',
+            in_array($offboardingRequest->status, ['completed', 'cancelled'], true),
             422,
-            'This offboarding request is already completed and cannot be reset.'
+            $offboardingRequest->status === 'completed'
+                ? 'This offboarding request is already completed and cannot be reset.'
+                : 'This offboarding request has been retracted and cannot be reset.'
         );
 
         // Re-resolved fresh purely to refresh the historical snapshot
@@ -360,26 +362,43 @@ class OffboardingRequestController extends Controller
     }
 
     /**
-     * "Cancel Offboarding" — retracts this offboarding request entirely and
-     * permanently deletes every dependent record it ever accumulated
-     * (approvers and everything DB-cascaded off them — item progress,
-     * holds, delegations, item reassignments, approval tokens, pool
-     * members, follow-ups, due date extensions — General Signatory
-     * approvals and their tokens, scheduled email/item sends, and its own
-     * Final Approval process if one was ever started), while the request
-     * ROW ITSELF is deliberately NEVER deleted, only marked `status =
-     * 'cancelled'` with `cancelled_at`/`cancelled_by` recorded — the exact
-     * same "row survives forever, only its status changes" convention a
-     * signatory-declined request already follows (see
-     * `ApprovalController::decline()`), so this admin-initiated
-     * cancellation reads identically on the Offboardee page (still listed,
-     * "Cancelled" badge) instead of the employee simply vanishing from it.
+     * "Retract Offboarding" (user-facing label; the stored `status` value
+     * stays `'cancelled'` — no new DB enum value, see
+     * `OffboardingRequest::isReadOnly()`'s own docblock) — stops the
+     * offboarding process WITHOUT deleting anything it ever accumulated.
+     * Every checklist approver (and everything DB-related to it — item
+     * progress, holds, delegations, item reassignments, approval tokens,
+     * pool members, follow-ups, due date extensions), every General
+     * Signatory approval, every checklist template attachment, every
+     * scheduled email/item send, any Final Approval process, and the
+     * entire activity/timeline log all SURVIVE untouched — the request
+     * becomes a permanently frozen, read-only historical record instead of
+     * an emptied-out shell. Only the request's own `status`/`cancelled_at`/
+     * `cancelled_by`/`cancellation_reason` columns change. This is the same
+     * "row survives forever, only its status changes" convention a
+     * signatory-declined checklist already follows (see
+     * `ApprovalController::decline()`), so a retracted request reads
+     * identically on the Offboardee page (still listed, "Retracted" badge,
+     * full history still viewable) instead of the employee simply
+     * vanishing from it.
+     *
+     * Every other action that could otherwise still mutate this now-frozen
+     * data (approve/decline/remind/assign/reset, and "Extend Last Working
+     * Day" via `extendDueApplicableApprovers()`/
+     * `extendDueApplicableGeneralSignatories()` returning empty once
+     * `isReadOnly()`) is independently guarded by `isReadOnly()` at its own
+     * call site — this method has no special responsibility for enforcing
+     * that beyond flipping `status`.
+     *
      * Nothing here ever touches the `Employee` master record beyond the
      * same `status` flip back to 'active' every other
-     * request-no-longer-active path already makes, nor any checklist
-     * template/General Signatory/Separation Type configuration — those are
-     * shared, independent data this one request's cancellation must never
-     * affect.
+     * request-no-longer-active path already makes (this is what makes the
+     * SAME employee immediately eligible for a brand new, independent
+     * offboarding request — the old retracted request and the new one
+     * coexist as separate rows, see `OffboardeeController::index()`), nor
+     * any checklist template/General Signatory/Separation Type
+     * configuration — those are shared, independent data this one
+     * request's cancellation must never affect.
      *
      * Gated by its own dedicated `offboarding-requests.cancel` permission
      * at the route level (same reasoning as `reset()` above), and rejected
@@ -389,10 +408,11 @@ class OffboardingRequestController extends Controller
      *
      * Notification recipients (every Clearance Signatory, General
      * Signatory, and Task Assignee this request ever had) are resolved
-     * BEFORE the transaction deletes anything, since none of that data
-     * still exists afterward — but the emails themselves are only sent
-     * AFTER the transaction commits successfully, per spec: a rolled-back
-     * cancellation must never notify anyone their request was cancelled.
+     * once, up front, purely so the email wording reflects who was
+     * involved at the moment of retraction — the emails themselves are only
+     * sent AFTER the transaction commits successfully, per spec: a
+     * rolled-back cancellation must never notify anyone their request was
+     * cancelled.
      */
     public function cancel(Request $request, OffboardingRequest $offboardingRequest): RedirectResponse|JsonResponse
     {
@@ -400,8 +420,8 @@ class OffboardingRequestController extends Controller
             in_array($offboardingRequest->status, ['cancelled', 'completed'], true),
             422,
             $offboardingRequest->status === 'completed'
-                ? 'This offboarding request is already completed and cannot be cancelled.'
-                : 'This offboarding request has already been cancelled.'
+                ? 'This offboarding request is already completed and cannot be retracted.'
+                : 'This offboarding request has already been retracted.'
         );
 
         // Required BEFORE any destructive action below — a cancellation
@@ -414,7 +434,7 @@ class OffboardingRequestController extends Controller
         $validated = $request->validate([
             'reason' => ['required', 'string', 'max:2000'],
         ], [
-            'reason.required' => 'A reason is required to cancel this offboarding request.',
+            'reason.required' => 'A reason is required to retract this offboarding request.',
         ]);
 
         $reason = $validated['reason'];
@@ -425,11 +445,12 @@ class OffboardingRequestController extends Controller
 
         $recipients = $this->collectCancellationRecipients($offboardingRequest);
 
-        // Snapshotted before deletion for both the audit log below and the
-        // cancellation emails after the transaction commits — none of this
-        // is reliably re-derivable from the request afterward (its own
-        // dependent records are gone, and even the request row's `id`
-        // wouldn't help without the employee snapshot alongside it).
+        // Snapshotted up front for both the audit log below and the
+        // cancellation emails after the transaction commits, so the
+        // notification wording reflects the employee's details at the
+        // moment of retraction regardless of anything that changes on the
+        // `Employee` record afterward (e.g. its `status` flip to 'active'
+        // a few lines down).
         $offboardingRequestId = $offboardingRequest->id;
         $employeeSnapshot = [
             'name' => $employee->name,
@@ -440,41 +461,11 @@ class OffboardingRequestController extends Controller
         ];
 
         DB::transaction(function () use ($offboardingRequest, $employee, $admin, $reason) {
-            // Identical cascade shape to `reset()` above — see its own
-            // comments for exactly what each deletion cascades to.
-            $offboardingRequest->approvers()->delete();
-            $offboardingRequest->generalSignatoryApprovals()->delete();
-            $offboardingRequest->followUps()->delete();
-            $offboardingRequest->scheduledEmailSends()->delete();
-            ChecklistItemScheduledSend::where('offboarding_request_id', $offboardingRequest->id)->delete();
-            $offboardingRequest->checklistTemplates()->detach();
-
-            // Defensive only — a request reaching this point can never
-            // actually have one (Final Approval only ever starts once
-            // `status === 'completed'`, already rejected above), but a
-            // cancellation must never leave one dangling regardless.
-            $offboardingRequest->finalApproval()->delete();
-
-            $offboardingRequest->activities()->delete();
-
-            // Bell-icon notifications (`OffboardingApprovalUpdated`,
-            // `ChecklistOverdueNotification`) embed `offboarding_request_id`
-            // inside their JSON `data` payload rather than a real foreign
-            // key, so they can't be cleaned up via cascade or a plain
-            // `where()` column match. Filtered via a JSON-path `where`
-            // clause (`data->offboarding_request_id`) so MySQL does the
-            // matching itself as a single DELETE — never pulling every
-            // notification row in the ENTIRE system (every user, all time)
-            // into PHP to `json_decode()` one by one, which is what this
-            // used to do and got slower as that table grew. Without this
-            // cleanup, a stale notification would keep linking to a
-            // now-retracted request (and, via the Offboardee Page's
-            // deep-link fallback, could still surface the employee there
-            // after their card should have disappeared).
-            DB::table('notifications')
-                ->where('data->offboarding_request_id', $offboardingRequest->id)
-                ->delete();
-
+            // Deliberately nothing is deleted here anymore — see this
+            // method's own docblock. Every approver, General Signatory
+            // approval, checklist template attachment, scheduled send,
+            // Final Approval, activity, and bell notification tied to this
+            // request survives untouched; only the columns below change.
             $offboardingRequest->update([
                 'status' => 'cancelled',
                 'cancelled_at' => now(),
@@ -493,17 +484,16 @@ class OffboardingRequestController extends Controller
 
             $employee->update(['status' => 'active']);
 
-            // The one thing that survives the wipe above — same "never
-            // silent" convention `reset()`'s own final activity follows.
-            // The reason is embedded directly in this comment (this table
-            // has no dedicated reason column of its own), so it's part of
-            // the permanent timeline/audit trail exactly like every other
-            // activity comment in this app.
+            // Same "never silent" convention `reset()`'s own final activity
+            // follows. The reason is embedded directly in this comment
+            // (this table has no dedicated reason column of its own), so
+            // it's part of the permanent timeline/audit trail exactly like
+            // every other activity comment in this app.
             $offboardingRequest->activities()->create([
                 'user_id' => $admin->id,
                 'action' => 'offboarding_cancelled',
                 'status' => 'cancelled',
-                'comment' => "Offboarding request cancelled by {$admin->name}; all checklist, clearance, and approval records for this request were removed. Reason: {$reason}",
+                'comment' => "Offboarding request retracted by {$admin->name}; all checklist, clearance, and approval history for this request is preserved as a read-only historical record. Reason: {$reason}",
             ]);
         });
 
@@ -528,13 +518,24 @@ class OffboardingRequestController extends Controller
         // branch. A non-AJAX caller (there currently isn't one) still gets
         // the original redirect-with-flash behavior.
         if ($request->wantsJson()) {
+            // Read back the SAVED columns (the same in-memory instance the
+            // transaction's own `update()` already set), never the raw
+            // request input directly — the Offboardee card's retraction
+            // history must reflect exactly what was persisted, and who
+            // actually performed it, not merely what was typed/who is
+            // currently viewing the page. See
+            // `OffboardeeController::index()`'s identical fields for the
+            // same data on a normal (non-AJAX) page load.
             return response()->json([
                 'success' => true,
-                'message' => 'Offboarding request has been successfully cancelled.',
+                'message' => 'Offboarding request has been retracted.',
+                'cancelledByName' => $admin->name,
+                'cancellationReason' => $offboardingRequest->cancellation_reason,
+                'cancelledAt' => $offboardingRequest->cancelled_at?->format('M d, Y g:i A'),
             ]);
         }
 
-        return back()->with('success', 'Offboarding request has been successfully cancelled.');
+        return back()->with('success', 'Offboarding request has been retracted.');
     }
 
     /**

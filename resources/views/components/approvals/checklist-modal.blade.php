@@ -422,6 +422,43 @@
             }
             document.querySelector(`[data-card-id='${CSS.escape(String(cardId))}']`)?.remove();
         },
+        // The On Hold counterpart to removeListCard() above — a held
+        // checklist must STAY on the list (see decline/removeHold below),
+        // so instead of removing the card this patches its status badge
+        // in place, same data-card-id targeting convention. Matches the
+        // [data-status-badge] span pages/approvals/index.blade.php renders
+        // per card from its own $statusBadges map — the classes/labels
+        // passed in here are kept in sync with that map by hand.
+        patchListCardBadge(cardId, badgeClass, badgeLabel) {
+            if (!cardId) {
+                return;
+            }
+            const badge = document.querySelector(`[data-card-id='${CSS.escape(String(cardId))}'] [data-status-badge]`);
+            if (!badge) {
+                return;
+            }
+            badge.className = `rounded-full px-2.5 py-1 text-xs font-medium ${badgeClass}`;
+            badge.textContent = badgeLabel;
+        },
+        // The card behind this modal is otherwise server-rendered — its
+        // click handler dispatches a static JSON snapshot baked into the
+        // page at render time (see pages/approvals/index.blade.php's own
+        // matching comment), so mutating `this.selected` in place only
+        // ever fixes the CURRENTLY open modal — closing and reopening the
+        // same card would silently re-dispatch the stale pre-decline
+        // snapshot. Persisting the patch here, in a plain global cache
+        // that card's click handler merges in on every open, keeps a
+        // reopen of the SAME card correct too, without ever reloading the
+        // whole page. Cleared naturally the next time the page is
+        // genuinely reloaded (a fresh page load has no need for it — the
+        // server already reflects the real, current status by then).
+        rememberCardOverride(cardId, patch) {
+            if (!cardId) {
+                return;
+            }
+            window.__approvalCardOverrides = window.__approvalCardOverrides || {};
+            window.__approvalCardOverrides[cardId] = Object.assign({}, window.__approvalCardOverrides[cardId] || {}, patch);
+        },
         // Use Task Assignee as Clearance Signatory head-approval gate:
         // only shown to the specific Department/Group Head recorded on this
         // one item (item.isHeadApprover && item.headApprovalPending —
@@ -754,13 +791,19 @@
             if (!this.selected) return false;
             return (this.selected.checklistItems || []).every((item) => !item.mustBeCheckedForSubmit || !!this.checked[item.id]);
         },
-        // Declining is now a COMPLETED signatory action (see
-        // ApprovalController::decline()) — a mandatory-reason confirm via
-        // SweetAlert2 (same input:'textarea' convention the overdue-Submit
-        // flow above already uses), then a fetch() POST so the modal never
-        // closes/reloads. selected.declineUrl is null for a combined
-        // multi-checklist card (decline stays per-checklist), so the button
-        // itself is never even rendered in that case.
+        // Declining now places the checklist ON HOLD (see
+        // ApprovalController::decline()) — it does NOT complete/resolve
+        // it, no signature is recorded, and it stays on this signatory's
+        // own queue (never removed — see removeHold() below for the only
+        // way out). A mandatory-reason confirm via SweetAlert2 (same
+        // input:'textarea' convention the overdue-Submit flow above
+        // already uses), then a fetch() POST so the modal never
+        // closes/reloads — patched in place on success, with
+        // rememberCardOverride()/patchListCardBadge() keeping the
+        // underlying list card correct too (see those methods' own
+        // docblocks). selected.declineUrl is null for a combined
+        // multi-checklist card (decline stays per-checklist), so the
+        // button itself is never even rendered in that case.
         declining: false,
         // Whatever the user last typed into the reason prompt — kept around
         // (never cleared on failure) purely so a failed attempt can be
@@ -773,7 +816,7 @@
             }
             Swal.fire({
                 title: 'Decline This Checklist?',
-                text: 'This checklist will be declined. This does not stop the offboarding request — it will continue processing normally. Please provide a reason.',
+                text: 'This checklist will be placed ON HOLD and cannot proceed — all tasks, approval, and further decline actions will be disabled until you remove the hold. Please provide a reason.',
                 icon: 'warning',
                 input: 'textarea',
                 inputLabel: 'Reason for Declining',
@@ -822,21 +865,26 @@
 
                     this.declining = false;
 
-                    // Patched in place first, exactly like approveHeadItem()
-                    // above, so `selected` is already correct for the brief
-                    // moment the modal takes to actually close (its own
-                    // fade/transition) — then closed automatically via the
-                    // same close-checklist-modal window event, and the now-
-                    // resolved (no longer pending/viewed) card is removed
-                    // from the underlying queue too, same as an approval
-                    // does. It was declined, not merely edited in place, so
-                    // this must not linger open the way Hold/Done do.
-                    targetItem.isDeclined = true;
+                    // Patched in place — the modal stays open and shows
+                    // the On Hold state immediately, no reload/close.
+                    // rememberCardOverride() also persists this patch so
+                    // closing this modal and reopening the SAME card later
+                    // (without a full page reload in between) still shows
+                    // it correctly, and patchListCardBadge() keeps the
+                    // underlying list card's own badge in sync too.
+                    targetItem.isOnHold = true;
                     targetItem.declinedAt = data.declinedAt;
                     targetItem.declineReason = this.declineReasonDraft;
                     (targetItem.checklistItems || []).forEach((item) => {
                         item.editable = false;
                     });
+                    this.rememberCardOverride(targetItem.id, {
+                        isOnHold: true,
+                        declinedAt: targetItem.declinedAt,
+                        declineReason: targetItem.declineReason,
+                        checklistItems: targetItem.checklistItems,
+                    });
+                    this.patchListCardBadge(targetItem.id, 'bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400', 'On Hold');
 
                     // Only cleared on genuine success, and only AFTER the
                     // patch above already read it — a failed attempt (see
@@ -845,13 +893,10 @@
                     // already typed.
                     this.declineReasonDraft = '';
 
-                    window.dispatchEvent(new CustomEvent('close-checklist-modal'));
-                    this.removeListCard(targetItem?.id);
-
                     window.Swal?.fire({
                         icon: 'success',
-                        title: 'Checklist Declined Successfully',
-                        text: 'The checklist has been successfully declined and the decline reason has been recorded. The offboarding request will continue processing normally.',
+                        title: 'Checklist Placed On Hold',
+                        text: 'The checklist has been placed on hold and the reason has been recorded. It will stay unavailable until you remove the hold.',
                         confirmButtonColor: '#145a3a',
                     });
                 }).catch((e) => {
@@ -862,6 +907,88 @@
                         text: e?.name === 'AbortError'
                             ? 'This is taking longer than expected. Please check before trying again.'
                             : (e?.message || 'The checklist could not be declined. Please try again.'),
+                        confirmButtonColor: '#145a3a',
+                    });
+                });
+            });
+        },
+        // The only way out of On Hold (see declineChecklist() above) —
+        // the SAME signatory reviews and confirms, with its own mandatory
+        // reason, independent of the original decline reason. Reloads the
+        // page on success rather than patching state in place: unlike a
+        // decline (which only ever needs to freeze items — a single,
+        // uniform `editable = false`), correctly RESTORING each item's own
+        // `editable`/`canTakeOver` would mean duplicating
+        // `ApprovalController::index()`'s own per-item eligibility rules
+        // (isPrimaryApprover/isDelegate/isOwnItem/isMonitoring) here in
+        // JS — a rare, deliberate action, so a reload is the simpler and
+        // provably-correct choice over re-deriving that logic client-side.
+        removingHold: false,
+        onHoldRemovalReasonDraft: '',
+        removeHold() {
+            if (this.removingHold || !this.selected?.onHoldRemoveUrl) {
+                return;
+            }
+            Swal.fire({
+                title: 'Remove On Hold?',
+                text: 'This checklist will become available for review and action again. Please provide a reason.',
+                icon: 'question',
+                input: 'textarea',
+                inputLabel: 'Reason for Removing the Hold',
+                inputPlaceholder: 'Explain why this hold is being removed...',
+                inputValue: this.onHoldRemovalReasonDraft,
+                inputValidator: (value) => {
+                    if (!value || !value.trim()) {
+                        return 'A reason is required to remove this hold.';
+                    }
+                },
+                showCancelButton: true,
+                confirmButtonText: 'Yes, Remove Hold',
+                cancelButtonText: 'Cancel',
+                confirmButtonColor: '#145a3a',
+                cancelButtonColor: '#6b7280',
+                reverseButtons: true,
+            }).then((result) => {
+                if (!result.isConfirmed) {
+                    return;
+                }
+
+                this.removingHold = true;
+                this.onHoldRemovalReasonDraft = (result.value || '').trim();
+
+                const formData = new FormData();
+                formData.append('reason', this.onHoldRemovalReasonDraft);
+
+                window.fetchWithTimeout(this.selected.onHoldRemoveUrl, {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                        'Accept': 'application/json',
+                    },
+                    body: formData,
+                }).then(async (res) => {
+                    const data = await res.json();
+
+                    if (!res.ok) {
+                        throw new Error(data.message || 'request failed');
+                    }
+
+                    window.Swal?.fire({
+                        icon: 'success',
+                        title: 'Hold Removed',
+                        text: 'The checklist is available for review again. Reloading...',
+                        confirmButtonColor: '#145a3a',
+                        timer: 1500,
+                        showConfirmButton: false,
+                    }).then(() => window.location.reload());
+                }).catch((e) => {
+                    this.removingHold = false;
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'Failed to Remove Hold',
+                        text: e?.name === 'AbortError'
+                            ? 'This is taking longer than expected. Please check before trying again.'
+                            : (e?.message || 'The hold could not be removed. Please try again.'),
                         confirmButtonColor: '#145a3a',
                     });
                 });
@@ -925,18 +1052,28 @@
 
                     <div x-show="!selectedLoading">
 
-                    <!-- Declined banner — shown the instant a decline succeeds (patched in place by
-                         declineChecklist() above, no reload needed), same "current terminal state"
-                         role the "ready for final approval" banner further down plays for Submit. -->
-                    <template x-if="selected.isDeclined">
-                        <div class="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm dark:border-red-500/30 dark:bg-red-500/10">
-                            <p class="font-medium text-red-700 dark:text-red-400">This checklist has been declined.</p>
-                            <p class="mt-1 text-red-600 dark:text-red-400" x-show="selected.declinedAt">
+                    <!-- On Hold banner — shown from page load (selected.isOnHold, computed
+                         server-side off this checklist's actual `status`) or the instant a
+                         decline succeeds (patched in place by declineChecklist() above, no
+                         reload needed). All tasks/Approve/Decline stay disabled until the
+                         assigned signatory clicks Remove On Hold below. -->
+                    <template x-if="selected.isOnHold">
+                        <div class="mb-4 mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm dark:border-amber-500/30 dark:bg-amber-500/10">
+                            <p class="font-medium text-amber-700 dark:text-amber-400">This checklist is On Hold.</p>
+                            <p class="mt-1 text-amber-600 dark:text-amber-400" x-show="selected.declinedAt">
                                 Declined: <span x-text="selected.declinedAt"></span>
                             </p>
-                            <p class="mt-1 text-red-600 dark:text-red-400" x-show="selected.declineReason">
+                            <p class="mt-1 text-amber-600 dark:text-amber-400" x-show="selected.declineReason">
                                 Reason: <span x-text="selected.declineReason"></span>
                             </p>
+                            <template x-if="selected.isPrimaryApprover && selected.onHoldRemoveUrl">
+                                <button type="button" @click="removeHold()" :disabled="removingHold"
+                                    :class="removingHold ? 'opacity-70 cursor-not-allowed' : 'hover:bg-amber-100 dark:hover:bg-amber-500/20'"
+                                    class="mt-3 flex items-center justify-center gap-1.5 rounded-lg border border-amber-500 px-4 py-2 text-sm font-medium text-amber-700 dark:border-amber-400 dark:text-amber-400">
+                                    <span x-show="removingHold" class="h-4 w-4 animate-spin rounded-full border-2 border-solid border-amber-600 border-t-transparent dark:border-amber-400"></span>
+                                    <span x-text="removingHold ? 'Removing Hold...' : 'Remove On Hold'"></span>
+                                </button>
+                            </template>
                         </div>
                     </template>
 
@@ -1149,7 +1286,7 @@
                                                     :disabled="!checked[item.id] || doneProcessing[item.id]"
                                                     :class="(!checked[item.id] || doneProcessing[item.id]) ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#0f4630]'"
                                                     class="rounded-lg bg-[#145a3a] px-3 py-1.5 text-xs font-medium text-white">
-                                                    Done
+                                                    Submit
                                                 </button>
                                             </template>
                                             <!-- Assign To: Department Head only — lets them hand this specific item off to a
@@ -1236,7 +1373,7 @@
                                  review), but ONLY on Secondary/Final Pay checklists — see canSaveProgress()'s own comment for why a Core/
                                  Primary checklist withholds this from a delegate too, same as the bulk-selection checkboxes above. A
                                  checklist item signatory only ever sees Done. -->
-                            <template x-if="canSaveProgress() && selected.checklistItems && selected.checklistItems.length && !selected.isDeclined">
+                            <template x-if="canSaveProgress() && selected.checklistItems && selected.checklistItems.length && !selected.isOnHold">
                                 <button type="submit" :formaction="selected.saveProgressUrl" :disabled="processing" data-turbo-submits-with="Saving..."
                                     :class="processing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50 dark:hover:bg-white/5'"
                                     class="flex items-center justify-center gap-1.5 rounded-lg border border-gray-300 px-4 py-2.5 text-sm font-medium text-gray-700 dark:border-gray-700 dark:text-gray-300">
@@ -1247,10 +1384,10 @@
                             <!-- Decline: same authority as Submit (the assigned Clearance Signatory), but stays a
                                  per-checklist action — never rendered for a combined multi-checklist card (see
                                  `declineUrl`'s own null case in `ApprovalController::groupIntoCombinedApprovers()`).
-                                 A completed signatory action, not a stop: requires the same e-signature Submit does
-                                 (validated server-side) and a mandatory reason via the confirm dialog below. Hides
-                                 once already declined — nothing left to decline twice, see `selected.isDeclined`. -->
-                            <template x-if="selected.isPrimaryApprover && selected.declineUrl && !selected.isDeclined">
+                                 Places the checklist On Hold — no signature required (it's a pause, not a final
+                                 decision) but a mandatory reason via the confirm dialog below. Hides once already
+                                 on hold — nothing left to decline twice, see `selected.isOnHold`. -->
+                            <template x-if="selected.isPrimaryApprover && selected.declineUrl && !selected.isOnHold">
                                 <button type="button" @click="declineChecklist()" :disabled="declining"
                                     :class="declining ? 'opacity-70 cursor-not-allowed' : 'hover:bg-red-50 dark:hover:bg-red-500/10'"
                                     class="flex items-center justify-center gap-1.5 rounded-lg border border-red-500 px-4 py-2.5 text-sm font-medium text-red-600 dark:border-red-400 dark:text-red-400">
@@ -1261,8 +1398,8 @@
 
                             <!-- Department Head / primary approver: final Submit — only they can approve the whole checklist. Legacy
                                  checklists: enabled regardless of item checks (same as always). Per-item-approver checklists: enabled
-                                 only once every item has actually been checked. Hides once declined — see Decline above. -->
-                            <template x-if="selected.isPrimaryApprover && !selected.isDeclined">
+                                 only once every item has actually been checked. Hides while On Hold — see Decline above. -->
+                            <template x-if="selected.isPrimaryApprover && !selected.isOnHold">
                                 <button type="submit" :formaction="selected.approveUrl" :disabled="processing || !canApprove()" data-turbo-submits-with="Submitting..."
                                     @click="
                                         if (!remarksResolved && selected.hasReachedDueDate) {
@@ -1296,7 +1433,7 @@
                                     "
                                     :class="(processing || !canApprove()) ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#0f4630]'"
                                     class="flex items-center justify-center gap-1.5 rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white">
-                                    Submit
+                                    Approve
                                 </button>
                             </template>
                         </div>

@@ -40,6 +40,12 @@ class ChecklistDelegationController extends Controller
     {
         $this->authorizePrimaryApprover($offboardingRequestApprover);
 
+        abort_if(
+            $offboardingRequestApprover->offboardingRequest->isReadOnly(),
+            422,
+            'This offboarding request has been retracted and can no longer be actioned.'
+        );
+
         abort_unless(
             in_array($offboardingRequestApprover->status, ['pending', 'viewed'], true),
             422,

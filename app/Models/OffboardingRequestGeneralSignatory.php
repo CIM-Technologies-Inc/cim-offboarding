@@ -35,6 +35,9 @@ class OffboardingRequestGeneralSignatory extends Model
         'remarks',
         'declined_at',
         'decline_reason',
+        'on_hold_removed_at',
+        'on_hold_removed_by',
+        'on_hold_removal_reason',
         // Per-request snapshot of the Clearance Signing Due Date — computed
         // once at attachment (`ChecklistApprovalNotifier::notifyGeneralSignatories()`)
         // from the offboardee's Last Working Day + this General Signatory's
@@ -56,6 +59,7 @@ class OffboardingRequestGeneralSignatory extends Model
             'first_viewed_at' => 'datetime',
             'approved_at' => 'datetime',
             'declined_at' => 'datetime',
+            'on_hold_removed_at' => 'datetime',
             'due_at' => 'datetime',
             'clearance_signing_due_notified_at' => 'datetime',
         ];
@@ -74,6 +78,15 @@ class OffboardingRequestGeneralSignatory extends Model
     public function approvedBy(): BelongsTo
     {
         return $this->belongsTo(User::class, 'approved_by');
+    }
+
+    /**
+     * Who removed this General Signatory's "On Hold" state — see
+     * `OffboardingRequestApprover::onHoldRemovedBy()`'s matching docblock.
+     */
+    public function onHoldRemovedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'on_hold_removed_by');
     }
 
     /**
@@ -103,17 +116,18 @@ class OffboardingRequestGeneralSignatory extends Model
     /**
      * This General Signatory's current-state label for the Clearance Form's
      * Remarks column — the General Signatory equivalent of
-     * `OffboardingRequestApprover::clearanceStatusLabel()`. A declined
-     * signatory has still completed their required action (see
-     * `ChecklistCompletionService`'s "declined counts like approved" gates)
-     * — 'Declined' is its own distinct, resolved label, never lumped in
-     * with 'Pending'.
+     * `OffboardingRequestApprover::clearanceStatusLabel()`. A decline now
+     * places this on genuine hold (`status = 'on_hold'` — see
+     * `GeneralSignatoryApprovalController::decline()`), never cleared/
+     * resolved until the same signatory removes it; 'declined' is kept only
+     * for any legacy row from before this change.
      */
     public function clearanceStatusLabel(): string
     {
         return match ($this->status) {
             'approved' => 'Cleared',
             'declined' => 'Declined',
+            'on_hold' => 'On Hold',
             default => 'Pending',
         };
     }
@@ -147,7 +161,7 @@ class OffboardingRequestGeneralSignatory extends Model
     public function isClearanceSigningOverdue(): bool
     {
         return $this->due_at !== null
-            && ! in_array($this->status, ['approved', 'declined'], true)
+            && $this->status !== 'approved'
             && now()->greaterThan($this->due_at);
     }
 }

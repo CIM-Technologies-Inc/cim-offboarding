@@ -60,7 +60,11 @@ class ApprovalController extends Controller
         $employee = $user->employee;
 
         $assignments = OffboardingRequestApprover::query()
-            ->whereIn('status', ['pending', 'viewed'])
+            // 'on_hold' stays in this queue deliberately — a declined
+            // checklist must remain visible to its signatory (see
+            // `ApprovalController::decline()`), not disappear the way a
+            // genuinely resolved (approved) one does.
+            ->whereIn('status', ['pending', 'viewed', 'on_hold'])
             ->whereHas('offboardingRequest', fn ($q) => $q->where('status', 'pending'))
             ->visibleTo($user)
             ->with(['offboardingRequest.employee', 'checklistTemplate.items.signatory', 'employee', 'delegatedEmployee', 'itemProgress.checkedBy.employee', 'itemProgress.heldBy.employee', 'itemProgress.headApprover', 'itemAssignments.assignedEmployee'])
@@ -91,7 +95,11 @@ class ApprovalController extends Controller
                 $isAuthorizedHeadlessViewer = $assignment->employee_id === null
                     && $assignment->checklistTemplate?->use_task_assignee_as_signatory;
 
-                if (($isPrimaryViewer || $isAuthorizedHeadlessViewer) && ! $assignment->first_viewed_at) {
+                // Must not touch an 'on_hold' row (now also included in
+                // `$assignments` above, see its own comment) — it should
+                // never be silently flipped back to 'viewed' just because
+                // this viewer's queue happened to load while it's held.
+                if (($isPrimaryViewer || $isAuthorizedHeadlessViewer) && ! $assignment->first_viewed_at && $assignment->status !== 'on_hold') {
                     $assignment->update([
                         'first_viewed_at' => now(),
                         'first_viewed_by_employee_id' => $employee->id,
@@ -211,6 +219,19 @@ class ApprovalController extends Controller
                     // group's `displayStatus` — never copied into a card's
                     // final output.
                     'rowStatus' => $assignment->status,
+                    // Internal-only, consulted only while building the
+                    // card's own `isOnHold`/`declineReason`/hold-removal
+                    // fields below — a genuinely combined multi-checklist
+                    // card only surfaces these when exactly one checklist
+                    // is on it (see `declineUrl`'s own identical rule),
+                    // same reasoning: there's no single "which checklist"
+                    // to attribute a shared reason/removal to otherwise.
+                    'declineReasonRaw' => $assignment->decline_reason,
+                    'declinedAtRaw' => $assignment->declined_at?->format('M d, Y g:i A'),
+                    'onHoldRemovedAtRaw' => $assignment->on_hold_removed_at?->format('M d, Y g:i A'),
+                    'onHoldRemovedByNameRaw' => $assignment->onHoldRemovedBy?->name,
+                    'onHoldRemovalReasonRaw' => $assignment->on_hold_removal_reason,
+                    'onHoldRemoveUrl' => route('approvals.remove-hold', $assignment->id),
                     'isReadyForApproval' => $isReadyForApproval,
                     'delegationStatusRaw' => $assignment->delegation_status,
                     'dueAtRaw' => $assignment->due_at,
@@ -272,7 +293,15 @@ class ApprovalController extends Controller
                             $effectiveSignatory = $assignment->effectiveSignatoryFor($item);
                             $isReassigned = $effectiveSignatory?->id !== $item->signatory_id;
                             $isOwnItem = $employee && $effectiveSignatory && $effectiveSignatory->id === $employee->id;
-                            $editable = $isPrimaryApprover || $isDelegate || $isOwnItem;
+                            // A checklist On Hold (see `ApprovalController::decline()`)
+                            // freezes every one of its own items server-side, not
+                            // just client-side — the same defense-in-depth
+                            // `ChecklistDelegationController`'s own action
+                            // guards already provide (their `['pending','
+                            // viewed']` allow-lists already reject `on_hold`),
+                            // this just also keeps a fresh page load from
+                            // rendering the checkboxes as clickable at all.
+                            $editable = ($isPrimaryApprover || $isDelegate || $isOwnItem) && $assignment->status !== 'on_hold';
                             $checkedByEmployee = $progress?->checkedBy?->employee;
                             $heldByEmployee = $progress?->heldBy?->employee;
 
@@ -329,7 +358,7 @@ class ApprovalController extends Controller
                                 // above) — their access is for tracking their
                                 // own employee's progress, never for taking
                                 // over the work itself.
-                                'canTakeOver' => ! $editable && ! $isChecked && ! $onHold && ! $isMonitoring,
+                                'canTakeOver' => ! $editable && ! $isChecked && ! $onHold && ! $isMonitoring && $assignment->status !== 'on_hold',
                                 'clearedByName' => $isChecked ? $progress?->checkedBy?->name : null,
                                 'clearedByCode' => $isChecked ? $checkedByEmployee?->employee_code : null,
                                 'clearedAt' => $isChecked ? $progress?->checked_at?->format('M d, Y g:i A') : null,
@@ -535,7 +564,10 @@ class ApprovalController extends Controller
     private function buildGeneralSignatoryApprovals(User $user)
     {
         $assignments = OffboardingRequestGeneralSignatory::query()
-            ->where('status', 'pending')
+            // 'on_hold' stays in this queue deliberately, same reasoning
+            // as `index()`'s own matching comment — a declined General
+            // Signatory approval must remain visible, not disappear.
+            ->whereIn('status', ['pending', 'on_hold'])
             ->whereHas('offboardingRequest', fn ($q) => $q->where('status', 'pending'))
             ->visibleTo($user)
             ->with(['offboardingRequest.employee', 'offboardingRequest.approvers', 'offboardingRequest.generalSignatoryApprovals', 'generalSignatory.clearanceSignatory', 'generalSignatory.tasks.signatory'])
@@ -601,7 +633,7 @@ class ApprovalController extends Controller
                     // below for that, a separate field so this queue badge
                     // (shared by every approval kind on this page) is never
                     // affected by adding it.
-                    'displayStatus' => 'pending',
+                    'displayStatus' => $assignment->status === 'on_hold' ? 'on_hold' : 'pending',
                     // The offboarding request's own current overall
                     // processing status (Pending/In Progress/Overdue/
                     // Completed/etc.) — see `OffboardingRequest::displayStatus()`,
@@ -657,6 +689,15 @@ class ApprovalController extends Controller
                         ->all(),
                     'submitUrl' => route('general-signatory-approvals.approve', $assignment->id),
                     'declineUrl' => route('general-signatory-approvals.decline', $assignment->id),
+                    // On Hold state (see `GeneralSignatoryApprovalController::decline()`)
+                    // — mirrors the checklist card's own identical fields.
+                    'isOnHold' => $assignment->status === 'on_hold',
+                    'onHoldRemoveUrl' => route('general-signatory-approvals.remove-hold', $assignment->id),
+                    'declineReason' => $assignment->decline_reason,
+                    'declinedAt' => $assignment->declined_at?->format('M d, Y g:i A'),
+                    'onHoldRemovedAt' => $assignment->on_hold_removed_at?->format('M d, Y g:i A'),
+                    'onHoldRemovedByName' => $assignment->onHoldRemovedBy?->name,
+                    'onHoldRemovalReason' => $assignment->on_hold_removal_reason,
                     'timeline' => collect($request->timeline())
                         ->reject(fn ($step) => $step['label'] === 'Offboarding In Progress')
                         ->values()
@@ -961,6 +1002,32 @@ class ApprovalController extends Controller
                     'declineUrl' => $group->pluck('checklistTemplates')->flatten()->unique()->count() === 1
                         ? route('approvals.decline', $first['assignmentId'])
                         : null,
+                    // Whether ANY checklist in this card is currently On
+                    // Hold (see `ApprovalController::decline()`) — used to
+                    // disable Approve/Decline and every task checkbox on
+                    // the card, and to show the "Remove On Hold" action
+                    // instead. `onHoldRemoveUrl` (and the reason/removal
+                    // fields alongside it) follow `declineUrl`'s own rule:
+                    // only a card that resolves to exactly one checklist
+                    // gets one, since there's no single checklist to
+                    // attribute a shared reason to otherwise.
+                    'isOnHold' => $group->contains('rowStatus', 'on_hold'),
+                    // Computed the SAME unconditional way `declineUrl` above
+                    // is — never gated on the row already being on hold —
+                    // since this is read from a page that was rendered
+                    // BEFORE any decline happened; gating it on current
+                    // status left it permanently null in every page's
+                    // initial payload (nothing is ever on hold at render
+                    // time), which meant the "Remove On Hold" button could
+                    // never appear no matter what happened afterward.
+                    'onHoldRemoveUrl' => $group->pluck('checklistTemplates')->flatten()->unique()->count() === 1
+                        ? route('approvals.remove-hold', $first['assignmentId'])
+                        : null,
+                    'declineReason' => $group->firstWhere('rowStatus', 'on_hold')['declineReasonRaw'] ?? null,
+                    'declinedAt' => $group->firstWhere('rowStatus', 'on_hold')['declinedAtRaw'] ?? null,
+                    'onHoldRemovedAt' => $group->firstWhere('rowStatus', 'on_hold')['onHoldRemovedAtRaw'] ?? null,
+                    'onHoldRemovedByName' => $group->firstWhere('rowStatus', 'on_hold')['onHoldRemovedByNameRaw'] ?? null,
+                    'onHoldRemovalReason' => $group->firstWhere('rowStatus', 'on_hold')['onHoldRemovalReasonRaw'] ?? null,
                     'assignUrl' => $useGroupRoutes
                         ? route('approvals.group.assign', ['offboardingRequest' => $first['offboardingRequestId'], 'employee' => $first['approverEmployeeId']])
                         : ($first['approverEmployeeId'] ? route('approvals.assign', $first['assignmentId']) : null),
@@ -1098,14 +1165,17 @@ class ApprovalController extends Controller
 
     /**
      * Same priority order the old single-row `displayStatus` used —
-     * overdue, then approved/declined, then ready-for-approval, then
-     * delegation status — generalized across every checklist in the group:
-     * overdue if ANY member still outstanding is overdue; approved only
-     * once EVERY member is approved; declined if ANY member was declined;
-     * ready-for-approval once every not-yet-approved member has satisfied
-     * its own completion gate; otherwise falls back to the first member's
-     * delegation status (identical across members whenever only one is
-     * delegated, which is the common case) or "pending".
+     * overdue, then approved/on-hold/declined, then ready-for-approval,
+     * then delegation status — generalized across every checklist in the
+     * group: overdue if ANY member still outstanding is overdue; approved
+     * only once EVERY member is approved; on_hold if ANY member is on
+     * hold (see `ApprovalController::decline()`); declined if ANY member
+     * still carries the legacy `'declined'` status (rows declined before
+     * this behavior changed to On Hold); ready-for-approval once every
+     * not-yet-approved member has satisfied its own completion gate;
+     * otherwise falls back to the first member's delegation status
+     * (identical across members whenever only one is delegated, which is
+     * the common case) or "pending".
      *
      * @param  \Illuminate\Support\Collection<int, array<string, mixed>>  $group
      */
@@ -1117,6 +1187,10 @@ class ApprovalController extends Controller
 
         if ($group->every(fn (array $row) => $row['rowStatus'] === 'approved')) {
             return 'approved';
+        }
+
+        if ($group->contains('rowStatus', 'on_hold')) {
+            return 'on_hold';
         }
 
         if ($group->contains('rowStatus', 'declined')) {
@@ -1135,6 +1209,12 @@ class ApprovalController extends Controller
     public function approve(Request $request, OffboardingRequestApprover $offboardingRequestApprover): RedirectResponse
     {
         $this->authorizeAssignment($offboardingRequestApprover);
+
+        abort_if(
+            $offboardingRequestApprover->offboardingRequest->isReadOnly(),
+            422,
+            'This offboarding request has been retracted and can no longer be actioned.'
+        );
 
         if (! auth()->user()->hasUsableSignature()) {
             return $this->redirectToUploadSignature();
@@ -1571,25 +1651,26 @@ class ApprovalController extends Controller
     }
 
     /**
-     * Declining a Core/Primary checklist is a COMPLETED signatory action,
-     * not an incomplete one — the assigned Clearance Signatory's required
-     * action on THIS checklist is done, exactly like `approve()`, and the
-     * offboarding request keeps moving. Requires the same e-signature
-     * `approve()` does (declining is still a signed-off decision) and a
-     * mandatory reason. Mirrors `approve()`'s structure closely; the two
-     * genuine differences are the completion cascade never blocks on item
-     * completeness here (there's nothing to check off on a declined
-     * checklist) and the notification is the new dedicated decline email
-     * rather than the creator-confirmation approval one.
+     * Declining a checklist places it On Hold (`status = 'on_hold'`) — NOT
+     * a completed signatory action. It never advances the offboarding
+     * request (no `ChecklistCompletionService` cascade), records no
+     * signature, and blocks every further task/approve/decline action on
+     * this checklist until the SAME signatory calls `removeHold()` below.
+     * No signature is required to decline — unlike `approve()`, declining
+     * isn't a final signed-off decision, just a pause — but a reason is
+     * still mandatory, both to place the hold and (separately) to remove
+     * it later. The checklist stays fully visible on this signatory's own
+     * Approvals page throughout (never removed), showing "On Hold" plus
+     * the decline reason, exactly per spec.
      */
     public function decline(Request $request, OffboardingRequestApprover $offboardingRequestApprover): RedirectResponse|JsonResponse
     {
         $this->authorizeAssignment($offboardingRequestApprover);
 
-        if (! auth()->user()->hasUsableSignature()) {
+        if ($offboardingRequestApprover->offboardingRequest->isReadOnly()) {
             return $request->wantsJson()
-                ? response()->json(['message' => self::MISSING_SIGNATURE_MESSAGE], 422)
-                : $this->redirectToUploadSignature();
+                ? response()->json(['message' => 'This offboarding request has been retracted and can no longer be actioned.'], 422)
+                : abort(422, 'This offboarding request has been retracted and can no longer be actioned.');
         }
 
         abort_unless(
@@ -1612,49 +1693,101 @@ class ApprovalController extends Controller
         $actor = auth()->user();
 
         $offboardingRequestApprover->update([
-            'status' => 'declined',
+            'status' => 'on_hold',
             'declined_at' => now(),
             'decline_reason' => $comment,
         ]);
 
-        // Per-row only — unlike the old hard-cancel behavior, every OTHER
-        // still-outstanding assignment on this request is entirely
-        // unaffected by this decline, so their own overdue notices (if any)
-        // must stay exactly as they are.
+        // Per-row only — every OTHER still-outstanding assignment on this
+        // request is entirely unaffected by this hold, so their own overdue
+        // notices (if any) must stay exactly as they are.
         $this->resolveOverdueNotifications($offboardingRequestApprover);
 
         $offboardingRequest = $offboardingRequestApprover->offboardingRequest;
 
+        // Deliberately NO `ChecklistCompletionService` call here — a hold
+        // must never advance Secondary/Final-Pay attachment or overall
+        // completion. The request only keeps moving once this checklist is
+        // genuinely approved (see `approve()`), after the hold is removed.
         $this->recordActivityAndNotify($offboardingRequest, 'declined', $comment, $actor, $offboardingRequestApprover->id);
-
-        // Same completion cascade `finalizeGroupApproval()` runs after a
-        // real approval — a declined checklist counts as resolved for
-        // Secondary/Final-Pay attachment and overall completion purposes
-        // (see `ChecklistCompletionService`'s widened gates), so the request
-        // must keep advancing exactly as if this had been approved.
-        $completionService = app(ChecklistCompletionService::class);
-        $offboardingRequestApprover->checklistTemplate?->is_final_pay_checklist
-            ? $completionService->checkFinalPayCompletion($offboardingRequest)
-            : $completionService->checkRegularChecklistsCompletion($offboardingRequest);
 
         $this->sendDeclineNotification($offboardingRequestApprover, $actor, $comment, 'Clearance Signatory');
 
         if ($request->wantsJson()) {
             return response()->json([
-                'message' => 'Checklist declined.',
+                'message' => 'Checklist placed on hold.',
                 'declinedAt' => $offboardingRequestApprover->declined_at->format('M d, Y g:i A'),
             ]);
         }
 
-        return back()->with('success', 'Checklist for ' . $offboardingRequest->employee->name . ' was declined.');
+        return back()->with('success', 'Checklist for ' . $offboardingRequest->employee->name . ' was placed on hold.');
     }
 
     /**
-     * Emails admins and this request's creator that a Clearance Signatory or
-     * General Signatory has declined a checklist — a brand-new, dedicated
-     * notification (never reused from Approve/Assignment/Overdue/
-     * Cancellation, since declining is neither a clearance nor a
-     * cancellation). Shared shape with
+     * The SAME signatory who declined a checklist resumes it — the only
+     * way out of "On Hold" (see `decline()` above). Requires its own
+     * mandatory reason, independent of the original decline reason (both
+     * are preserved permanently as separate audit-trail entries — see
+     * `on_hold_removed_at`/`on_hold_removal_reason`). Resets `status` to
+     * `'pending'` rather than a dedicated "resumed" value: every existing
+     * display (`clearanceStatusLabel()`, the Offboarding Status badge)
+     * already correctly re-derives "In Progress" the moment any real
+     * activity (a checked item, a prior view) exists on the row, exactly
+     * matching the spec's "In Progress/Pending Approval, based on the
+     * application's existing status terminology" wording with no new
+     * status value needed. No completion-cascade call — reopening a
+     * checklist for action is not itself a resolution.
+     */
+    public function removeHold(Request $request, OffboardingRequestApprover $offboardingRequestApprover): RedirectResponse|JsonResponse
+    {
+        $this->authorizeAssignment($offboardingRequestApprover);
+
+        abort_unless(
+            $offboardingRequestApprover->status === 'on_hold',
+            422,
+            'This checklist is not on hold.'
+        );
+
+        if ($request->has('reason')) {
+            $request->merge(['reason' => trim((string) $request->input('reason'))]);
+        }
+
+        $validated = $request->validate([
+            'reason' => ['required', 'string', 'max:2000'],
+        ], [
+            'reason.required' => 'A reason is required to remove this hold.',
+        ]);
+
+        $reason = $validated['reason'];
+        $actor = auth()->user();
+
+        $offboardingRequestApprover->update([
+            'status' => 'pending',
+            'on_hold_removed_at' => now(),
+            'on_hold_removed_by' => $actor->id,
+            'on_hold_removal_reason' => $reason,
+        ]);
+
+        $offboardingRequest = $offboardingRequestApprover->offboardingRequest;
+
+        $this->recordActivityAndNotify($offboardingRequest, 'on_hold_removed', $reason, $actor, $offboardingRequestApprover->id);
+
+        if ($request->wantsJson()) {
+            return response()->json([
+                'message' => 'Hold removed. The checklist is available for review again.',
+                'status' => $offboardingRequestApprover->status,
+                'onHoldRemovedAt' => $offboardingRequestApprover->on_hold_removed_at->format('M d, Y g:i A'),
+            ]);
+        }
+
+        return back()->with('success', 'Checklist for ' . $offboardingRequest->employee->name . ' is available for review again.');
+    }
+
+    /**
+     * Emails the Admin/HR user who CREATED this offboarding request — and
+     * only them, not a broader admin broadcast — that a Clearance Signatory
+     * or General Signatory has declined (placed On Hold) a checklist, per
+     * spec. Shared shape with
      * `GeneralSignatoryApprovalController::sendDeclineNotification()`
      * (kept as separate copies, same convention as this controller and that
      * one already being entirely independent elsewhere). Never lets a mail
@@ -1667,18 +1800,18 @@ class ApprovalController extends Controller
         $offboardee = $offboardingRequest->employee;
         $template = $offboardingRequestApprover->checklistTemplate;
 
-        $recipients = User::role(User::ROLE_ADMIN)->get();
+        $creator = $offboardingRequest->creator;
 
-        if ($offboardingRequest->creator && $offboardingRequest->creator->email) {
-            $recipients = $recipients->push($offboardingRequest->creator);
-        }
+        if (! $creator || ! $creator->email || ! filter_var($creator->email, FILTER_VALIDATE_EMAIL)) {
+            Log::warning('Offboarding request creator has no usable email — checklist decline notification was not sent.', [
+                'offboarding_request_approver_id' => $offboardingRequestApprover->id,
+                'offboarding_request_id' => $offboardingRequest->id,
+            ]);
 
-        $recipients = $recipients->filter(fn (User $recipient) => $recipient->email && filter_var($recipient->email, FILTER_VALIDATE_EMAIL))
-            ->unique('id');
-
-        if ($recipients->isEmpty()) {
             return;
         }
+
+        $recipients = collect([$creator]);
 
         $emailTemplate = EmailTemplate::where('is_active', true)
             ->where('template_name', 'Checklist Signatory Declined')
@@ -1748,7 +1881,13 @@ class ApprovalController extends Controller
         abort_unless(auth()->user()->isAdmin(), 403);
 
         abort_if(
-            in_array($offboardingRequestApprover->status, ['approved', 'declined'], true),
+            $offboardingRequestApprover->offboardingRequest->isReadOnly(),
+            422,
+            'This offboarding request has been retracted and can no longer be actioned.'
+        );
+
+        abort_if(
+            $offboardingRequestApprover->status === 'approved',
             422,
             'This approver has already acted — no reminder needed.'
         );
@@ -1835,7 +1974,7 @@ class ApprovalController extends Controller
             ]);
 
             return redirect()
-                ->route('offboardees.index', ['offboardee' => $offboardee->id])
+                ->route('offboardees.index', ['offboardee' => $offboardingRequest->id])
                 ->with('success', 'Reminder sent to ' . $approverEmployee->name . '.');
         } catch (\Throwable $e) {
             Log::error('Failed to send offboarding reminder email.', [
@@ -1932,7 +2071,7 @@ class ApprovalController extends Controller
         ]);
 
         return redirect()
-            ->route('offboardees.index', ['offboardee' => $offboardee->id])
+            ->route('offboardees.index', ['offboardee' => $offboardingRequest->id])
             ->with('success', 'Reminder sent to ' . implode(', ', $sentNames) . '.');
     }
 
@@ -2160,6 +2299,13 @@ class ApprovalController extends Controller
                 // next full page load. Same `displayStatus()` call
                 // `OffboardeeController::index()` itself uses.
                 'status' => $offboardingRequest->displayStatus(),
+                // "Retract Offboarding" on the Offboardee page — an
+                // extension can push the Last Working Day back into the
+                // future (reopening this) just as easily as it can leave it
+                // unchanged; re-derived fresh here so the card's button
+                // reacts immediately, same convention as every other field
+                // in this response. See `OffboardingRequest::isBeforeLastWorkingDay()`.
+                'canRetractOffboarding' => $offboardingRequest->isBeforeLastWorkingDay(),
                 'canBulkExtendDue' => $freshApplicable->isNotEmpty(),
                 'extendDueChecklists' => $freshApplicable->map(fn (OffboardingRequestApprover $approver) => [
                     'title' => $approver->checklistTemplate?->title,
@@ -2187,7 +2333,7 @@ class ApprovalController extends Controller
         }
 
         return redirect()
-            ->route('offboardees.index', ['offboardee' => $offboardingRequest->employee_id])
+            ->route('offboardees.index', ['offboardee' => $offboardingRequest->id])
             ->with('success', $message);
     }
 

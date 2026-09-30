@@ -5,12 +5,61 @@
 @endphp
 <div class="relative" x-data="{
     dropdownOpen: false,
+    // Tracks whether there's anything left to show/clear — seeded from
+    // the server-rendered list at page load, then flipped to false the
+    // instant Clear All succeeds so the empty state and the Clear All
+    // button itself react immediately, with no page reload.
+    hasNotifications: @js($notifications->isNotEmpty()),
+    unreadCount: @js($unreadCount),
+    clearingAll: false,
     toggleDropdown() {
         this.dropdownOpen = !this.dropdownOpen;
     },
     closeDropdown() {
         this.dropdownOpen = false;
-    }
+    },
+    // Permanently deletes every notification for the CURRENT user only
+    // (see NotificationController::clearAll() — scoped server-side to
+    // `$request->user()->notifications()`, so this can never touch
+    // another user's notifications regardless of what's sent from here).
+    // A fetch() POST, not a form submit, so the panel/badge update
+    // instantly without any page navigation.
+    clearAllNotifications() {
+        if (this.clearingAll || !this.hasNotifications) {
+            return;
+        }
+        this.clearingAll = true;
+        window.fetchWithTimeout(@js(route('notifications.clear-all')), {
+            method: 'DELETE',
+            headers: {
+                'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                'Accept': 'application/json',
+            },
+        }).then((res) => {
+            if (!res.ok) {
+                throw new Error('request failed');
+            }
+            this.clearingAll = false;
+            this.hasNotifications = false;
+            this.unreadCount = 0;
+            window.Swal?.fire({
+                icon: 'success',
+                title: 'Notifications Cleared',
+                text: 'All your notifications have been cleared.',
+                confirmButtonColor: '#145a3a',
+            });
+        }).catch((e) => {
+            this.clearingAll = false;
+            window.Swal?.fire({
+                icon: 'error',
+                title: 'Failed to Clear Notifications',
+                text: e?.name === 'AbortError'
+                    ? 'This is taking longer than expected. Please check before trying again.'
+                    : 'Notifications could not be cleared. Please try again.',
+                confirmButtonColor: '#145a3a',
+            });
+        });
+    },
 }" @click.away="closeDropdown()">
     <!-- Notification Button -->
     <button
@@ -18,14 +67,13 @@
         @click="toggleDropdown()"
         type="button"
     >
-        @if ($unreadCount > 0)
-            <!-- Notification Badge -->
-            <span
-                class="absolute -right-1 -top-1 z-1 flex h-4.5 min-w-4.5 items-center justify-center rounded-full bg-error-500 px-1 text-[10px] font-medium leading-none text-white"
-            >
-                {{ $unreadCount > 9 ? '9+' : $unreadCount }}
-            </span>
-        @endif
+        <!-- Notification Badge -->
+        <span
+            x-show="unreadCount > 0"
+            x-cloak
+            class="absolute -right-1 -top-1 z-1 flex h-4.5 min-w-4.5 items-center justify-center rounded-full bg-error-500 px-1 text-[10px] font-medium leading-none text-white"
+            x-text="unreadCount > 9 ? '9+' : unreadCount"
+        ></span>
 
         <!-- Bell Icon -->
         <svg
@@ -62,14 +110,15 @@
             <h5 class="text-lg font-semibold text-gray-800 dark:text-white/90">Notification</h5>
 
             <div class="flex items-center gap-3">
-                @if ($unreadCount > 0)
-                    <form method="POST" action="{{ route('notifications.read-all') }}">
-                        @csrf
-                        <!-- <button type="submit" class="text-xs font-medium text-[#145a3a] hover:text-[#0f4630] dark:text-[#3aa876]">
-                            Mark all
-                        </button> -->
-                    </form>
-                @endif
+                <!-- Clear All: only shown while there's something to clear
+                     (hasNotifications) — deletes every notification for
+                     the current user, then reactively empties this panel
+                     and zeroes the badge above, no page reload. -->
+                <button type="button" @click="clearAllNotifications()" :disabled="clearingAll"
+                    x-show="hasNotifications" x-cloak
+                    class="text-xs font-medium text-gray-500 hover:text-error-600 disabled:cursor-not-allowed disabled:opacity-60 dark:text-gray-400 dark:hover:text-error-400">
+                    <span x-text="clearingAll ? 'Clearing...' : 'Clear All'"></span>
+                </button>
 
                 <button @click="closeDropdown()" class="text-gray-500 dark:text-gray-400" type="button">
                     <svg
@@ -91,9 +140,11 @@
             </div>
         </div>
 
-        <!-- Notification List -->
-        <ul class="flex flex-col h-auto overflow-y-auto custom-scrollbar">
-            @forelse ($notifications as $notification)
+        <!-- Notification List — hidden in favor of the empty-state message
+             below once hasNotifications flips to false (either nothing
+             was ever here, or Clear All just ran). -->
+        <ul class="flex flex-col h-auto overflow-y-auto custom-scrollbar" x-show="hasNotifications">
+            @foreach ($notifications as $notification)
                 @php
                     $isApproved = $notification->type === 'offboarding_approved';
                     $isOverdue = $notification->type === 'checklist_overdue';
@@ -150,12 +201,15 @@
                         </button>
                     </form>
                 </li>
-            @empty
-                <li class="flex flex-1 items-center justify-center py-10 text-sm text-gray-400">
-                    No notifications yet.
-                </li>
-            @endforelse
+            @endforeach
         </ul>
+
+        <!-- Empty state — shown whenever there's nothing left (never had
+             any, or Clear All just ran), replacing the old server-only
+             empty branch so both cases share one reactive message. -->
+        <div x-show="!hasNotifications" x-cloak class="flex flex-1 items-center justify-center py-10 text-sm text-gray-400">
+            No notifications yet.
+        </div>
     </div>
     <!-- Dropdown End -->
 </div>

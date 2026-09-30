@@ -29,36 +29,54 @@
                 'bg-error-50 text-error-700 dark:bg-error-500/15 dark:text-error-400': ['declined', 'cancelled'].includes(this.selected?.requestStatus),
             };
         },
-        // Removes this General Signatory's own card from the underlying
-        // Approvals queue once declining it resolves the card entirely —
-        // same convention `checklist-modal.blade.php`'s own
-        // `removeListCard()` already uses, so a declined General Signatory
-        // assignment disappears immediately, with no page reload required.
-        // Removes it directly by the `data-card-id` `pages/approvals/index.blade.php`
-        // stamps on every card (same id as `selected.id`, e.g.
-        // `general-signatory-123`) — a no-op if the card isn't on screen
-        // (e.g. a filtered-out search result) or already gone.
-        removeListCard(cardId) {
+        // The On Hold counterpart to a card removal — a held General
+        // Signatory approval must STAY on the queue, so instead of
+        // removing the card this patches its status badge in place, same
+        // data-card-id targeting convention as checklist-modal.blade.php's
+        // own patchListCardBadge(). Matches the [data-status-badge] span
+        // pages/approvals/index.blade.php renders per card from its own
+        // $statusBadges map.
+        patchListCardBadge(cardId, badgeClass, badgeLabel) {
             if (!cardId) {
                 return;
             }
-            document.querySelector(`[data-card-id='${CSS.escape(String(cardId))}']`)?.remove();
+            const badge = document.querySelector(`[data-card-id='${CSS.escape(String(cardId))}'] [data-status-badge]`);
+            if (!badge) {
+                return;
+            }
+            badge.className = `rounded-full px-2.5 py-1 text-xs font-medium ${badgeClass}`;
+            badge.textContent = badgeLabel;
         },
-        // Declining is a COMPLETED signatory action (see
-        // GeneralSignatoryApprovalController::decline()) — same
-        // mandatory-reason confirm + fetch()-based flow as the checklist
-        // modal's own declineChecklist(), including closing the modal and
-        // removing the now-resolved card from the underlying queue on
-        // success (it was declined, not merely edited in place, so this
-        // must not linger open the way other in-place patches do) — see
-        // the button's own :disabled/spinner for the loading state.
+        // The card behind this modal is otherwise server-rendered — its
+        // click handler dispatches a static JSON snapshot baked into the
+        // page at render time (see pages/approvals/index.blade.php's own
+        // matching comment), so mutating `this.selected` in place only
+        // ever fixes the CURRENTLY open modal. Persisting the patch here,
+        // in the same plain global cache checklist-modal.blade.php's own
+        // rememberCardOverride() uses, keeps a reopen of the SAME card
+        // correct too, without ever reloading the whole page.
+        rememberCardOverride(cardId, patch) {
+            if (!cardId) {
+                return;
+            }
+            window.__approvalCardOverrides = window.__approvalCardOverrides || {};
+            window.__approvalCardOverrides[cardId] = Object.assign({}, window.__approvalCardOverrides[cardId] || {}, patch);
+        },
+        // Declining now places this General Signatory's approval ON HOLD
+        // (see GeneralSignatoryApprovalController::decline()) — it does NOT
+        // resolve it, no signature is recorded, and it stays on this
+        // signatory's own queue (never removed — see removeHold() below
+        // for the only way out). Same mandatory-reason confirm +
+        // fetch()-based flow as the checklist modal's own
+        // declineChecklist() — patched in place on success, modal stays
+        // open, no reload.
         declineGeneralSignatory() {
             if (this.declining || !this.selected?.declineUrl) {
                 return;
             }
             Swal.fire({
                 title: 'Decline This Offboarding Request?',
-                text: 'Your assigned clearance for this offboarding request will be declined. This does not stop the offboarding request — it will continue processing normally. Please provide a reason.',
+                text: 'Your assigned clearance for this offboarding request will be placed ON HOLD and cannot proceed — Submit and further decline actions will be disabled until you remove the hold. Please provide a reason.',
                 icon: 'warning',
                 input: 'textarea',
                 inputLabel: 'Reason for Declining',
@@ -103,9 +121,20 @@
 
                     this.declining = false;
 
-                    targetItem.isDeclined = true;
+                    // Patched in place — modal stays open, no reload.
+                    // rememberCardOverride()/patchListCardBadge() keep a
+                    // later reopen of this same card, and its badge on the
+                    // list, correct too (see those methods' own
+                    // docblocks).
+                    targetItem.isOnHold = true;
                     targetItem.declinedAt = data.declinedAt;
                     targetItem.declineReason = this.declineReasonDraft;
+                    this.rememberCardOverride(targetItem.id, {
+                        isOnHold: true,
+                        declinedAt: targetItem.declinedAt,
+                        declineReason: targetItem.declineReason,
+                    });
+                    this.patchListCardBadge(targetItem.id, 'bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400', 'On Hold');
 
                     // Only cleared on genuine success, and only after the
                     // patch above already read it — a failed attempt (see
@@ -114,27 +143,13 @@
                     // already typed.
                     this.declineReasonDraft = '';
 
-                    // Closed and removed from the underlying queue only on
-                    // genuine success, same order `checklist-modal.blade.php`'s
-                    // own declineChecklist() already uses — it was declined,
-                    // not merely edited in place, so it must not linger open
-                    // or keep showing in the list until a manual reload.
-                    window.dispatchEvent(new CustomEvent('close-general-signatory-modal'));
-                    this.removeListCard(targetItem?.id);
-
                     window.Swal?.fire({
                         icon: 'success',
-                        title: 'Declined Successfully',
-                        text: 'This offboarding request has been successfully declined and the decline reason has been recorded.',
+                        title: 'Placed On Hold',
+                        text: 'This offboarding request has been placed on hold and the reason has been recorded. It will stay unavailable until you remove the hold.',
                         confirmButtonColor: '#145a3a',
                     });
                 }).catch((e) => {
-                    // Modal deliberately stays open, `declining` is cleared
-                    // (re-enabling the button, clearing the loader), and the
-                    // card is NOT removed — this must only ever happen on
-                    // genuine success, never on a failed attempt, so the
-                    // General Signatory can correct/retry without losing
-                    // their place or their already-typed reason.
                     this.declining = false;
                     Swal.fire({
                         icon: 'error',
@@ -142,6 +157,83 @@
                         text: e?.name === 'AbortError'
                             ? 'This is taking longer than expected. Please check before trying again.'
                             : (e?.message || 'This offboarding request could not be declined. Please try again.'),
+                        confirmButtonColor: '#145a3a',
+                    });
+                });
+            });
+        },
+        // The only way out of On Hold (see declineGeneralSignatory() above)
+        // — the SAME General Signatory reviews and confirms, with its own
+        // mandatory reason, independent of the original decline reason.
+        // Reloads on success, same reasoning as `checklist-modal.blade.php`'s
+        // own removeHold(): a rare, deliberate action, so re-deriving every
+        // affected field's correct value client-side isn't worth it.
+        removingHold: false,
+        onHoldRemovalReasonDraft: '',
+        removeHold() {
+            if (this.removingHold || !this.selected?.onHoldRemoveUrl) {
+                return;
+            }
+            Swal.fire({
+                title: 'Remove On Hold?',
+                text: 'This offboarding request will become available for review and action again. Please provide a reason.',
+                icon: 'question',
+                input: 'textarea',
+                inputLabel: 'Reason for Removing the Hold',
+                inputPlaceholder: 'Explain why this hold is being removed...',
+                inputValue: this.onHoldRemovalReasonDraft,
+                inputValidator: (value) => {
+                    if (!value || !value.trim()) {
+                        return 'A reason is required to remove this hold.';
+                    }
+                },
+                showCancelButton: true,
+                confirmButtonText: 'Yes, Remove Hold',
+                cancelButtonText: 'Cancel',
+                confirmButtonColor: '#145a3a',
+                cancelButtonColor: '#6b7280',
+                reverseButtons: true,
+            }).then((result) => {
+                if (!result.isConfirmed) {
+                    return;
+                }
+
+                this.removingHold = true;
+                this.onHoldRemovalReasonDraft = (result.value || '').trim();
+
+                const formData = new FormData();
+                formData.append('reason', this.onHoldRemovalReasonDraft);
+
+                window.fetchWithTimeout(this.selected.onHoldRemoveUrl, {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                        'Accept': 'application/json',
+                    },
+                    body: formData,
+                }).then(async (res) => {
+                    const data = await res.json();
+
+                    if (!res.ok) {
+                        throw new Error(data.message || 'request failed');
+                    }
+
+                    window.Swal?.fire({
+                        icon: 'success',
+                        title: 'Hold Removed',
+                        text: 'This offboarding request is available for review again. Reloading...',
+                        confirmButtonColor: '#145a3a',
+                        timer: 1500,
+                        showConfirmButton: false,
+                    }).then(() => window.location.reload());
+                }).catch((e) => {
+                    this.removingHold = false;
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'Failed to Remove Hold',
+                        text: e?.name === 'AbortError'
+                            ? 'This is taking longer than expected. Please check before trying again.'
+                            : (e?.message || 'The hold could not be removed. Please try again.'),
                         confirmButtonColor: '#145a3a',
                     });
                 });
@@ -184,17 +276,26 @@
                         <!-- <span class="shrink-0 rounded-full px-2.5 py-1 text-xs font-medium" :class="requestStatusClass()" x-text="selected.requestStatusLabel"></span> -->
                     </div>
 
-                    <!-- Declined banner — shown the instant a decline succeeds (patched in place by
-                         declineGeneralSignatory() above, no reload needed). -->
-                    <template x-if="selected.isDeclined">
-                        <div class="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm dark:border-red-500/30 dark:bg-red-500/10">
-                            <p class="font-medium text-red-700 dark:text-red-400">This checklist has been declined.</p>
-                            <p class="mt-1 text-red-600 dark:text-red-400" x-show="selected.declinedAt">
+                    <!-- On Hold banner — shown from page load (selected.isOnHold, computed
+                         server-side off this assignment's actual `status`) or the instant a
+                         decline succeeds (patched in place by declineGeneralSignatory() above,
+                         no reload needed). Submit/Decline stay disabled until the assigned
+                         General Signatory clicks Remove On Hold below. -->
+                    <template x-if="selected.isOnHold">
+                        <div class="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm dark:border-amber-500/30 dark:bg-amber-500/10">
+                            <p class="font-medium text-amber-700 dark:text-amber-400">This is On Hold.</p>
+                            <p class="mt-1 text-amber-600 dark:text-amber-400" x-show="selected.declinedAt">
                                 Declined: <span x-text="selected.declinedAt"></span>
                             </p>
-                            <p class="mt-1 text-red-600 dark:text-red-400" x-show="selected.declineReason">
+                            <p class="mt-1 text-amber-600 dark:text-amber-400" x-show="selected.declineReason">
                                 Reason: <span x-text="selected.declineReason"></span>
                             </p>
+                            <button type="button" @click="removeHold()" :disabled="removingHold"
+                                :class="removingHold ? 'opacity-70 cursor-not-allowed' : 'hover:bg-amber-100 dark:hover:bg-amber-500/20'"
+                                class="mt-3 flex items-center justify-center gap-1.5 rounded-lg border border-amber-500 px-4 py-2 text-sm font-medium text-amber-700 dark:border-amber-400 dark:text-amber-400">
+                                <span x-show="removingHold" class="h-4 w-4 animate-spin rounded-full border-2 border-solid border-amber-600 border-t-transparent dark:border-amber-400"></span>
+                                <span x-text="removingHold ? 'Removing Hold...' : 'Remove On Hold'"></span>
+                            </button>
                         </div>
                     </template>
                     <p class="mb-5 text-sm text-gray-500 dark:text-gray-400">
@@ -273,7 +374,7 @@
 
                     <form method="POST" :action="selected.submitUrl" @submit="processing = true">
                         @csrf
-                        <template x-if="!selected.isDeclined">
+                        <template x-if="!selected.isOnHold">
                             <div>
                                 <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
                                     Remarks <span class="font-normal text-gray-400">(optional)</span>
@@ -287,10 +388,10 @@
                                 class="flex justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03]">
                                 Cancel
                             </button>
-                            <!-- Decline: a completed signatory action, not a stop — requires the same
-                                 e-signature Submit does (validated server-side) and a mandatory reason via
-                                 the confirm dialog. Hides once already declined — see selected.isDeclined. -->
-                            <template x-if="!selected.isDeclined">
+                            <!-- Decline: places this approval On Hold — no signature required (a pause,
+                                 not a final decision) but a mandatory reason via the confirm dialog.
+                                 Hides once already on hold — see selected.isOnHold. -->
+                            <template x-if="!selected.isOnHold">
                                 <button type="button" @click="declineGeneralSignatory()" :disabled="declining"
                                     :class="declining ? 'opacity-70 cursor-not-allowed' : 'hover:bg-red-50 dark:hover:bg-red-500/10'"
                                     class="flex items-center justify-center gap-1.5 rounded-lg border border-red-500 px-4 py-2.5 text-sm font-medium text-red-600 dark:border-red-400 dark:text-red-400">
@@ -298,7 +399,7 @@
                                     <span x-text="declining ? 'Declining...' : 'Decline'"></span>
                                 </button>
                             </template>
-                            <template x-if="!selected.isDeclined">
+                            <template x-if="!selected.isOnHold">
                                 <button type="submit" :disabled="processing" data-turbo-submits-with="Submitting..."
                                     :class="processing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#0f4630]'"
                                     class="flex items-center justify-center gap-1.5 rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white">

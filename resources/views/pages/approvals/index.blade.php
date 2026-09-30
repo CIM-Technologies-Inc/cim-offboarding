@@ -50,6 +50,11 @@
                 'done' => ['label' => 'Done', 'class' => 'bg-teal-50 text-teal-700 dark:bg-teal-500/15 dark:text-teal-400'],
                 'approved' => ['label' => 'Approved', 'class' => 'bg-success-50 text-success-700 dark:bg-success-500/15 dark:text-success-400'],
                 'declined' => ['label' => 'Declined', 'class' => 'bg-error-50 text-error-700 dark:bg-error-500/15 dark:text-error-400'],
+                // A declined checklist is now placed On Hold (see
+                // `ApprovalController::decline()`) rather than staying
+                // 'declined' — kept as its own amber state, distinct from
+                // both 'declined' (legacy rows only) and 'overdue'.
+                'on_hold' => ['label' => 'On Hold', 'class' => 'bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400'],
                 'overdue' => ['label' => 'Overdue', 'class' => 'bg-orange-50 text-orange-700 dark:bg-orange-500/15 dark:text-orange-400'],
                 'ready_for_approval' => ['label' => 'Ready for Approval', 'class' => 'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]'],
             ];
@@ -303,7 +308,7 @@
                             <div class="flex h-12 w-12 items-center justify-center rounded-full bg-gray-100 text-base font-semibold text-gray-600 dark:bg-gray-800 dark:text-gray-300">
                                 {{ collect(explode(' ', $approval['name']))->map(fn ($part) => mb_substr($part, 0, 1))->take(2)->implode('') }}
                             </div>
-                            <span class="rounded-full px-2.5 py-1 text-xs font-medium {{ $badge['class'] }}">
+                            <span data-status-badge class="rounded-full px-2.5 py-1 text-xs font-medium {{ $badge['class'] }}">
                                 {{ $badge['label'] }}
                             </span>
                         </div>
@@ -381,7 +386,16 @@
 
                         <div class="mt-4 flex items-center gap-2 border-t border-gray-100 pt-4 dark:border-gray-800">
                             @if (($approval['kind'] ?? null) === 'general_signatory')
-                                <button type="button" @click.stop="$dispatch('open-general-signatory-modal', @js($approval))"
+                                {{-- Merges in any client-side patch left by
+                                     general-signatory-modal.blade.php's own
+                                     rememberCardOverride() (declined-then-
+                                     reopened this session) — see that
+                                     method's own docblock for why the plain
+                                     @js($approval) snapshot below, baked in
+                                     at this page's render time, would
+                                     otherwise show stale pre-decline data
+                                     on every later reopen. --}}
+                                <button type="button" @click.stop="$dispatch('open-general-signatory-modal', Object.assign({}, @js($approval), window.__approvalCardOverrides?.['{{ $approval['id'] }}'] || {}))"
                                     class="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-[#145a3a] px-3 py-2 text-sm font-medium text-white hover:bg-[#0f4630]">
                                     <svg width="16" height="16" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
                                         <path fill-rule="evenodd" clip-rule="evenodd" d="M3 4.5C3 4.08579 3.33579 3.75 3.75 3.75H14.25C14.6642 3.75 15 4.08579 15 4.5C15 4.91421 14.6642 5.25 14.25 5.25H3.75C3.33579 5.25 3 4.91421 3 4.5ZM3 9C3 8.58579 3.33579 8.25 3.75 8.25H14.25C14.6642 8.25 15 8.58579 15 9C15 9.41421 14.6642 9.75 14.25 9.75H3.75C3.33579 9.75 3 9.41421 3 9ZM3.75 12.75C3.33579 12.75 3 13.0858 3 13.5C3 13.9142 3.33579 14.25 3.75 14.25H10.5C10.9142 14.25 11.25 13.9142 11.25 13.5C11.25 13.0858 10.9142 12.75 10.5 12.75H3.75Z" fill="currentColor" />
@@ -397,7 +411,11 @@
                                     Review & Approve
                                 </button>
                             @else
-                                <button type="button" @click.stop="$dispatch('open-checklist-modal', @js($approval))"
+                                {{-- Merges in any client-side patch left by
+                                     checklist-modal.blade.php's own
+                                     rememberCardOverride() — see that
+                                     method's own docblock. --}}
+                                <button type="button" @click.stop="$dispatch('open-checklist-modal', Object.assign({}, @js($approval), window.__approvalCardOverrides?.['{{ $approval['id'] }}'] || {}))"
                                     class="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-[#145a3a] px-3 py-2 text-sm font-medium text-white hover:bg-[#0f4630]">
                                     <svg width="16" height="16" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
                                         <path fill-rule="evenodd" clip-rule="evenodd" d="M3 4.5C3 4.08579 3.33579 3.75 3.75 3.75H14.25C14.6642 3.75 15 4.08579 15 4.5C15 4.91421 14.6642 5.25 14.25 5.25H3.75C3.33579 5.25 3 4.91421 3 4.5ZM3 9C3 8.58579 3.33579 8.25 3.75 8.25H14.25C14.6642 8.25 15 8.58579 15 9C15 9.41421 14.6642 9.75 14.25 9.75H3.75C3.33579 9.75 3 9.41421 3 9ZM3.75 12.75C3.33579 12.75 3 13.0858 3 13.5C3 13.9142 3.33579 14.25 3.75 14.25H10.5C10.9142 14.25 11.25 13.9142 11.25 13.5C11.25 13.0858 10.9142 12.75 10.5 12.75H3.75Z" fill="currentColor" />

@@ -231,8 +231,12 @@ class OffboardingRequest extends Model
      */
     public function extendDueApplicableApprovers(): Collection
     {
+        if ($this->isReadOnly()) {
+            return collect();
+        }
+
         return $this->approvers
-            ->reject(fn (OffboardingRequestApprover $approver) => in_array($approver->status, ['approved', 'declined'], true))
+            ->reject(fn (OffboardingRequestApprover $approver) => $approver->status === 'approved')
             ->filter(fn (OffboardingRequestApprover $approver) => $approver->due_at !== null);
     }
 
@@ -246,9 +250,29 @@ class OffboardingRequest extends Model
      */
     public function extendDueApplicableGeneralSignatories(): Collection
     {
+        if ($this->isReadOnly()) {
+            return collect();
+        }
+
         return $this->generalSignatoryApprovals
-            ->reject(fn (OffboardingRequestGeneralSignatory $assignment) => in_array($assignment->status, ['approved', 'declined'], true))
+            ->reject(fn (OffboardingRequestGeneralSignatory $assignment) => $assignment->status === 'approved')
             ->filter(fn (OffboardingRequestGeneralSignatory $assignment) => $assignment->due_at !== null);
+    }
+
+    /**
+     * Whether this request is a frozen historical record — currently true
+     * only for a retracted/cancelled request (user-facing label
+     * "Retracted"; the stored `status` value stays `'cancelled'`, see
+     * `OffboardingRequestController::cancel()`'s own docblock for why no
+     * new status value was introduced). Single source of truth for every
+     * "no further action allowed" gate across the app — both the
+     * `extendDueApplicable*()` methods above and every approve/decline/
+     * remind/assign/reset controller guard reuse this instead of each
+     * re-checking `status === 'cancelled'` independently.
+     */
+    public function isReadOnly(): bool
+    {
+        return $this->status === 'cancelled';
     }
 
     /**
@@ -268,6 +292,28 @@ class OffboardingRequest extends Model
         return $this->original_last_working_day !== null
             && $this->last_working_day !== null
             && ! $this->original_last_working_day->equalTo($this->last_working_day);
+    }
+
+    /**
+     * Whether "Retract Offboarding" (the Offboardee page's cancel action —
+     * see `OffboardingRequestController::cancel()`) is still available for
+     * this request, purely on timing: retraction must happen strictly
+     * BEFORE the offboardee's Last Working Day, using whatever
+     * `last_working_day` currently holds — the CURRENT effective value, not
+     * `original_last_working_day`, so an "Extend Due" that pushes the date
+     * forward correctly reopens this window rather than leaving it based on
+     * a date that's no longer in effect. Compared against the START of that
+     * calendar day (never its end) — the Last Working Day itself, and every
+     * day after it, must already hide the button, per this feature's own
+     * spec, unlike a checklist's own due date which stays valid THROUGH the
+     * end of its day. Uses `now()`, which already resolves through the
+     * app's configured `APP_TIMEZONE`, so this always matches the system's
+     * current date/time rather than a viewer's local clock.
+     */
+    public function isBeforeLastWorkingDay(): bool
+    {
+        return $this->last_working_day !== null
+            && now()->startOfDay()->lt($this->last_working_day->copy()->startOfDay());
     }
 
     /**
@@ -355,12 +401,17 @@ class OffboardingRequest extends Model
      */
     public function hasApprovedOrCompletedProgress(): bool
     {
-        // A declined checklist/General Signatory is real, completed
-        // progress too (its reason and audit trail would be silently lost
-        // on Reset) — counted alongside 'approved', same widening as
-        // `ChecklistCompletionService`'s completion gates.
+        // Unlike the completion gates in `ChecklistCompletionService` (which
+        // correctly no longer treat a decline as "done" — see
+        // `ApprovalController::decline()`), this ONE check deliberately
+        // keeps counting 'declined' (legacy rows) and 'on_hold' (current)
+        // alongside 'approved': regardless of whether the checklist is
+        // actually resolved, an action was genuinely taken on it — a
+        // reason was recorded, an audit trail exists — and Reset would
+        // silently destroy that real history with no warning the button
+        // ever existed, exactly the same as it would for a checked item.
         $hasApprovedChecklistOrTask = $this->approvers->contains(
-            fn (OffboardingRequestApprover $approver) => in_array($approver->status, ['approved', 'declined'], true)
+            fn (OffboardingRequestApprover $approver) => in_array($approver->status, ['approved', 'declined', 'on_hold'], true)
                 || $approver->itemProgress->contains(fn (ChecklistItemProgress $progress) => (bool) $progress->is_checked)
         );
 
@@ -369,7 +420,7 @@ class OffboardingRequest extends Model
         }
 
         return $this->generalSignatoryApprovals->contains(
-            fn (OffboardingRequestGeneralSignatory $approval) => in_array($approval->status, ['approved', 'declined'], true)
+            fn (OffboardingRequestGeneralSignatory $approval) => in_array($approval->status, ['approved', 'declined', 'on_hold'], true)
         );
     }
 
@@ -466,7 +517,7 @@ class OffboardingRequest extends Model
 
     private static function overdueConstraint(Builder $query): void
     {
-        $query->whereNotIn('status', ['approved', 'declined'])
+        $query->where('status', '!=', 'approved')
             ->whereNotNull('due_at')
             ->where('due_at', '<', now());
     }
@@ -654,6 +705,14 @@ class OffboardingRequest extends Model
         $delegationEventsByAssignment = $this->activities
             ->whereIn('action', ['checklist_assigned', 'checklist_delegate_completed', 'checklist_item_cleared_by_other', 'checklist_item_held', 'checklist_ready_for_approval'])
             ->groupBy('offboarding_request_approver_id');
+        // Who actually clicked Decline — `declined_at`/`decline_reason` are
+        // plain columns on the assignment itself (see `ApprovalController::decline()`),
+        // but WHO declined was only ever recorded on the matching activity
+        // row's own `user_id`, never a dedicated column the way
+        // `on_hold_removed_by` is. `->last()` picks the most recent decline
+        // event per assignment, same "only the latest cycle matters" rule
+        // `declined_at`/`decline_reason` themselves already follow.
+        $declineEventsByAssignment = $this->activities->where('action', 'declined')->groupBy('offboarding_request_approver_id');
 
         // The General Signatory equivalent of the two groupings above —
         // keyed by `offboarding_request_general_signatory_id` (the FK
@@ -665,8 +724,16 @@ class OffboardingRequest extends Model
         $generalSignatoryEventsByAssignment = $this->activities
             ->whereIn('action', ['general_signatory_reminder_sent', 'general_signatory_viewed'])
             ->groupBy('offboarding_request_general_signatory_id');
+        // The General Signatory equivalent of $declineEventsByAssignment
+        // above, keyed by `offboarding_request_general_signatory_id` (see
+        // `GeneralSignatoryApprovalController::finalizeDecline()`'s own
+        // activity-create call), same reasoning as
+        // `$generalSignatoryEventsByAssignment`'s matching comment.
+        $generalSignatoryDeclineEventsByAssignment = $this->activities
+            ->where('action', 'general_signatory_declined')
+            ->groupBy('offboarding_request_general_signatory_id');
 
-        $buildRichStep = function (OffboardingRequestApprover $assignment) use ($remindersByAssignment, $dueDateExtensionEventsByAssignment, $delegationEventsByAssignment): array {
+        $buildRichStep = function (OffboardingRequestApprover $assignment) use ($remindersByAssignment, $dueDateExtensionEventsByAssignment, $delegationEventsByAssignment, $declineEventsByAssignment): array {
             $assignment->loadMissing(
                 'checklistTemplate.items',
                 'itemProgress.checkedBy.employee',
@@ -788,8 +855,19 @@ class OffboardingRequest extends Model
                 'approvedAt' => $assignment->approved_at?->format('M d, Y g:i A'),
                 'declinedAt' => $assignment->declined_at?->format('M d, Y g:i A'),
                 'declineReason' => $assignment->decline_reason,
+                // See $declineEventsByAssignment's own comment above.
+                'declinedByName' => $declineEventsByAssignment->get($assignment->id, collect())->last()?->user?->name,
+                // "On Hold Removed" — the SAME signatory resuming a
+                // declined/held checklist (see `ApprovalController::removeHold()`).
+                // Null until that ever happens; permanently populated once it
+                // does, regardless of whether the checklist later gets
+                // declined again (only the MOST RECENT removal is tracked,
+                // same single-column convention as `declined_at` itself).
+                'onHoldRemovedAt' => $assignment->on_hold_removed_at?->format('M d, Y g:i A'),
+                'onHoldRemovedByName' => $assignment->onHoldRemovedBy?->name,
+                'onHoldRemovalReason' => $assignment->on_hold_removal_reason,
                 'reminderSentAt' => $assignment->reminder_sent_at?->format('M d, Y g:i A'),
-                'canRemind' => ! in_array($assignment->status, ['approved', 'declined'], true),
+                'canRemind' => $assignment->status !== 'approved',
                 'remindUrl' => route('approvals.remind', $assignment->id),
                 // Discriminates a checklist approver's rich step from a
                 // General Signatory's (see `buildGeneralSignatoryRichStep()`
@@ -797,18 +875,18 @@ class OffboardingRequest extends Model
                 // Approver" picker needs to know which default email
                 // template to pre-select.
                 'isGeneralSignatory' => false,
-                // Populated once actually approved OR declined (never for a
-                // merely pending/viewed row) — the signatory's own uploaded
-                // e-signature, now guaranteed to exist by the time any row
-                // reaches either terminal state (`hasUsableSignature()` is
-                // required before both `ApprovalController::approve()` and
-                // `decline()`), recorded here alongside `approvedAt`/
-                // `declinedAt` so the admin-facing timeline shows who signed
-                // off (or declined) and with what signature, not just when.
-                'approverSignatureUrl' => in_array($assignment->status, ['approved', 'declined'], true)
+                // Populated ONLY once genuinely approved — a decline now
+                // places this On Hold rather than completing it (see
+                // `ApprovalController::decline()`), so no signature exists
+                // (or shows) until the signatory removes the hold and
+                // actually approves it. `hasUsableSignature()` is still
+                // required before `approve()`, guaranteeing this is always
+                // populated by the time `status` genuinely reaches
+                // 'approved'.
+                'approverSignatureUrl' => $assignment->status === 'approved'
                     ? $assignment->employee?->user?->signatureUrl()
                     : null,
-                'done' => in_array($assignment->status, ['approved', 'declined']),
+                'done' => $assignment->status === 'approved',
                 'cancelled' => $assignment->status === 'declined',
                 'delegatedTo' => $assignment->delegatedEmployee?->name,
                 'delegatedToCode' => $assignment->delegatedEmployee?->employee_code,
@@ -840,6 +918,10 @@ class OffboardingRequest extends Model
                     'additionalDays' => $extension->additional_extension_days,
                     'extendedBy' => $extension->extendedBy?->name ?? 'Unknown',
                     'extendedAt' => $extension->created_at->format('M d, Y g:i A'),
+                    // The reason typed into the Extend Due confirmation dialog —
+                    // required server-side (see `ApprovalController::extendAllDue()`),
+                    // already stored on this row, just never surfaced here before.
+                    'reason' => $extension->reason,
                 ])->values(),
                 // Persisted, refresh-proof basis for the completed-status
                 // color (green if approved on/before `due_at`, red if
@@ -939,7 +1021,7 @@ class OffboardingRequest extends Model
         // the inconsistency the Clearance Form is deliberately guarded
         // against too.
         foreach ($this->generalSignatoryApprovals as $generalSignatoryApproval) {
-            $steps[] = $this->buildGeneralSignatoryRichStep($generalSignatoryApproval);
+            $steps[] = $this->buildGeneralSignatoryRichStep($generalSignatoryApproval, $generalSignatoryDeclineEventsByAssignment);
 
             // Notification resends and the first-view timestamp both
             // already show as fields directly on the rich card above
@@ -1012,16 +1094,16 @@ class OffboardingRequest extends Model
      * approver's own remarks column — this is exclusively this General
      * Signatory's own.
      *
-     * `status` can now also be 'declined' — a General Signatory decline is a
-     * COMPLETED signatory action (see
-     * `GeneralSignatoryApprovalController::decline()`), so `done`/
-     * `approverSignatureUrl`/`canRemind` below all treat it exactly like
-     * 'approved', mirroring `buildRichStep()`'s own widened treatment.
+     * `status` can now also be 'declined' (legacy) or 'on_hold' (current) —
+     * a General Signatory decline places this On Hold (see
+     * `GeneralSignatoryApprovalController::decline()`), NOT a completed
+     * action, so `done`/`approverSignatureUrl`/`canRemind` below only ever
+     * treat a genuine 'approved' status as resolved.
      */
-    private function buildGeneralSignatoryRichStep(OffboardingRequestGeneralSignatory $generalSignatoryApproval): array
+    private function buildGeneralSignatoryRichStep(OffboardingRequestGeneralSignatory $generalSignatoryApproval, $declineEventsByAssignment = null): array
     {
         $clearanceSignatory = $generalSignatoryApproval->generalSignatory->clearanceSignatory;
-        $isResolved = in_array($generalSignatoryApproval->status, ['approved', 'declined'], true);
+        $isApproved = $generalSignatoryApproval->status === 'approved';
 
         return [
             'rich' => true,
@@ -1031,20 +1113,27 @@ class OffboardingRequest extends Model
             'assignedAt' => $generalSignatoryApproval->created_at?->format('M d, Y g:i A'),
             'firstViewedAt' => $generalSignatoryApproval->first_viewed_at?->format('M d, Y g:i A'),
             'approvedAt' => $generalSignatoryApproval->approved_at?->format('M d, Y g:i A'),
-            // Same convention as `buildRichStep()` above — present once
-            // resolved (approved or declined), now guaranteed to exist by
-            // then (`hasUsableSignature()` is required before both actions).
-            'approverSignatureUrl' => $isResolved
+            // Present ONLY once genuinely approved — see
+            // `buildRichStep()`'s matching comment above.
+            'approverSignatureUrl' => $isApproved
                 ? $clearanceSignatory?->user?->signatureUrl()
                 : null,
             'remarks' => $generalSignatoryApproval->remarks,
             'declinedAt' => $generalSignatoryApproval->declined_at?->format('M d, Y g:i A'),
             'declineReason' => $generalSignatoryApproval->decline_reason,
+            // See `buildRichStep()`'s own `$declineEventsByAssignment`
+            // comment — same "no dedicated column, read it off the
+            // matching activity row's `user_id` instead" reasoning.
+            'declinedByName' => $declineEventsByAssignment
+                ?->get($generalSignatoryApproval->id, collect())->last()?->user?->name,
+            'onHoldRemovedAt' => $generalSignatoryApproval->on_hold_removed_at?->format('M d, Y g:i A'),
+            'onHoldRemovedByName' => $generalSignatoryApproval->onHoldRemovedBy?->name,
+            'onHoldRemovalReason' => $generalSignatoryApproval->on_hold_removal_reason,
             'reminderSentAt' => null,
-            'canRemind' => ! $isResolved,
+            'canRemind' => ! $isApproved,
             'remindUrl' => route('general-signatory-approvals.remind', $generalSignatoryApproval->id),
             'isGeneralSignatory' => true,
-            'done' => $isResolved,
+            'done' => $isApproved,
             'cancelled' => $generalSignatoryApproval->status === 'declined',
             'delegatedTo' => null,
             'delegatedToCode' => null,

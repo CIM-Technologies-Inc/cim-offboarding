@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 
@@ -25,5 +26,24 @@ class NotificationController extends Controller
         $request->user()->unreadNotifications->markAsRead();
 
         return back();
+    }
+
+    /**
+     * Permanently deletes EVERY notification (read and unread) belonging
+     * to the authenticated user — never another user's, since
+     * `$request->user()->notifications()` is the same `notifiable`-scoped
+     * relation `read()` above already relies on for that same guarantee.
+     * Called via `fetch()` from the notification dropdown so the panel and
+     * badge can update instantly with no page navigation.
+     */
+    public function clearAll(Request $request): JsonResponse|RedirectResponse
+    {
+        $request->user()->notifications()->delete();
+
+        if ($request->wantsJson()) {
+            return response()->json(['message' => 'All notifications cleared.']);
+        }
+
+        return back()->with('success', 'All notifications cleared.');
     }
 }

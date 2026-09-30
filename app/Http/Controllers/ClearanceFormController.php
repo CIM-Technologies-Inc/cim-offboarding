@@ -259,13 +259,14 @@ class ClearanceFormController extends Controller
                 }
 
                 $signatoryEmployee = $approver?->employee;
-                // A declined checklist is a COMPLETED signatory action, not
-                // an incomplete one — counts exactly like 'approved' for
-                // whether this row's signature shows, same as
-                // `buildEmployeeClearanceStatuses()` below. This is the
-                // defensive per-row fallback path only (used when the
-                // employee is somehow absent from that method's own map).
-                $isApproved = in_array($approver?->status, ['approved', 'declined'], true);
+                // A declined checklist is now placed On Hold, not completed
+                // — it never counts as cleared and shows no signature until
+                // the same signatory removes the hold and actually approves
+                // it (see `ApprovalController::decline()`/`removeHold()`).
+                // This is the defensive per-row fallback path only (used
+                // when the employee is somehow absent from
+                // `buildEmployeeClearanceStatuses()`'s own map below).
+                $isApproved = $approver?->status === 'approved';
 
                 return [[
                     'employeeId' => $signatoryEmployee?->id,
@@ -273,7 +274,7 @@ class ClearanceFormController extends Controller
                     'signatory' => $signatoryEmployee?->name ?? '—',
                     'signatureUser' => $signatoryEmployee?->user,
                     'isApproved' => $isApproved,
-                    'approvedAt' => $isApproved ? ($approver?->approved_at ?? $approver?->declined_at) : null,
+                    'approvedAt' => $isApproved ? $approver?->approved_at : null,
                     'remarksLabel' => $approver?->clearanceStatusLabel(includeOverdue: false) ?? 'Not Assigned',
                 ]];
             })
@@ -317,18 +318,17 @@ class ClearanceFormController extends Controller
                 // never happen, since this very approval is one of its
                 // inputs — defensive only).
                 $status = $clearanceSignatory ? ($employeeClearanceStatuses[$clearanceSignatory->id] ?? null) : null;
-                // Declined counts exactly like approved — a completed
-                // signatory action, not an incomplete one — same rule as
-                // the checklist rows above; see
-                // `buildEmployeeClearanceStatuses()`'s own widened gate.
-                $isApproved = $status !== null ? $status['allCleared'] : in_array($approval?->status, ['approved', 'declined'], true);
+                // A declined General Signatory approval is now On Hold, not
+                // completed — same reasoning as the checklist rows above;
+                // see `buildEmployeeClearanceStatuses()`'s own gate.
+                $isApproved = $status !== null ? $status['allCleared'] : $approval?->status === 'approved';
 
                 return [
                     'department' => $clearanceSignatory?->department ?? '—',
                     'signatory' => $clearanceSignatory?->name ?? '—',
                     'signatureDataUri' => $isApproved ? $this->signatureDataUri($clearanceSignatory?->user?->signature_path) : null,
                     'date' => $isApproved
-                        ? ($status['clearedAt'] ?? $approval?->approved_at ?? $approval?->declined_at)?->format('M d, Y')
+                        ? ($status['clearedAt'] ?? $approval?->approved_at)?->format('M d, Y')
                         : null,
                     'remarks' => $status['label'] ?? ($approval?->clearanceStatusLabel() ?? 'Pending'),
                 ];
@@ -769,15 +769,16 @@ class ClearanceFormController extends Controller
 
         foreach ($offboardingRequest->approvers as $approver) {
             if ($approver->employee_id !== null) {
-                // Declined counts exactly like approved here — a completed
-                // signatory action, not an incomplete one (see
-                // `ChecklistCompletionService`'s matching gates, widened the
-                // same way, and requirement #11's own business rule).
+                // A declined checklist is On Hold, not done — see
+                // `ChecklistCompletionService`'s matching `'approved'`-only
+                // gates. `clearanceStatusLabel()` still surfaces "Declined"/
+                // "On Hold" distinctly for the Remarks column even though
+                // this unit isn't counted as cleared.
                 $addUnit(
                     $approver->employee_id,
-                    in_array($approver->status, ['approved', 'declined'], true),
+                    $approver->status === 'approved',
                     $approver->clearanceStatusLabel(includeOverdue: false),
-                    $approver->approved_at ?? $approver->declined_at,
+                    $approver->approved_at,
                 );
             }
 
@@ -837,9 +838,9 @@ class ClearanceFormController extends Controller
 
             $addUnit(
                 $clearanceSignatoryId,
-                in_array($gsApproval->status, ['approved', 'declined'], true),
+                $gsApproval->status === 'approved',
                 $gsApproval->clearanceStatusLabel(),
-                $gsApproval->approved_at ?? $gsApproval->declined_at,
+                $gsApproval->approved_at,
             );
         }
 

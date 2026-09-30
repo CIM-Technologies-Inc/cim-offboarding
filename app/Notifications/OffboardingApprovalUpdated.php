@@ -47,7 +47,7 @@ class OffboardingApprovalUpdated extends Notification
             'action' => 'view_offboarding_timeline',
             'comment' => $this->comment,
             'message' => "{$this->approver->name} {$this->action} the offboarding request for {$offboardee->name}.",
-            'url' => route('offboardees.index', ['offboardee' => $offboardee->id]),
+            'url' => route('offboardees.index', ['offboardee' => $this->offboardingRequest->id]),
         ];
     }
 }

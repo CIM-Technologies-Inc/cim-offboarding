@@ -62,7 +62,7 @@ class NotifyOverdueChecklists extends Command
         }
 
         $overdue = OffboardingRequestApprover::query()
-            ->whereNotIn('status', ['approved', 'declined'])
+            ->where('status', '!=', 'approved')
             ->whereNotNull('due_at')
             ->where('due_at', '<', now())
             ->whereNull('overdue_notified_at')

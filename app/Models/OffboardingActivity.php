@@ -82,6 +82,7 @@ class OffboardingActivity extends Model
                 : 'All checklist items completed — auto-approved',
             'general_signatory_approved' => "Cleared by General Signatory: {$actor}{$suffix}",
             'general_signatory_declined' => "Declined by General Signatory: {$actor}{$suffix}",
+            'general_signatory_on_hold_removed' => "On Hold Removed by General Signatory: {$actor}{$suffix}",
             // Names the checklist itself — on a "Use Task Assignee as
             // Clearance Signatory" checklist this can be a Task Assignee,
             // their Immediate/Group/Department Head, or anyone else
@@ -96,13 +97,15 @@ class OffboardingActivity extends Model
             'offboarding_reset' => "Offboarding Request Reset by {$actor}",
             'offboarding_cancelled' => "Offboarding Request Cancelled by {$actor}",
             // Names the checklist itself, same reasoning as `checklist_viewed`
-            // above — a decline is now a completed-but-distinct signatory
-            // action (see `ApprovalController::decline()`), not a request
-            // stopper, so knowing WHICH checklist was declined matters just
-            // as much as who declined it.
+            // above — a decline now places the checklist On Hold (see
+            // `ApprovalController::decline()`), so knowing WHICH checklist
+            // was declined/held matters just as much as who declined it.
             'declined' => $this->offboardingRequestApprover?->checklistTemplate?->title
                 ? "Declined \"{$this->offboardingRequestApprover->checklistTemplate->title}\" by {$actor}{$suffix}"
                 : "Declined by {$actor}{$suffix}",
+            'on_hold_removed' => $this->offboardingRequestApprover?->checklistTemplate?->title
+                ? "On Hold Removed from \"{$this->offboardingRequestApprover->checklistTemplate->title}\" by {$actor}{$suffix}"
+                : "On Hold Removed by {$actor}{$suffix}",
             'all_checklists_approved' => 'All Offboarding Checklists Cleared',
             'final_pay_notified' => 'Final Pay Checklist Notification Sent',
             'reminder_sent' => "Reminder Sent by {$actor}",

@@ -4,24 +4,31 @@ namespace App\Http\Controllers;
 
 use App\Models\EmailTemplate;
 use App\Models\Employee;
+use App\Models\OffboardingRequest;
 use App\Models\SeparationType;
 use Illuminate\Http\Request;
 use Illuminate\View\View;
 
 class OffboardeeController extends Controller
 {
-    private const STATUSES = ['pending', 'in_progress', 'overdue', 'completed'];
+    // 'cancelled' deliberately included — user-facing label "Retracted"
+    // (see the blade's own $statusLabels/$statusLabelsForFilter), stored
+    // status value unchanged (see `OffboardingRequest::isReadOnly()`'s own
+    // docblock for why no new DB enum value was introduced).
+    private const STATUSES = ['pending', 'in_progress', 'overdue', 'completed', 'cancelled'];
 
     /**
      * Thin null-safe wrapper around `OffboardingRequest::extendDueApplicableApprovers()`
-     * for an employee that may not have a request at all — see that
-     * method's own docblock for what "applicable" means. Kept here (rather
-     * than inlining `?->extendDueApplicableApprovers()` everywhere below)
-     * purely so every `extendDue*` field reads identically.
+     * for a request that may not exist at all — see that method's own
+     * docblock for what "applicable" means (it already returns empty for a
+     * retracted/read-only request, so no extra check is needed here). Kept
+     * here (rather than inlining `?->extendDueApplicableApprovers()`
+     * everywhere below) purely so every `extendDue*` field reads
+     * identically.
      */
-    private function extendDueApplicableApprovers(Employee $employee)
+    private function extendDueApplicableApprovers(?OffboardingRequest $offboardingRequest)
     {
-        return $employee->latestOffboardingRequest?->extendDueApplicableApprovers();
+        return $offboardingRequest?->extendDueApplicableApprovers();
     }
 
     public function index(Request $request): View
@@ -32,73 +39,105 @@ class OffboardeeController extends Controller
 
         $departmentFilter = $request->query('department') ?: null;
 
+        // Sort By — Created Date/Time only (never name/Last Working Day/any
+        // other field), defaulting to newest-first. An invalid/missing
+        // query value silently falls back to the default rather than
+        // erroring, same convention as `$statusFilter` above.
+        $sortFilter = $request->query('sort') === 'oldest' ? 'oldest' : 'newest';
+
         $openOffboardeeId = $request->query('offboardee') ? (int) $request->query('offboardee') : null;
+
+        $eagerLoad = ['checklistTemplates', 'approvers.checklistTemplate', 'approvers.employee', 'approvers.itemProgress', 'generalSignatoryApprovals', 'immediateHead', 'finalApproval.employee', 'cancelledBy'];
 
         // `offboarding` (still in progress) and `offboarded` (fully
         // completed — see `ChecklistCompletionService::checkFinalPayCompletion()`)
-        // both belong here: this page lists every CURRENT offboarding case
-        // regardless of how far along it is. A cancelled request reverts its
-        // employee straight to `active` (see
-        // `OffboardingRequestController::cancel()`) and is deliberately
-        // NOT included here — cancellation retracts the request entirely,
-        // so the employee must disappear from this listing immediately and
-        // only reappear once a genuinely new request is created for them.
-        // Sorted by the offboarding REQUEST's own `created_at`, newest
-        // first — never alphabetically by name/employee number/any other
-        // field. `orderBy()` on the `employees` query itself can't reach
-        // into the related `offboarding_requests` row, so this is a
-        // collection-level sort applied after eager loading rather than a
-        // DB-level `orderBy` on this query.
-        $employees = Employee::whereIn('status', ['offboarding', 'offboarded'])
-            ->with(['latestOffboardingRequest.checklistTemplates', 'latestOffboardingRequest.approvers.checklistTemplate', 'latestOffboardingRequest.approvers.employee', 'latestOffboardingRequest.approvers.itemProgress', 'latestOffboardingRequest.generalSignatoryApprovals', 'latestOffboardingRequest.immediateHead', 'latestOffboardingRequest.finalApproval.employee'])
-            ->get()
-            ->sortByDesc(fn (Employee $employee) => $employee->latestOffboardingRequest?->created_at)
+        // both belong here: this is every employee with a CURRENT
+        // offboarding case, regardless of how far along it is.
+        $activeEmployees = Employee::whereIn('status', ['offboarding', 'offboarded'])
+            ->with(collect($eagerLoad)->map(fn ($relation) => 'latestOffboardingRequest.' . $relation)->all())
+            ->get();
+
+        // A retracted request is deliberately kept forever as a read-only
+        // historical record (see `OffboardingRequestController::cancel()`'s
+        // own docblock) rather than disappearing once its employee reverts
+        // to `active` — so it's fetched here as its OWN source, additive to
+        // the active-employee query above, rather than folded into
+        // `latestOffboardingRequest` (which only ever resolves to the
+        // newest request per employee and would hide an older retracted one
+        // the moment a fresh request is created for the same employee).
+        $retractedRequests = OffboardingRequest::where('status', 'cancelled')
+            ->with(array_merge(['employee'], $eagerLoad))
+            ->get();
+
+        // Every card this page can show, paired as [employee, request] —
+        // unified here so both sources sort/filter/map through the exact
+        // same code below instead of duplicating it. An employee can
+        // legitimately appear twice (one retracted historical pair, one
+        // active pair) once they've been offboarded more than once.
+        $pairs = $activeEmployees
+            ->map(fn (Employee $employee) => ['employee' => $employee, 'request' => $employee->latestOffboardingRequest])
+            ->concat($retractedRequests->map(fn (OffboardingRequest $offboardingRequest) => ['employee' => $offboardingRequest->employee, 'request' => $offboardingRequest]));
+
+        // Sorted by the offboarding REQUEST's own `created_at` — never
+        // alphabetically by name/employee number/Last Working Day/any other
+        // field — direction controlled by the "Sort By" control
+        // ($sortFilter above), newest-first by default. Applies uniformly
+        // to every card regardless of status (active, completed, or
+        // retracted), since it's the same single `sortBy*` call over the
+        // whole unified `$pairs` collection built above.
+        $pairs = ($sortFilter === 'oldest' ? $pairs->sortBy(fn (array $pair) => $pair['request']?->created_at) : $pairs->sortByDesc(fn (array $pair) => $pair['request']?->created_at))
             ->values();
 
-        $departments = $employees->pluck('department')->unique()->sort()->values();
+        $departments = $pairs->pluck('employee.department')->unique()->sort()->values();
 
         if ($statusFilter) {
-            $employees = $employees->filter(
-                fn (Employee $employee) => ($employee->latestOffboardingRequest?->displayStatus() ?? 'pending') === $statusFilter
+            $pairs = $pairs->filter(
+                fn (array $pair) => ($pair['request']?->displayStatus() ?? 'pending') === $statusFilter
             );
         }
 
         if ($departmentFilter) {
-            $employees = $employees->filter(
-                fn (Employee $employee) => $employee->department === $departmentFilter
+            $pairs = $pairs->filter(
+                fn (array $pair) => $pair['employee']->department === $departmentFilter
             );
         }
 
-        $mapEmployee = fn (Employee $employee) => [
-            'id' => $employee->id,
+        $mapRequest = function (Employee $employee, ?OffboardingRequest $offboardingRequest) {
+            return [
+            'id' => $offboardingRequest?->id,
+            // Kept alongside the request-scoped `id` above (which is what
+            // this page now keys cards/deep-links by, since one employee
+            // can have multiple cards) for anything that still needs the
+            // employee identity specifically.
+            'employeeId' => $employee->id,
             'name' => $employee->name,
             'employeeCode' => $employee->employee_code,
             'department' => $employee->department,
             'designation' => $employee->designation,
-            'status' => $employee->latestOffboardingRequest?->displayStatus() ?? 'pending',
-            'lastWorkingDay' => $employee->latestOffboardingRequest?->last_working_day?->format('M d, Y'),
+            'status' => $offboardingRequest?->displayStatus() ?? 'pending',
+            'lastWorkingDay' => $offboardingRequest?->last_working_day?->format('M d, Y'),
             // Original + extended Last Working Day display — `lastWorkingDay`
             // above stays the CURRENT effective value (what Extend Due
             // itself reads/recalculates from); these two let the Offboardee
             // Status modal show the immutable original date alongside the
             // latest extension instead of silently overwriting it. See
             // `OffboardingRequest::isLastWorkingDayExtended()`.
-            'originalLastWorkingDay' => $employee->latestOffboardingRequest?->original_last_working_day?->format('M d, Y'),
-            'isLastWorkingDayExtended' => $employee->latestOffboardingRequest?->isLastWorkingDayExtended() ?? false,
-            'immediateHead' => $employee->latestOffboardingRequest?->immediateHead?->name,
+            'originalLastWorkingDay' => $offboardingRequest?->original_last_working_day?->format('M d, Y'),
+            'isLastWorkingDayExtended' => $offboardingRequest?->isLastWorkingDayExtended() ?? false,
+            'immediateHead' => $offboardingRequest?->immediateHead?->name,
             // Separation Type + Notice Period feature — SAVED/frozen values
             // only, never re-resolved from live Separation Type Management
             // config (see `OffboardingRequestController::store()`), so this
             // matches whatever `noticePeriodStatus()` and the Calendar page
             // show for the exact same request, and never changes just
             // because a type was edited/deleted afterward.
-            'separationType' => $employee->latestOffboardingRequest?->reason,
-            'separationTypeDescription' => $employee->latestOffboardingRequest?->separation_type_description,
-            'noticePeriodDays' => $employee->latestOffboardingRequest?->notice_period_days,
-            'notificationDate' => $employee->latestOffboardingRequest?->notification_date?->format('M d, Y'),
-            'noticePeriodStatus' => $employee->latestOffboardingRequest?->noticePeriodStatus(),
-            'checklistTemplates' => $employee->latestOffboardingRequest?->checklistTemplates->pluck('title')->all() ?? [],
-            'timeline' => $employee->latestOffboardingRequest?->approverActivityTimeline() ?? [],
+            'separationType' => $offboardingRequest?->reason,
+            'separationTypeDescription' => $offboardingRequest?->separation_type_description,
+            'noticePeriodDays' => $offboardingRequest?->notice_period_days,
+            'notificationDate' => $offboardingRequest?->notification_date?->format('M d, Y'),
+            'noticePeriodStatus' => $offboardingRequest?->noticePeriodStatus(),
+            'checklistTemplates' => $offboardingRequest?->checklistTemplates->pluck('title')->all() ?? [],
+            'timeline' => $offboardingRequest?->approverActivityTimeline() ?? [],
             // URLs are generated whenever a request exists, regardless of its
             // status — admins see the Clearance buttons unconditionally (see
             // the status-timeline-modal component), while everyone else stays
@@ -106,11 +145,11 @@ class OffboardeeController extends Controller
             // `x-if`. `ClearanceFormController` still independently enforces
             // "completed only" server-side, so a non-admin can never actually
             // generate the document early even if this URL were exposed to them.
-            'clearanceFormUrl' => $employee->latestOffboardingRequest
-                ? route('clearance-form.pdf', $employee->latestOffboardingRequest)
+            'clearanceFormUrl' => $offboardingRequest
+                ? route('clearance-form.pdf', $offboardingRequest)
                 : null,
-            'printClearanceFormUrl' => $employee->latestOffboardingRequest
-                ? route('clearance-form.print', $employee->latestOffboardingRequest)
+            'printClearanceFormUrl' => $offboardingRequest
+                ? route('clearance-form.print', $offboardingRequest)
                 : null,
             // Same "generate the URL unconditionally, gate the button in the
             // view" convention as the Clearance Form URLs above — the Reset
@@ -119,8 +158,8 @@ class OffboardeeController extends Controller
             // card partial), and the route independently re-enforces that
             // same permission server-side, so exposing this URL to everyone
             // here is never itself a privilege escalation.
-            'resetOffboardingUrl' => $employee->latestOffboardingRequest
-                ? route('offboarding-requests.reset', $employee->latestOffboardingRequest)
+            'resetOffboardingUrl' => $offboardingRequest
+                ? route('offboarding-requests.reset', $offboardingRequest)
                 : null,
             // Gates the Reset Offboarding button's visibility (on top of the
             // `offboarding-requests.reset` permission check in the view) —
@@ -129,17 +168,39 @@ class OffboardeeController extends Controller
             // request's overall display status, so a request nobody has
             // acted on yet never shows a destructive reset action with
             // nothing real to reset.
-            'hasOffboardingProgress' => $employee->latestOffboardingRequest?->hasApprovedOrCompletedProgress() ?? false,
+            'hasOffboardingProgress' => $offboardingRequest?->hasApprovedOrCompletedProgress() ?? false,
             // Cancel Offboarding — same "generate the URL unconditionally,
             // gate the button in the view" convention as the Reset URL
             // above. The button itself is only ever rendered for a request
-            // whose displayed status is neither 'cancelled' nor
+            // whose displayed status is neither 'cancelled' (Retracted) nor
             // 'completed' (see the card partial), gated by the
             // `offboarding-requests.cancel` permission; the route
             // independently re-enforces both server-side.
-            'cancelOffboardingUrl' => $employee->latestOffboardingRequest
-                ? route('offboarding-requests.cancel', $employee->latestOffboardingRequest)
+            'cancelOffboardingUrl' => $offboardingRequest
+                ? route('offboarding-requests.cancel', $offboardingRequest)
                 : null,
+            // Retraction history — read-only, shown only for a retracted
+            // (`status === 'cancelled'`) request, in the space the Retract/
+            // Extend buttons would otherwise occupy (see the card partial).
+            // Frozen at the moment of retraction (`OffboardingRequestController::cancel()`
+            // sets `cancelled_by`/`cancellation_reason` once, there is no
+            // update path for either afterward), so this always reflects
+            // who ACTUALLY performed the retraction, never the current
+            // viewer.
+            'cancelledByName' => $offboardingRequest?->cancelledBy?->name,
+            'cancellationReason' => $offboardingRequest?->cancellation_reason,
+            'cancelledAt' => $offboardingRequest?->cancelled_at?->format('M d, Y g:i A'),
+            // Gates "Retract Offboarding" the same "generate unconditionally,
+            // gate in the view" way as every other action URL here — once
+            // the offboardee's Last Working Day is reached (today or any day
+            // after), retraction is no longer offered, regardless of the
+            // request's status. See `OffboardingRequest::isBeforeLastWorkingDay()`.
+            // Already correctly false for a retracted request too, since
+            // `isBeforeLastWorkingDay()` doesn't need `isReadOnly()`
+            // awareness of its own — the card partial's own
+            // `status !== 'cancelled'` check (see the blade) is the
+            // authoritative gate for that case.
+            'canRetractOffboarding' => $offboardingRequest?->isBeforeLastWorkingDay() ?? false,
             // Extend Due (bulk, the ONLY Extend Due entry point — there is
             // no more per-checklist button) — same "generate the URL
             // unconditionally, gate the button in the view" convention as
@@ -155,8 +216,8 @@ class OffboardeeController extends Controller
             // used, unchanged, purely for the informational "Due"/"Not Due"
             // badge on each checklist in the Extend Due modal below — see
             // `extendDueChecklists`).
-            'canBulkExtendDue' => (function () use ($employee) {
-                $applicable = $this->extendDueApplicableApprovers($employee);
+            'canBulkExtendDue' => (function () use ($offboardingRequest) {
+                $applicable = $this->extendDueApplicableApprovers($offboardingRequest);
 
                 return $applicable !== null && $applicable->isNotEmpty();
             })(),
@@ -171,7 +232,7 @@ class OffboardeeController extends Controller
             // Day itself unselectable in the calendar UI (not just rejected
             // after the fact) — the server independently re-checks the same
             // constraint.
-            'extendDueMinSelectableDateIso' => $employee->latestOffboardingRequest?->last_working_day
+            'extendDueMinSelectableDateIso' => $offboardingRequest?->last_working_day
                 ?->copy()->addDay()->format('Y-m-d'),
             // Per-checklist breakdown for the Extend Due modal — every
             // applicable checklist (same set `canBulkExtendDue` above uses)
@@ -184,8 +245,8 @@ class OffboardeeController extends Controller
             // either, since a checklist's own due date is Last Working Day
             // + its template's `due_in_days` offset and routinely differs
             // from it).
-            'extendDueChecklists' => (function () use ($employee) {
-                $applicable = $this->extendDueApplicableApprovers($employee);
+            'extendDueChecklists' => (function () use ($offboardingRequest) {
+                $applicable = $this->extendDueApplicableApprovers($offboardingRequest);
 
                 return $applicable
                     ?->map(fn ($approver) => [
@@ -196,36 +257,46 @@ class OffboardeeController extends Controller
                     ->values()
                     ->all() ?? [];
             })(),
-            'extendAllDueUrl' => $employee->latestOffboardingRequest
-                ? route('offboarding-requests.extend-all-due', $employee->latestOffboardingRequest)
+            'extendAllDueUrl' => $offboardingRequest
+                ? route('offboarding-requests.extend-all-due', $offboardingRequest)
                 : null,
             // Final Approval — the button itself is only ever rendered for
             // a request whose real `status` column is 'completed' (see the
             // card partial), gated by the `final-approval.send` permission;
-            // the route independently re-enforces both server-side.
-            'finalApprovalUrl' => $employee->latestOffboardingRequest
-                ? route('final-approval.send', $employee->latestOffboardingRequest)
+            // the route independently re-enforces both server-side. A
+            // retracted request can never reach 'completed' (`cancel()`
+            // rejects a request that's already completed, and completing
+            // one that's already cancelled is equally impossible — single
+            // mutually-exclusive `status` column), so this is already
+            // correctly unavailable for a retracted card too.
+            'finalApprovalUrl' => $offboardingRequest
+                ? route('final-approval.send', $offboardingRequest)
                 : null,
             // null (never sent) | 'pending' (sent, awaiting the Final
             // Signatory) | 'approved' — the card uses this to switch
             // between showing the button and a plain "Approved" badge.
-            'finalApprovalStatus' => $employee->latestOffboardingRequest?->finalApproval?->status,
-            'finalSignatoryName' => $employee->latestOffboardingRequest?->finalApproval?->employee?->name,
-        ];
+            'finalApprovalStatus' => $offboardingRequest?->finalApproval?->status,
+            'finalSignatoryName' => $offboardingRequest?->finalApproval?->employee?->name,
+            ];
+        };
 
-        $offboardees = $employees->map($mapEmployee)->values();
+        $offboardees = $pairs->map(fn (array $pair) => $mapRequest($pair['employee'], $pair['request']))->values();
 
-        // A declined request reverts the employee to "active", so they may no
-        // longer be in the list above by the time a notification links here —
-        // fetch them separately so the deep link still opens their timeline.
+        // The Offboardee page's `?offboardee=` query param (used by every
+        // notification/email deep-link — see the 7 call sites updated
+        // alongside this change) now identifies an OffboardingRequest, not
+        // an Employee, since one employee can have multiple cards. A
+        // request that's fallen off the filtered/sorted `$offboardees`
+        // list above (e.g. a status/department filter is active) is still
+        // fetched separately here so the deep link still opens it.
         $deepLinkOffboardee = null;
 
         if ($openOffboardeeId) {
             $deepLinkOffboardee = $offboardees->firstWhere('id', $openOffboardeeId);
 
             if (! $deepLinkOffboardee) {
-                $targetEmployee = Employee::with(['latestOffboardingRequest.checklistTemplates', 'latestOffboardingRequest.approvers.checklistTemplate', 'latestOffboardingRequest.approvers.employee', 'latestOffboardingRequest.approvers.itemProgress', 'latestOffboardingRequest.generalSignatoryApprovals', 'latestOffboardingRequest.immediateHead', 'latestOffboardingRequest.finalApproval.employee'])->find($openOffboardeeId);
-                $deepLinkOffboardee = $targetEmployee ? $mapEmployee($targetEmployee) : null;
+                $targetRequest = OffboardingRequest::with(array_merge(['employee'], $eagerLoad))->find($openOffboardeeId);
+                $deepLinkOffboardee = $targetRequest ? $mapRequest($targetRequest->employee, $targetRequest) : null;
             }
         }
 
@@ -250,6 +321,7 @@ class OffboardeeController extends Controller
             'offboardees' => $offboardees,
             'statusFilter' => $statusFilter,
             'departmentFilter' => $departmentFilter,
+            'sortFilter' => $sortFilter,
             'departments' => $departments,
             'deepLinkOffboardee' => $deepLinkOffboardee,
             'employeesNotOffboarded' => $employeesNotOffboarded,

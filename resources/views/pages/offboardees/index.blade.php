@@ -21,7 +21,7 @@
                 'in_progress' => 'In Progress',
                 'overdue' => 'Overdue',
                 'completed' => 'Completed',
-                'cancelled' => 'Cancelled',
+                'cancelled' => 'Retracted',
             ];
         @endphp
 
@@ -31,7 +31,7 @@
                 @if ($statusFilter)
                     <span class="inline-flex items-center gap-1.5 rounded-full bg-[#145a3a]/10 px-3 py-1 text-xs font-medium text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]">
                         {{ $statusLabelsForFilter[$statusFilter] ?? ucfirst($statusFilter) }}
-                        <a href="{{ route('offboardees.index', ['department' => $departmentFilter]) }}" class="hover:text-error-500">
+                        <a href="{{ route('offboardees.index', ['department' => $departmentFilter, 'sort' => $sortFilter]) }}" class="hover:text-error-500">
                             <svg width="12" height="12" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
                                 <path d="M13.5 4.5L4.5 13.5M4.5 4.5L13.5 13.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
                             </svg>
@@ -41,14 +41,14 @@
                 @if ($departmentFilter)
                     <span class="inline-flex items-center gap-1.5 rounded-full bg-[#145a3a]/10 px-3 py-1 text-xs font-medium text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]">
                         {{ $departmentFilter }}
-                        <a href="{{ route('offboardees.index', ['status' => $statusFilter]) }}" class="hover:text-error-500">
+                        <a href="{{ route('offboardees.index', ['status' => $statusFilter, 'sort' => $sortFilter]) }}" class="hover:text-error-500">
                             <svg width="12" height="12" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
                                 <path d="M13.5 4.5L4.5 13.5M4.5 4.5L13.5 13.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
                             </svg>
                         </a>
                     </span>
                 @endif
-                <a href="{{ route('offboardees.index') }}" class="text-xs font-medium text-gray-400 hover:text-error-500 underline">
+                <a href="{{ route('offboardees.index', ['sort' => $sortFilter]) }}" class="text-xs font-medium text-gray-400 hover:text-error-500 underline">
                     Clear all
                 </a>
             </div>
@@ -78,6 +78,61 @@
                     </span>
                 </div>
 
+                <!-- Sort By Button + Dropdown -->
+                <div x-data="{ open: false }" class="relative" @click.away="open = false">
+                    <button type="button" @click="open = !open"
+                        class="shadow-theme-xs flex h-11 items-center gap-2 rounded-lg border border-gray-300 bg-white px-4 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-white/[0.03]">
+                        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M4.5 4.5V13.5M4.5 13.5L2.25 11.25M4.5 13.5L6.75 11.25M13.5 13.5V4.5M13.5 4.5L11.25 6.75M13.5 4.5L15.75 6.75" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                        </svg>
+                        Sort By
+                    </button>
+
+                    <div x-show="open" x-cloak x-transition
+                        class="shadow-theme-lg absolute right-0 z-40 mt-2 w-64 rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
+                        {{-- Created Date/Time only — never name/Last Working Day/any
+                             other field (see OffboardeeController::index()'s own
+                             `$sortFilter`). Preserves the current Status/Department
+                             filters via the two hidden fields below, same reasoning
+                             as the Filter form's own hidden `sort` field. --}}
+                        <form method="GET" action="{{ route('offboardees.index') }}" class="space-y-4">
+                            <input type="hidden" name="status" value="{{ $statusFilter }}" />
+                            <input type="hidden" name="department" value="{{ $departmentFilter }}" />
+                            <div>
+                                <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                                    Created Date/Time
+                                </label>
+                                <div class="relative">
+                                    {{-- `requestSubmit()`, not `submit()` — the native `.submit()`
+                                         method does NOT dispatch a real `submit` event (per the DOM
+                                         spec), which is exactly what Turbo Drive listens for to
+                                         intercept navigation and avoid a full page reload. Without
+                                         this, changing the sort silently falls back to a genuine
+                                         full-page load instead of Turbo's fast in-page transition —
+                                         `requestSubmit()` fires a real event, so Turbo picks it up
+                                         the same way it already does for the Filter form's own
+                                         (real button click) submit. --}}
+                                    <select name="sort" onchange="this.form.requestSubmit()"
+                                        class="dark:bg-dark-900 h-10 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-3 pr-9 text-sm text-gray-800 shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:focus:border-brand-800">
+                                        <option value="newest" @selected($sortFilter === 'newest')>Newest Created</option>
+                                        <option value="oldest" @selected($sortFilter === 'oldest')>Oldest Created</option>
+                                    </select>
+                                    <span class="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-gray-500 dark:text-gray-400">
+                                        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                            <path d="M4.79175 7.396L10.0001 12.6043L15.2084 7.396" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                                        </svg>
+                                    </span>
+                                </div>
+                            </div>
+                            <noscript>
+                                <button type="submit" class="w-full rounded-lg bg-[#145a3a] px-3 py-2 text-sm font-medium text-white hover:bg-[#0f4630]">
+                                    Apply
+                                </button>
+                            </noscript>
+                        </form>
+                    </div>
+                </div>
+
                 <!-- Filter Button + Dropdown -->
                 <div x-data="{ open: false }" class="relative" @click.away="open = false">
                     <button type="button" @click="open = !open"
@@ -96,6 +151,11 @@
                     <div x-show="open" x-cloak x-transition
                         class="shadow-theme-lg absolute right-0 z-40 mt-2 w-72 rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
                         <form method="GET" action="{{ route('offboardees.index') }}" class="space-y-4">
+                            {{-- Preserves the current Sort By selection when applying a
+                                 Status/Department filter — this form only has its own two
+                                 fields, so without this the sort would silently reset to
+                                 the default the moment a filter is applied. --}}
+                            <input type="hidden" name="sort" value="{{ $sortFilter }}" />
                             <div>
                                 <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
                                     Status
@@ -160,21 +220,26 @@
             <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                 @foreach ($offboardees as $offboardee)
                     @php
-                        // No 'cancelled' entry here: a cancelled request is
-                        // excluded from $offboardees entirely (see
-                        // OffboardeeController::index()), so this card loop
-                        // can never encounter that status.
+                        // 'cancelled' IS shown here now — a retracted request
+                        // is kept permanently as a read-only historical card
+                        // instead of disappearing (see
+                        // OffboardeeController::index()'s additive retracted-
+                        // requests query). User-facing label is "Retracted";
+                        // the stored status value stays 'cancelled' (see
+                        // OffboardingRequest::isReadOnly()'s own docblock).
                         $statusStyles = [
                             'pending' => 'bg-yellow-50 text-yellow-700 dark:bg-yellow-500/15 dark:text-yellow-400',
                             'in_progress' => 'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400',
                             'overdue' => 'bg-orange-50 text-orange-700 dark:bg-orange-500/15 dark:text-orange-400',
                             'completed' => 'bg-success-50 text-success-700 dark:bg-success-500/15 dark:text-success-400',
+                            'cancelled' => 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300',
                         ];
                         $statusLabels = [
                             'pending' => 'Pending',
                             'in_progress' => 'In Progress',
                             'overdue' => 'Overdue',
                             'completed' => 'Completed',
+                            'cancelled' => 'Retracted',
                         ];
                     @endphp
                     <div x-data="{
@@ -199,6 +264,23 @@
                             // literals) reflect the new state immediately.
                             lastWorkingDay: @js($offboardee['lastWorkingDay'] ?? '—'),
                             canBulkExtendDue: @js($offboardee['canBulkExtendDue']),
+                            // Same reactive-copy convention as canBulkExtendDue
+                            // above — a successful extension can push the Last
+                            // Working Day back into the future, which must
+                            // reopen Retract Offboarding immediately, with no
+                            // page reload. See x-show on that button below.
+                            canRetractOffboarding: @js($offboardee['canRetractOffboarding']),
+                            // Retraction history — read-only, frozen the moment
+                            // a request is retracted (see
+                            // OffboardingRequestController::cancel()'s own
+                            // docblock: cancelled_by/cancellation_reason are
+                            // never updated again afterward). Reactive copies,
+                            // same convention as every other field here, so a
+                            // retraction performed on THIS page shows the real
+                            // actor/reason immediately below, with no reload.
+                            cancelledByName: @js($offboardee['cancelledByName']),
+                            cancellationReason: @js($offboardee['cancellationReason']),
+                            cancelledAt: @js($offboardee['cancelledAt']),
                             extendDueChecklists: @js($offboardee['extendDueChecklists'] ?? []),
                             extendDueMinSelectableDateIso: @js($offboardee['extendDueMinSelectableDateIso'] ?? null),
                             // Original vs. latest-extended Last Working Day —
@@ -253,6 +335,29 @@
                             </div>
                         </div>
 
+                        {{-- Retraction history — read-only, shown only for a Retracted
+                             request, occupying the same space the Retract/Extend
+                             buttons below would otherwise use (neither is available
+                             once retracted — see their own x-show conditions). Visually
+                             set apart (bordered, tinted background) from the plain
+                             Department/Last Working Day rows above, so it clearly reads
+                             as a distinct historical record rather than an active
+                             request detail. --}}
+                        <div class="mt-4 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 dark:border-gray-800 dark:bg-white/[0.03]"
+                            x-show="status === 'cancelled'" @click.stop="">
+                            <div class="flex items-center justify-between text-xs">
+                                <span class="text-gray-400">Retracted By</span>
+                                <span class="font-medium text-gray-700 dark:text-gray-300" x-text="cancelledByName || '—'"></span>
+                            </div>
+                            <div class="mt-1.5 text-xs">
+                                <span class="text-gray-400">Retraction Reason</span>
+                                <p class="mt-0.5 text-gray-600 dark:text-gray-300" x-text="cancellationReason || '—'"></p>
+                            </div>
+                            <template x-if="cancelledAt">
+                                <p class="mt-1.5 text-xs text-gray-400" x-text="'Retracted on ' + cancelledAt"></p>
+                            </template>
+                        </div>
+
                         <!-- @can('offboarding-requests.reset')
                             @if ($offboardee['resetOffboardingUrl'] && $offboardee['hasOffboardingProgress'] && $offboardee['status'] !== 'completed')
                                 <div class="mt-4 border-t border-gray-100 pt-4 dark:border-gray-800" :class="{ 'pointer-events-none opacity-50': cancelling }" @click.stop="">
@@ -285,8 +390,16 @@
                         @endcan -->
 
                         @can('offboarding-requests.cancel')
-                            @if ($offboardee['cancelOffboardingUrl'] && $offboardee['status'] !== 'cancelled' && $offboardee['status'] !== 'completed')
-                                <div class="mt-4 border-t border-gray-100 pt-4 dark:border-gray-800" @click.stop="">
+                            @if ($offboardee['cancelOffboardingUrl'])
+                                {{-- Reactive, not a static Blade `@if`, for the same reason
+                                     `canBulkExtendDue` gates Extend Due below: a successful
+                                     extension can push the Last Working Day back into the
+                                     future and must reopen this button immediately, with no
+                                     page reload — see the `canRetractOffboarding`/`status`
+                                     patch-in-place after a successful Extend Due submit. --}}
+                                <div class="mt-4 border-t border-gray-100 pt-4 dark:border-gray-800"
+                                    x-show="canRetractOffboarding && status !== 'cancelled' && status !== 'completed'"
+                                    @click.stop="">
                                     {{-- Deliberately not a native form submit: cancellation must stay on
                                          THIS page and remove just this one card the instant the server
                                          confirms success, with no full-page reload — a plain
@@ -298,19 +411,19 @@
                                     <form method="POST" action="{{ $offboardee['cancelOffboardingUrl'] }}"
                                         @submit.prevent="if (cancelling) return;
                                             Swal.fire({
-                                                title: 'Cancel Offboarding Request?',
-                                                html: '&lt;p style=\'text-align:left;font-size:14px;margin:0 0 12px;\'&gt;Are you sure you want to cancel this offboarding request for ' + @js($offboardee['name']) + '? This action will retract the request and remove all records associated with this offboarding process.&lt;/p&gt;'
-                                                    + '&lt;label style=\'display:block;text-align:left;font-size:12px;color:#6b7280;margin:0 0 4px;\'&gt;Cancellation Reason/Remarks&lt;/label&gt;'
-                                                    + '&lt;textarea id=\'cancel-offboarding-reason-input\' class=\'swal2-textarea\' style=\'margin:0;width:100%;box-sizing:border-box;\' rows=\'3\' placeholder=\'Explain why this offboarding request is being cancelled...\'&gt;&lt;/textarea&gt;',
+                                                title: 'Retract Offboarding Request?',
+                                                html: '&lt;p style=\'text-align:left;font-size:14px;margin:0 0 12px;\'&gt;Are you sure you want to retract this offboarding request for ' + @js($offboardee['name']) + '? The request will be marked Retracted and kept as a read-only historical record — nothing is deleted.&lt;/p&gt;'
+                                                    + '&lt;label style=\'display:block;text-align:left;font-size:12px;color:#6b7280;margin:0 0 4px;\'&gt;Retraction Reason/Remarks&lt;/label&gt;'
+                                                    + '&lt;textarea id=\'cancel-offboarding-reason-input\' class=\'swal2-textarea\' style=\'margin:0;width:100%;box-sizing:border-box;\' rows=\'3\' placeholder=\'Explain why this offboarding request is being retracted...\'&gt;&lt;/textarea&gt;',
                                                 icon: 'warning',
                                                 showCancelButton: true,
-                                                confirmButtonText: 'Confirm Cancellation',
+                                                confirmButtonText: 'Confirm Retraction',
                                                 cancelButtonText: 'Cancel',
                                                 confirmButtonColor: '#dc2626',
                                                 cancelButtonColor: '#6b7280',
                                                 reverseButtons: true,
                                                 // Requirement: the dialog itself must show a loading state on
-                                                // its own Confirm Cancellation button and stay open — not close
+                                                // its own Confirm Retraction button and stay open — not close
                                                 // immediately and hand off to a second, separate popup — for
                                                 // the network round trip, only closing on genuine success and
                                                 // staying open (with the error shown inline, via
@@ -322,7 +435,7 @@
                                                 preConfirm: async () => {
                                                     const reason = (document.getElementById('cancel-offboarding-reason-input').value || '').trim();
                                                     if (!reason) {
-                                                        Swal.showValidationMessage('A reason is required to cancel this offboarding request.');
+                                                        Swal.showValidationMessage('A reason is required to retract this offboarding request.');
                                                         return false;
                                                     }
                                                     cancelling = true;
@@ -345,7 +458,7 @@
                                                             // empty reason before this is ever reached in normal use,
                                                             // but a direct/bypassed request still gets a real message.
                                                             const fieldError = data.errors ? Object.values(data.errors)[0]?.[0] : null;
-                                                            throw new Error(fieldError || data.message || 'Cancellation failed. Please try again.');
+                                                            throw new Error(fieldError || data.message || 'Retraction failed. Please try again.');
                                                         }
                                                         return data;
                                                     } catch (error) {
@@ -362,11 +475,44 @@
                                             }).then((result) => {
                                                 if (!result.isConfirmed) return;
                                                 const data = result.value;
-                                                $el.closest('[data-offboardee-card]')?.remove();
+                                                // Patch in place — not `.remove()` — so the retracted
+                                                // request stays visible as a read-only historical card
+                                                // (see OffboardingRequestController::cancel()'s own
+                                                // docblock) instead of disappearing. Same flip-the-
+                                                // reactive-status, let-the-existing-badge/action-
+                                                // bindings-react convention Extend Due's own success
+                                                // handler already uses on this same card.
+                                                status = 'cancelled';
+                                                // Read back from the server's own response — the actual
+                                                // persisted `cancelled_by`/`cancellation_reason` columns
+                                                // (see cancel()'s own docblock) — never the currently
+                                                // logged-in viewer or a client-side echo of the typed
+                                                // reason, so this always matches the real historical
+                                                // record even if it's ever read back by someone else.
+                                                cancelledByName = data.cancelledByName;
+                                                cancellationReason = data.cancellationReason;
+                                                cancelledAt = data.cancelledAt;
+                                                // Retracting reverts the employee to `active` server-side
+                                                // (see cancel()'s own docblock), which makes them eligible
+                                                // for a brand new request immediately — but the New
+                                                // Offboarding Request modal's own employee/Immediate Head
+                                                // pickers each build their list ONCE, at page load, baked
+                                                // into their own x-data (see new-request-modal.blade.php).
+                                                // Dispatched here, listened for there, so this employee is
+                                                // selectable again with no page reload — same cross-
+                                                // component window-event convention that modal's own
+                                                // immediate-head-auto-select already uses.
+                                                $dispatch('employee-available-for-offboarding', {
+                                                    id: @js((string) $offboardee['employeeId']),
+                                                    name: @js($offboardee['name']),
+                                                    code: @js($offboardee['employeeCode']),
+                                                    department: @js($offboardee['department']),
+                                                    position: @js($offboardee['designation']),
+                                                });
                                                 Swal.fire({
                                                     icon: 'success',
-                                                    title: 'Cancelled',
-                                                    text: data.message || 'Offboarding request has been successfully cancelled.',
+                                                    title: 'Retracted',
+                                                    text: data.message || 'Offboarding request has been retracted.',
                                                     confirmButtonColor: '#145a3a',
                                                 });
                                             });
@@ -391,7 +537,7 @@
 
                         @can('checklists.extend-due')
                             @if ($offboardee['extendAllDueUrl'])
-                                <div class="border-t border-gray-100 pt-4 dark:border-gray-800" x-show="canBulkExtendDue" :class="{ 'pointer-events-none opacity-50': cancelling }" @click.stop="">
+                                <div class="border-t border-gray-100 pt-4 dark:border-gray-800" x-show="canBulkExtendDue && status !== 'cancelled'" :class="{ 'pointer-events-none opacity-50': cancelling }" @click.stop="">
                                     {{-- Same fetch-based (not native form submit) convention as Cancel
                                          Offboarding above — the loading state must cover the ENTIRE
                                          bulk extension (every checklist's due date pushed forward, its
@@ -593,6 +739,7 @@
                                                 if (data.originalLastWorkingDay !== undefined) originalLastWorkingDay = data.originalLastWorkingDay;
                                                 if (data.isLastWorkingDayExtended !== undefined) isLastWorkingDayExtended = data.isLastWorkingDayExtended;
                                                 if (data.canBulkExtendDue !== undefined) canBulkExtendDue = data.canBulkExtendDue;
+                                                if (data.canRetractOffboarding !== undefined) canRetractOffboarding = data.canRetractOffboarding;
                                                 if (data.extendDueChecklists !== undefined) extendDueChecklists = data.extendDueChecklists;
                                                 if (data.extendDueMinSelectableDateIso !== undefined) extendDueMinSelectableDateIso = data.extendDueMinSelectableDateIso;
                                                 if (data.timeline !== undefined) timeline = data.timeline;

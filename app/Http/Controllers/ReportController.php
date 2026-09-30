@@ -289,7 +289,7 @@ class ReportController extends Controller
             $completedAt = $r->completed_at;
             $duration = $this->formatDuration($r->created_at, $completedAt ?? now());
 
-            $outstanding = $r->approvers->reject(fn ($a) => in_array($a->status, ['approved', 'declined'], true));
+            $outstanding = $r->approvers->reject(fn ($a) => $a->status === 'approved');
             $checklistDueDate = $outstanding->pluck('due_at')->filter()->sort()->first();
 
             return [
@@ -332,7 +332,7 @@ class ReportController extends Controller
         return $query->whereIn('status', ['pending', 'in_progress'])
             ->get()
             ->map(function (OffboardingRequest $r) {
-                $outstanding = $r->approvers->reject(fn ($a) => in_array($a->status, ['approved', 'declined'], true));
+                $outstanding = $r->approvers->reject(fn ($a) => $a->status === 'approved');
 
                 // General Signatories are a separate, checklist-independent
                 // approval track (see `GeneralSignatory`'s own docblock) —

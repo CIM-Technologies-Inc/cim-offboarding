@@ -117,7 +117,7 @@ class FinalApprovalController extends Controller
         ]);
 
         return redirect()
-            ->route('offboardees.index', ['offboardee' => $offboardingRequest->employee_id])
+            ->route('offboardees.index', ['offboardee' => $offboardingRequest->id])
             ->with('success', 'Final Approval request sent to ' . $signatoryEmployee->name . '.');
     }
 
@@ -348,7 +348,7 @@ class FinalApprovalController extends Controller
                 finalApproverEmployeeCode: $finalApprover->employee_code,
                 approvedAt: $finalApproval->approved_at->format('M d, Y g:i A'),
                 remarks: $finalApproval->remarks,
-                viewUrl: route('offboardees.index', ['offboardee' => $offboardingRequest->employee_id]),
+                viewUrl: route('offboardees.index', ['offboardee' => $offboardingRequest->id]),
             ));
         } catch (\Throwable $e) {
             Log::error('Failed to send Final Approval completion email to the request creator.', [
