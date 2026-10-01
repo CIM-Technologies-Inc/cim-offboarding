@@ -34,7 +34,14 @@
         defaultOverdueTemplateId: @js($defaultOverdueTemplateId),
         defaultGeneralSignatoryTemplateId: @js($defaultGeneralSignatoryTemplateId),
         richSteps() {
-            return this.selected?.timeline?.filter((step) => step.rich) ?? [];
+            const steps = this.selected?.timeline?.filter((step) => step.rich) ?? [];
+            // The Final Pay Checklist sorts to the top of this (Status tab
+            // only) list once it's attached/available — a stable sort, so
+            // every other checklist keeps its existing relative order, and
+            // this never touches the Timeline tab's own true chronological
+            // ordering (that tab reads selected.timeline directly, not
+            // through this method).
+            return [...steps].sort((a, b) => (b.isFinalPayChecklist ? 1 : 0) - (a.isFinalPayChecklist ? 1 : 0));
         },
         // The template a step's reminder would use if the admin never
         // touches the picker — same before/after-due-date split
@@ -255,14 +262,14 @@
                                         <div class="flex shrink-0 items-center gap-3">
                                             <span class="rounded-full px-2.5 py-1 text-xs font-medium"
                                                 :class="{
-                                                    'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300': step.status === 'pending' && !step.isOverdue,
-                                                    'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400': step.status === 'viewed' && !step.isOverdue,
+                                                    'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300': step.status === 'pending' && !step.hasRecordedProgress && !step.isOverdue,
+                                                    'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400': (step.status === 'viewed' || (step.status === 'pending' && step.hasRecordedProgress)) && !step.isOverdue,
                                                     'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]': step.status === 'approved' && !step.wasCompletedLate,
                                                     'bg-error-50 text-error-700 dark:bg-error-500/15 dark:text-error-400': (step.status === 'approved' && step.wasCompletedLate) || step.status === 'declined',
                                                     'bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400': step.status === 'on_hold' && !step.isOverdue,
                                                     'bg-orange-50 text-orange-700 dark:bg-orange-500/15 dark:text-orange-400': step.isOverdue
                                                 }"
-                                                x-text="step.isOverdue ? 'Overdue' : (step.status === 'approved' ? (step.wasCompletedLate ? 'Completed' : 'Cleared') : (step.status === 'viewed' ? 'In Progress' : (step.status === 'on_hold' ? 'On Hold' : (step.status.charAt(0).toUpperCase() + step.status.slice(1)))))"></span>
+                                                x-text="step.isOverdue ? 'Overdue' : (step.status === 'approved' ? (step.wasCompletedLate ? 'Completed' : 'Cleared') : ((step.status === 'viewed' || (step.status === 'pending' && step.hasRecordedProgress)) ? 'In Progress' : (step.status === 'on_hold' ? 'On Hold' : (step.status.charAt(0).toUpperCase() + step.status.slice(1)))))"></span>
                                             <svg class="h-4 w-4 shrink-0 text-gray-400 transition-transform duration-200 dark:text-gray-500"
                                                 :class="open ? 'rotate-180' : ''"
                                                 fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -299,6 +306,44 @@
                                         <p>First Viewed: <span x-text="step.firstViewedAt || 'Not viewed yet'"></span>
                                             <span x-show="step.firstViewedByName"> by <span x-text="step.firstViewedByName"></span></span>
                                         </p>
+                                        <!-- Orange text — same color the Legend's own "Hold" dot uses
+                                             (bg-orange-500 above) — so a declined/on-hold checklist
+                                             reads as an alert to the admin/HR at a glance, not just
+                                             another neutral-gray line among everything else. -->
+                                        <template x-if="step.declinedAt">
+                                            <p class="font-medium text-orange-600 dark:text-orange-400">On Hold: <span x-text="step.declinedAt"></span>
+                                                <span x-show="step.declinedByName"> by <span x-text="step.declinedByName"></span></span>
+                                            </p>
+                                        </template>
+                                        <template x-if="step.declineReason">
+                                            <p class="font-medium text-orange-600 dark:text-orange-400">Reason: <span x-text="step.declineReason"></span></p>
+                                        </template>
+                                        <!-- "On Hold Removed" — permanent audit-trail entry (see
+                                             `ApprovalController::removeHold()`), shown alongside the
+                                             decline info above regardless of whether the checklist is
+                                             currently on hold or was later resumed/approved. -->
+                                        <template x-if="step.onHoldRemovedAt">
+                                            <p>On Hold Removed: <span x-text="step.onHoldRemovedAt"></span>
+                                                <span x-show="step.onHoldRemovedByName"> by <span x-text="step.onHoldRemovedByName"></span></span>
+                                            </p>
+                                        </template>
+                                        <template x-if="step.onHoldRemovalReason">
+                                            <p>Hold Removal Reason: <span x-text="step.onHoldRemovalReason"></span></p>
+                                        </template>
+                                        <!-- Lets HR/Admin know this checklist only needs the Clearance
+                                             Signatory's own Submit click — every item is already done on
+                                             their end. Mutually exclusive with the Cleared line right
+                                             below (isReadyForApproval requires status still pending/
+                                             viewed, Cleared requires status === 'approved'), so only one
+                                             of the two ever renders for a given checklist. -->
+                                        <template x-if="step.isReadyForApproval">
+                                            <p class="font-medium text-[#145a3a] dark:text-[#3aa876]">Ready For Approval</p>
+                                        </template>
+                                        <!-- Cleared is deliberately the LAST line in this list — it's
+                                             always the final movement a Clearance Signatory makes (a
+                                             decline/On Hold cycle, if any, only ever happens BEFORE the
+                                             eventual approval, never after), so it must read as the last
+                                             entry here regardless of how many On Hold cycles preceded it. -->
                                         <template x-if="step.status === 'approved'">
                                             <p :class="step.wasCompletedLate ? 'font-medium text-error-600 dark:text-error-400' : ''">
                                                 Cleared: <span x-text="step.approvedAt"></span>
@@ -324,30 +369,6 @@
                                             <p class="rounded-lg border border-error-200 bg-error-50 px-2.5 py-1.5 text-error-700 dark:border-error-500/30 dark:bg-error-500/10 dark:text-error-400">
                                                 Remarks: <span x-text="step.approvalRemarks"></span>
                                             </p>
-                                        </template>
-                                        <!-- Orange text — same color the Legend's own "Hold" dot uses
-                                             (bg-orange-500 above) — so a declined/on-hold checklist
-                                             reads as an alert to the admin/HR at a glance, not just
-                                             another neutral-gray line among everything else. -->
-                                        <template x-if="step.declinedAt">
-                                            <p class="font-medium text-orange-600 dark:text-orange-400">On Hold: <span x-text="step.declinedAt"></span>
-                                                <span x-show="step.declinedByName"> by <span x-text="step.declinedByName"></span></span>
-                                            </p>
-                                        </template>
-                                        <template x-if="step.declineReason">
-                                            <p class="font-medium text-orange-600 dark:text-orange-400">Reason: <span x-text="step.declineReason"></span></p>
-                                        </template>
-                                        <!-- "On Hold Removed" — permanent audit-trail entry (see
-                                             `ApprovalController::removeHold()`), shown alongside the
-                                             decline info above regardless of whether the checklist is
-                                             currently on hold or was later resumed/approved. -->
-                                        <template x-if="step.onHoldRemovedAt">
-                                            <p>On Hold Removed: <span x-text="step.onHoldRemovedAt"></span>
-                                                <span x-show="step.onHoldRemovedByName"> by <span x-text="step.onHoldRemovedByName"></span></span>
-                                            </p>
-                                        </template>
-                                        <template x-if="step.onHoldRemovalReason">
-                                            <p>Hold Removal Reason: <span x-text="step.onHoldRemovalReason"></span></p>
                                         </template>
                                     </div>
 
@@ -497,7 +518,7 @@
                                     x-show="index < selected.timeline.length - 1"></div>
                                 <div class="relative z-10 flex h-6 w-6 shrink-0 items-center justify-center rounded-full"
                                     :class="step.rich
-                                        ? (step.status === 'declined' ? 'bg-error-500' : step.status === 'on_hold' ? 'bg-amber-500' : step.status === 'approved' ? (step.wasCompletedLate ? 'bg-error-500' : 'bg-[#145a3a]') : step.status === 'viewed' ? 'bg-blue-500' : 'bg-gray-200 dark:bg-gray-700')
+                                        ? (step.status === 'declined' ? 'bg-error-500' : step.status === 'on_hold' ? 'bg-amber-500' : step.status === 'approved' ? (step.wasCompletedLate ? 'bg-error-500' : 'bg-[#145a3a]') : (step.status === 'viewed' || (step.status === 'pending' && step.hasRecordedProgress)) ? 'bg-blue-500' : 'bg-gray-200 dark:bg-gray-700')
                                         : (step.cancelled ? 'bg-error-500' : (step.hold ? 'bg-amber-500' : (step.done ? 'bg-[#145a3a]' : 'bg-gray-200 dark:bg-gray-700')))">
                                     <svg x-show="step.done" width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
                                         <path fill-rule="evenodd" clip-rule="evenodd" d="M13.4767 4.10714C13.7788 4.38292 13.8008 4.85162 13.5257 5.15436L6.83817 12.5211C6.69758 12.6759 6.49882 12.7644 6.29008 12.7644C6.08134 12.7644 5.88258 12.6759 5.74199 12.5211L2.47426 8.9211C2.19916 8.61836 2.22119 8.14966 2.52326 7.87388C2.82533 7.5981 3.29283 7.62018 3.56793 7.92292L6.29008 10.9184L12.4321 4.15582C12.7072 3.85308 13.1746 3.83137 13.4767 4.10714Z" fill="white" />
@@ -530,14 +551,14 @@
                                             </div>
                                             <span class="shrink-0 rounded-full px-2.5 py-1 text-xs font-medium"
                                                 :class="{
-                                                    'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300': step.status === 'pending' && !step.isOverdue,
-                                                    'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400': step.status === 'viewed' && !step.isOverdue,
+                                                    'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300': step.status === 'pending' && !step.hasRecordedProgress && !step.isOverdue,
+                                                    'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400': (step.status === 'viewed' || (step.status === 'pending' && step.hasRecordedProgress)) && !step.isOverdue,
                                                     'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]': step.status === 'approved' && !step.wasCompletedLate,
                                                     'bg-error-50 text-error-700 dark:bg-error-500/15 dark:text-error-400': (step.status === 'approved' && step.wasCompletedLate) || step.status === 'declined',
                                                     'bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400': step.status === 'on_hold' && !step.isOverdue,
                                                     'bg-orange-50 text-orange-700 dark:bg-orange-500/15 dark:text-orange-400': step.isOverdue
                                                 }"
-                                                x-text="step.isOverdue ? 'Overdue' : (step.status === 'approved' ? (step.wasCompletedLate ? 'Completed' : 'Cleared') : (step.status === 'viewed' ? 'In Progress' : (step.status === 'on_hold' ? 'On Hold' : (step.status.charAt(0).toUpperCase() + step.status.slice(1)))))"></span>
+                                                x-text="step.isOverdue ? 'Overdue' : (step.status === 'approved' ? (step.wasCompletedLate ? 'Completed' : 'Cleared') : ((step.status === 'viewed' || (step.status === 'pending' && step.hasRecordedProgress)) ? 'In Progress' : (step.status === 'on_hold' ? 'On Hold' : (step.status.charAt(0).toUpperCase() + step.status.slice(1)))))"></span>
                                         </div>
 
                                         <div class="mt-2 space-y-1 text-xs text-gray-500 dark:text-gray-400">
@@ -557,6 +578,34 @@
                                             <p>First Viewed: <span x-text="step.firstViewedAt || 'Not viewed yet'"></span>
                                                 <span x-show="step.firstViewedByName"> by <span x-text="step.firstViewedByName"></span></span>
                                             </p>
+                                            <!-- Orange text — same color the Legend's own "Hold" dot uses
+                                                 — so a declined/on-hold checklist reads as an alert at a
+                                                 glance, matching the Status tab's identical treatment. -->
+                                            <template x-if="step.declinedAt">
+                                                <p class="font-medium text-orange-600 dark:text-orange-400">On Hold: <span x-text="step.declinedAt"></span>
+                                                    <span x-show="step.declinedByName"> by <span x-text="step.declinedByName"></span></span>
+                                                </p>
+                                            </template>
+                                            <template x-if="step.declineReason">
+                                                <p class="font-medium text-orange-600 dark:text-orange-400">Reason: <span x-text="step.declineReason"></span></p>
+                                            </template>
+                                            <template x-if="step.onHoldRemovedAt">
+                                                <p>On Hold Removed: <span x-text="step.onHoldRemovedAt"></span>
+                                                    <span x-show="step.onHoldRemovedByName"> by <span x-text="step.onHoldRemovedByName"></span></span>
+                                                </p>
+                                            </template>
+                                            <template x-if="step.onHoldRemovalReason">
+                                                <p>Hold Removal Reason: <span x-text="step.onHoldRemovalReason"></span></p>
+                                            </template>
+                                            <!-- Lets HR/Admin know this checklist only needs the
+                                                 Clearance Signatory's own Submit click, matching the
+                                                 Status tab's identical treatment. -->
+                                            <template x-if="step.isReadyForApproval">
+                                                <p class="font-medium text-[#145a3a] dark:text-[#3aa876]">Ready For Approval</p>
+                                            </template>
+                                            <!-- Cleared is deliberately the LAST line here — always the
+                                                 final movement a Clearance Signatory makes, matching the
+                                                 Status tab's identical treatment. -->
                                             <template x-if="step.status === 'approved'">
                                                 <p :class="step.wasCompletedLate ? 'font-medium text-error-600 dark:text-error-400' : ''">
                                                     Cleared: <span x-text="step.approvedAt"></span>
@@ -580,25 +629,6 @@
                                                 <p class="rounded-lg border border-error-200 bg-error-50 px-2.5 py-1.5 text-error-700 dark:border-error-500/30 dark:bg-error-500/10 dark:text-error-400">
                                                     Remarks: <span x-text="step.approvalRemarks"></span>
                                                 </p>
-                                            </template>
-                                            <!-- Orange text — same color the Legend's own "Hold" dot uses
-                                                 — so a declined/on-hold checklist reads as an alert at a
-                                                 glance, matching the Status tab's identical treatment. -->
-                                            <template x-if="step.declinedAt">
-                                                <p class="font-medium text-orange-600 dark:text-orange-400">On Hold: <span x-text="step.declinedAt"></span>
-                                                    <span x-show="step.declinedByName"> by <span x-text="step.declinedByName"></span></span>
-                                                </p>
-                                            </template>
-                                            <template x-if="step.declineReason">
-                                                <p class="font-medium text-orange-600 dark:text-orange-400">Reason: <span x-text="step.declineReason"></span></p>
-                                            </template>
-                                            <template x-if="step.onHoldRemovedAt">
-                                                <p>On Hold Removed: <span x-text="step.onHoldRemovedAt"></span>
-                                                    <span x-show="step.onHoldRemovedByName"> by <span x-text="step.onHoldRemovedByName"></span></span>
-                                                </p>
-                                            </template>
-                                            <template x-if="step.onHoldRemovalReason">
-                                                <p>Hold Removal Reason: <span x-text="step.onHoldRemovalReason"></span></p>
                                             </template>
                                         </div>
 

@@ -875,6 +875,17 @@ class ChecklistDelegationController extends Controller
             return ['status' => 'invalid', 'message' => "\"{$checklistItem->title}\" has not been completed yet."];
         }
 
+        // The Head must never finalize even one task in isolation — every
+        // task on this checklist must be checked by its own Task Assignee
+        // first, matching the required "Task 1 -> ... -> Final Approval"
+        // sequence (see OffboardingRequestApprover::allItemsChecked()'s
+        // own docblock). Checked AFTER confirming THIS item itself is
+        // checked above, so a genuinely not-yet-checked item still gets
+        // its own, more specific error message.
+        if (! $offboardingRequestApprover->allItemsChecked()) {
+            return ['status' => 'invalid', 'message' => 'All task lists under this checklist must be completed before any can be given final approval.'];
+        }
+
         if (! $progress->head_approval_required) {
             return ['status' => 'invalid', 'message' => "\"{$checklistItem->title}\" does not require an additional approval."];
         }

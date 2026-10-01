@@ -431,6 +431,34 @@ class OffboardingRequestApprover extends Model
     }
 
     /**
+     * True once every checklist item on this assignment's template has
+     * been CHECKED by its own Task Assignee — unlike `allItemsCompleted()`
+     * (which also requires head-approval to already be resolved per item,
+     * and so can't be used here without circularity), this deliberately
+     * ignores head-approval state entirely. It's the gate that gives the
+     * Head the ABILITY to approve anything at all on a "Use Task Assignee
+     * as Clearance Signatory" checklist (see
+     * `ChecklistDelegationController::approveOneHeadItem()`) — they must
+     * never be able to approve even one task until every task has been
+     * checked by its assignee, matching the required
+     * "Task 1 -> Task 2 -> ... -> Final Approval" sequence.
+     */
+    public function allItemsChecked(): bool
+    {
+        $this->loadMissing('checklistTemplate.items', 'itemProgress');
+
+        if ($this->checklistTemplate->items->isEmpty()) {
+            return true;
+        }
+
+        $progress = $this->itemProgress->keyBy('checklist_item_id');
+
+        return $this->checklistTemplate->items->every(
+            fn (ChecklistItem $item) => (bool) $progress->get($item->id)?->is_checked
+        );
+    }
+
+    /**
      * True when the Submit button must stay disabled — and an approve()
      * request must be rejected — until every checklist item is checked.
      * Applies unconditionally, regardless of whether this checklist has

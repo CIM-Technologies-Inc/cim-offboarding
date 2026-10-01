@@ -431,6 +431,13 @@ class ApprovalController extends Controller
                                 // single-/per-item-approver checklist's UI.
                                 'headApprovalRequired' => (bool) $progress?->head_approval_required,
                                 'headApprovalPending' => (bool) $progress?->head_approval_required && ! $progress?->head_approved_at,
+                                // Gates approveHeadItemUrl's actual
+                                // availability — see
+                                // OffboardingRequestApprover::allItemsChecked()'s
+                                // own docblock: the Head must never approve
+                                // even one task until every task on this
+                                // checklist has been checked.
+                                'allItemsCheckedForHeadApproval' => $assignment->allItemsChecked(),
                                 'headApproverName' => $progress?->headApprover?->name,
                                 'headApproverCode' => $progress?->headApprover?->employee_code,
                                 // True when the CURRENT viewer is the specific

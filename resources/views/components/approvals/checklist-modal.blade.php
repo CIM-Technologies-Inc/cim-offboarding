@@ -545,12 +545,15 @@
         },
         // This viewer's own pending head-approval items eligible for the
         // bulk Approve flow below — the same predicate the single-item
-        // Approve button (`item.isHeadApprover && item.headApprovalPending`)
-        // already gates on, so bulk selection can only ever affect tasks
-        // this ONE head is actually recorded as the approver of — never
-        // another head's or another Task Assignee's items.
+        // Approve button (item.isHeadApprover && item.headApprovalPending
+        // && item.allItemsCheckedForHeadApproval) already gates on, so
+        // bulk selection can only ever affect tasks this ONE head is
+        // actually recorded as the approver of — never another head's or
+        // another Task Assignee's items — and only once every task on the
+        // checklist has been checked (see
+        // OffboardingRequestApprover::allItemsChecked()'s own docblock).
         myApproveEligibleItems() {
-            return (this.selected?.checklistItems || []).filter((item) => item.isHeadApprover && item.headApprovalPending);
+            return (this.selected?.checklistItems || []).filter((item) => item.isHeadApprover && item.headApprovalPending && item.allItemsCheckedForHeadApproval);
         },
         showApproveSelectAll() {
             return this.myApproveEligibleItems().length > 1;
@@ -1325,7 +1328,7 @@
                                 <button type="button" @click="submitSelectedDone()" :disabled="doneBulkProcessing"
                                     :class="doneBulkProcessing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#0f4630]'"
                                     class="rounded-lg bg-[#145a3a] px-3 py-1.5 text-xs font-medium text-white">
-                                    Submit Selected Task
+                                    Approve Selected Task
                                 </button>
                             </template>
                         </div>
@@ -1346,7 +1349,7 @@
                                 <button type="button" @click="submitSelectedApprove()" :disabled="approveBulkProcessing"
                                     :class="approveBulkProcessing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#0f4630]'"
                                     class="rounded-lg bg-[#145a3a] px-3 py-1.5 text-xs font-medium text-white">
-                                    Submit Selected Task
+                                    Approve Selected Task
                                 </button>
                             </template>
                         </div>
@@ -1384,7 +1387,7 @@
                                                  not yet counted toward the checklist's own completion until its Department/Group Head
                                                  (named here) also approves it — see `ChecklistItemProgress::isFullyApproved()`. -->
                                             <span class="block text-sm font-semibold text-warning-600 dark:text-orange-400" x-show="item.checked && item.headApprovalPending"
-                                                x-text="'Status: Pending Head Approval' + (item.headApproverName ? ' (' + (item.headApproverCode ? item.headApproverCode + ' – ' : '') + item.headApproverName + ')' : '')"></span>
+                                                x-text="'Status: Pending Head Approval' + (!item.allItemsCheckedForHeadApproval ? ' — waiting for all tasks to be completed' : '') + (item.headApproverName ? ' (' + (item.headApproverCode ? item.headApproverCode + ' – ' : '') + item.headApproverName + ')' : '')"></span>
                                             <span class="block text-sm font-semibold text-success-600 dark:text-success-400" x-show="item.checked && item.headApprovalRequired && !item.headApprovalPending">Status: Fully Approved</span>
                                             <span class="block text-sm text-gray-500 dark:text-gray-400" x-show="item.checked && item.clearedByName"
                                                 x-text="'Checked By: ' + (item.clearedByCode ? item.clearedByCode + ' – ' : '') + item.clearedByName"></span>
@@ -1470,7 +1473,7 @@
                                     <!-- "Use Task Assignee as Clearance Signatory" head-approval gate — shown ONLY to the
                                          specific Department/Group Head recorded on this item, never the Task Assignee who
                                          checked it themselves. See `ChecklistItemProgress::resolveHeadApproval()`. -->
-                                    <template x-if="item.isHeadApprover && item.headApprovalPending">
+                                    <template x-if="item.isHeadApprover && item.headApprovalPending && item.allItemsCheckedForHeadApproval">
                                         <div class="mt-2 flex items-center gap-2">
                                             <!-- Bulk "Approve" per-item checkbox — only rendered once this
                                                  head has more than one pending approval on this card

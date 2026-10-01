@@ -838,9 +838,37 @@ class OffboardingRequest extends Model
 
             $steps = [[
                 'rich' => true,
+                // Lets the Status tab sort the Final Pay checklist to the
+                // top once it's attached, without affecting the Timeline
+                // tab (which stays in true chronological order) — see
+                // status-timeline-modal.blade.php's own richSteps().
+                'isFinalPayChecklist' => (bool) $assignment->checklistTemplate?->is_final_pay_checklist,
                 'department' => $assignment->checklistTemplate?->title ?? $assignment->department(),
                 'approverName' => $assignment->employee?->name,
                 'status' => $assignment->status,
+                // Same "real movement already happened" signal
+                // OffboardingRequestApprover::clearanceStatusLabel() itself
+                // already uses to fall through from 'Pending' to 'In
+                // Progress' (`$this->status !== 'pending' || $this->itemProgress->isNotEmpty()`)
+                // — needed here because `status` alone can regress to
+                // 'pending' after a hold is removed (see
+                // ApprovalController::removeHold()) even though items were
+                // already checked/viewed beforehand, which previously made
+                // the badge below wrongly fall back to "Pending" despite
+                // real recorded activity.
+                'hasRecordedProgress' => $assignment->itemProgress->isNotEmpty(),
+                // Same "every item done, awaiting the Clearance Signatory's
+                // own Submit" concept `ApprovalController::aggregateDisplayStatus()`
+                // already surfaces on the Approvals page's own card badge —
+                // mirrored here per-checklist so the admin-facing Offboarding
+                // Status/Timeline tab can show it too, letting HR/Admin know
+                // the checklist is just waiting on that one click. Mutually
+                // exclusive with 'approved' by construction (allItemsCompleted()
+                // genuinely completing is what the Clearance Signatory's own
+                // Submit then flips to 'approved'), so the two display lines
+                // below never both render for the same checklist.
+                'isReadyForApproval' => in_array($assignment->status, ['pending', 'viewed'], true)
+                    && $assignment->allItemsCompleted(),
                 'assignedAt' => $assignment->assigned_at?->format('M d, Y g:i A'),
                 'firstViewedAt' => $assignment->first_viewed_at?->format('M d, Y g:i A'),
                 // Whoever's view actually set `first_viewed_at` — on a "Use
