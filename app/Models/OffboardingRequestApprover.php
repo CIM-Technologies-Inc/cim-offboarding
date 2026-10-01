@@ -194,7 +194,20 @@ class OffboardingRequestApprover extends Model
             $q->where('employee_id', $employee->id)
                 ->orWhere('delegated_employee_id', $employee->id)
                 ->orWhereHas('checklistTemplate.items', fn ($qi) => $qi->where('signatory_id', $employee->id))
-                ->orWhereHas('itemAssignments', fn ($qi) => $qi->where('assigned_employee_id', $employee->id)->where('status', 'active'));
+                ->orWhereHas('itemAssignments', fn ($qi) => $qi->where('assigned_employee_id', $employee->id)->where('status', 'active'))
+                // Original-assignee visibility — same employee, but
+                // matching the EARLIEST row for its item regardless of
+                // current status, so a checklist reassigned away from
+                // them (see `ChecklistDelegationController::reassignChecklist()`)
+                // still appears on their Approvals queue. Per-item
+                // ownership (which tasks they can actually act on) is
+                // narrowed separately in `authorizeItemEditor()`/
+                // `authorizeItemAction()` via `originalSignatoryFor()`.
+                ->orWhereHas('itemAssignments', fn ($qi) => $qi->where('assigned_employee_id', $employee->id)
+                    ->whereIn('id', fn ($sub) => $sub->selectRaw('MIN(id)')
+                        ->from('checklist_item_assignments as cia_original')
+                        ->whereColumn('cia_original.checklist_item_id', 'checklist_item_assignments.checklist_item_id')
+                        ->whereColumn('cia_original.offboarding_request_approver_id', 'checklist_item_assignments.offboarding_request_approver_id')));
 
             if ($employee->is_task_assignee && $employee->employee_group_id) {
                 $q->orWhereHas('checklistTemplate', fn ($qt) => $qt
@@ -467,6 +480,35 @@ class OffboardingRequestApprover extends Model
         }
 
         return $item->signatory;
+    }
+
+    /**
+     * The employee ORIGINALLY responsible for this item on this request —
+     * the assignee on the very first `ChecklistItemAssignment` row ever
+     * created for it (lowest id), regardless of how many times it's been
+     * reassigned since. Null if that first snapshot row itself had no
+     * assignee (the item never had an original signatory). Unlike
+     * `effectiveSignatoryFor()`, which reads the CURRENT active row, this
+     * is permanent history — it never changes once set, even after
+     * supersession — and is the single source of truth for "Originally
+     * Assigned To" display (see `ApprovalController`'s per-item builder)
+     * and the original assignee's retained clear/approve rights on just
+     * their own originally-assigned items (see
+     * `ChecklistDelegationController::authorizeItemEditor()`/
+     * `authorizeItemAction()`) even after
+     * `ChecklistDelegationController::reassignChecklist()` hands the
+     * whole checklist to someone else.
+     */
+    public function originalSignatoryFor(ChecklistItem $item): ?Employee
+    {
+        $this->loadMissing('itemAssignments.assignedEmployee');
+
+        $oldest = $this->itemAssignments
+            ->where('checklist_item_id', $item->id)
+            ->sortBy('id')
+            ->first();
+
+        return $oldest?->assignedEmployee;
     }
 
     /**

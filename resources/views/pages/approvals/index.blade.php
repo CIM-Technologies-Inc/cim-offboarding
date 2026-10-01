@@ -424,13 +424,22 @@
                                 </button>
                                 {{-- Hidden once this card combines more than one checklist —
                                      bulk "Assign Checklist" below takes over for that case,
-                                     since whole-card delegation to a single person no longer
+                                     since whole-card reassignment to a single person no longer
                                      makes sense once several distinct checklists are involved.
                                      Also hidden for a headless "Use Task Assignee as Clearance
-                                     Signatory" card (`assignUrl` null) — there's no owner to
-                                     delegate FROM on a checklist that's designed to have none. --}}
-                                @if ($approval['isPrimaryApprover'] && count($approval['checklistTemplates']) <= 1 && $approval['assignUrl'])
-                                    <button type="button" title="Assign To" @click.stop="$dispatch('open-assign-modal', @js($approval))"
+                                     Signatory" card (`reassignChecklistUrl` null) — there's no
+                                     owner to reassign FROM on a checklist that's designed to have
+                                     none. Hands every not-yet-completed task on this checklist to
+                                     the selected employee — see
+                                     `ChecklistDelegationController::reassignChecklist()`'s own
+                                     docblock — reusing checklist-modal.blade.php's own
+                                     reassignChecklist()/SweetAlert picker without needing the
+                                     modal itself open first (see that component's own
+                                     `@reassign-checklist-request.window` listener). Merges in any
+                                     client-side patch left by that same handler, same convention
+                                     the other two card buttons already use. --}}
+                                @if ($approval['isPrimaryApprover'] && count($approval['checklistTemplates']) <= 1 && $approval['reassignChecklistUrl'])
+                                    <button type="button" title="Assign To" @click.stop="$dispatch('reassign-checklist-request', Object.assign({}, @js($approval), window.__approvalCardOverrides?.['{{ $approval['id'] }}'] || {}))"
                                         class="flex items-center justify-center gap-1.5 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
                                         <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
                                             <path d="M10 10a3.75 3.75 0 100-7.5 3.75 3.75 0 000 7.5ZM3.5 17.25a6.5 6.5 0 0113 0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />

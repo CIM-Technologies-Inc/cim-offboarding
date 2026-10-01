@@ -138,6 +138,12 @@ class OffboardingActivity extends Model
             'final_approval_approved' => "Final Approval Given by {$actor}",
             'checklist_assigned' => "Checklist Assigned by {$actor}{$suffix}",
             'checklist_pool_assigned' => "Checklist Pool Opened by {$actor}{$suffix}",
+            // Names the checklist itself, same reasoning as
+            // `checklist_viewed`/`declined` above — see
+            // `ChecklistDelegationController::reassignChecklist()`.
+            'checklist_reassigned' => $this->offboardingRequestApprover?->checklistTemplate?->title
+                ? "Checklist Reassigned: \"{$this->offboardingRequestApprover->checklistTemplate->title}\" by {$actor}{$suffix}"
+                : "Checklist Reassigned by {$actor}{$suffix}",
             'checklist_item_reassigned' => "Checklist Item Reassigned by {$actor}{$suffix}",
             'checklist_item_auto_assigned' => 'Checklist Items Auto-Assigned to Group Members',
             'checklist_delegate_completed' => "Checklist Completed by {$actor}{$suffix} (Delegated Approver)",

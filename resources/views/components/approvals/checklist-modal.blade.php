@@ -1,5 +1,12 @@
 <div x-data="{
         selected: null,
+        // The logged-in viewer's own employee code — compared against each
+        // task's approverCode/originalApproverCode below to append (You)
+        // next to their own name. Display-only: never consulted for any
+        // access/edit decision, which is still decided entirely
+        // server-side (see ChecklistDelegationController::authorizeItemEditor()/
+        // authorizeItemAction()).
+        currentEmployeeCode: @js(auth()->user()->employee?->employee_code),
         checked: {},
         remarks: {},
         holdProcessing: {},
@@ -994,6 +1001,131 @@
                 });
             });
         },
+        // Hands the WHOLE checklist's remaining (not yet checked/held)
+        // tasks to one new Task Assignee in one action — see
+        // ChecklistDelegationController::reassignChecklist()'s own
+        // docblock. Unlike declineChecklist()/removeHold() above, this can
+        // touch dozens of items' editable/approverName/originalApproverName
+        // at once, so it reloads on success rather than trying to patch
+        // every affected field in place client-side.
+        //
+        // Triggered from the Approvals list page's own Assign To icon
+        // button (pages/approvals/index.blade.php), not from a button
+        // inside this modal — that button dispatches a
+        // reassign-checklist-request window event (see this component's
+        // own @reassign-checklist-request.window listener above) carrying
+        // the card's data, which this method reads straight off `selected`
+        // without needing the modal itself open first.
+        reassigningChecklist: false,
+        reassignChecklist() {
+            if (this.reassigningChecklist || !this.selected?.reassignChecklistUrl) {
+                return;
+            }
+            const employees = this.selected.reassignEligibleEmployees || [];
+            if (!employees.length) {
+                Swal.fire({
+                    icon: 'info',
+                    title: 'No Eligible Employees',
+                    text: 'There is no eligible Task Assignee to reassign this checklist to.',
+                    confirmButtonColor: '#145a3a',
+                });
+                return;
+            }
+            Swal.fire({
+                title: 'Reassign Entire Checklist?',
+                text: 'Every not-yet-completed task on this checklist will be reassigned to the selected employee. The original assignee (if any) keeps access to their own previously assigned tasks.',
+                icon: 'question',
+                input: 'select',
+                inputOptions: Object.fromEntries(employees.map((e) => [e.id, `${e.code} – ${e.name}`])),
+                inputPlaceholder: 'Select an employee',
+                inputValidator: (value) => (!value ? 'Please select an employee.' : undefined),
+                showCancelButton: true,
+                confirmButtonText: 'Reassign',
+                cancelButtonText: 'Cancel',
+                confirmButtonColor: '#145a3a',
+                cancelButtonColor: '#6b7280',
+                reverseButtons: true,
+            }).then((result) => {
+                if (!result.isConfirmed) {
+                    return;
+                }
+
+                // Captured now rather than re-read off `this.selected`
+                // inside the fetch callback below — same reasoning as
+                // declineChecklist()'s own `targetItem` capture: this isn't
+                // opening a visual modal, so `this.selected` could in
+                // theory be reassigned to a different card by another
+                // action before this request resolves.
+                const targetItem = this.selected;
+                const newEmployee = employees.find((e) => String(e.id) === String(result.value));
+
+                this.reassigningChecklist = true;
+
+                const formData = new FormData();
+                formData.append('employee_id', result.value);
+
+                window.fetchWithTimeout(targetItem.reassignChecklistUrl, {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                        'Accept': 'application/json',
+                    },
+                    body: formData,
+                }).then(async (res) => {
+                    const data = await res.json();
+
+                    if (!res.ok) {
+                        throw new Error(data.message || 'request failed');
+                    }
+
+                    this.reassigningChecklist = false;
+
+                    // Patched in place, no reload — every not-yet-completed
+                    // task's current assignee becomes the new employee. A
+                    // task's own ORIGINAL assignee (originalApproverCode)
+                    // is permanent and never changes here (matches
+                    // OffboardingRequestApprover::originalSignatoryFor()'s
+                    // own oldest-row-set-once-at-request-creation rule
+                    // server-side) — this only ever flips isReassigned to
+                    // true the first time a task's current assignee
+                    // actually starts to differ from that permanent
+                    // original, which is exactly what reveals the
+                    // Originally Assigned To line. A task that never had
+                    // a real original (originalApproverCode falsy) stays
+                    // that way — this action doesn't invent one.
+                    if (newEmployee) {
+                        (targetItem.checklistItems || []).forEach((item) => {
+                            if (item.originalApproverCode && item.originalApproverCode !== newEmployee.code) {
+                                item.isReassigned = true;
+                            }
+                            item.approverName = newEmployee.name;
+                            item.approverCode = newEmployee.code;
+                        });
+                    }
+
+                    this.rememberCardOverride(targetItem.id, {
+                        checklistItems: targetItem.checklistItems,
+                    });
+
+                    window.Swal?.fire({
+                        icon: 'success',
+                        title: 'Checklist Reassigned',
+                        text: newEmployee ? `Every eligible task is now assigned to ${newEmployee.name}.` : 'The checklist has been reassigned.',
+                        confirmButtonColor: '#145a3a',
+                    });
+                }).catch((e) => {
+                    this.reassigningChecklist = false;
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'Failed to Reassign Checklist',
+                        text: e?.name === 'AbortError'
+                            ? 'This is taking longer than expected. Please check before trying again.'
+                            : (e?.message || 'The checklist could not be reassigned. Please try again.'),
+                        confirmButtonColor: '#145a3a',
+                    });
+                });
+            });
+        },
         // Live 5-days-before / on-or-after Clearance Signing Due Date
         // urgency, recomputed off the wall clock rather than once at page
         // load — nowTick ticks every minute so a signatory who leaves this
@@ -1022,7 +1154,8 @@
             }
             return 'none';
         },
-    }" @open-checklist-modal.window="setSelected($event.detail)">
+    }" @open-checklist-modal.window="setSelected($event.detail)"
+    @reassign-checklist-request.window="selected = $event.detail; reassignChecklist()">
     <x-ui.modal x-data="{ open: false }" @open-checklist-modal.window="open = true" @close-checklist-modal.window="open = false" :isOpen="false" class="w-full sm:max-w-[50vw]">
         <!-- Flexible height: compact for a short checklist, growing up to
              85% of the viewport for a long one, at which point only the
@@ -1243,9 +1376,9 @@
                                             <span class="block text-sm font-medium text-gray-800 dark:text-white/90" x-text="item.title"></span>
                                             <span class="block text-xs text-gray-400" x-text="item.templateTitle"></span>
                                             <span class="block text-sm text-[#145a3a] dark:text-[#3aa876]" x-show="item.approverName"
-                                                x-text="'Assigned To: ' + (item.approverCode ? item.approverCode + ' – ' : '') + item.approverName"></span>
+                                                x-text="'Assigned To: ' + (item.approverCode ? item.approverCode + ' – ' : '') + item.approverName + (currentEmployeeCode && item.approverCode === currentEmployeeCode ? ' (You)' : '')"></span>
                                             <span class="block text-xs text-gray-400" x-show="item.isReassigned"
-                                                x-text="'Previously: ' + (item.originalApproverCode ? item.originalApproverCode + ' – ' : '') + (item.originalApproverName || 'Unassigned')"></span>
+                                                x-text="'Originally Assigned To: ' + (item.originalApproverCode ? item.originalApproverCode + ' – ' : '') + (item.originalApproverName || 'Unassigned') + (currentEmployeeCode && item.originalApproverCode === currentEmployeeCode ? ' (You)' : '')"></span>
                                             <span class="block text-sm font-semibold" :class="item.completedLate ? 'text-error-600 dark:text-error-400' : 'text-success-600 dark:text-success-400'" x-show="item.checked && !item.headApprovalRequired">Status: Checked</span>
                                             <!-- "Use Task Assignee as Clearance Signatory" head-approval gate: the item is checked but
                                                  not yet counted toward the checklist's own completion until its Department/Group Head

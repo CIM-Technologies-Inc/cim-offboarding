@@ -291,8 +291,30 @@ class ApprovalController extends Controller
                             // primary approver, same as before per-item
                             // approvers existed.
                             $effectiveSignatory = $assignment->effectiveSignatoryFor($item);
-                            $isReassigned = $effectiveSignatory?->id !== $item->signatory_id;
-                            $isOwnItem = $employee && $effectiveSignatory && $effectiveSignatory->id === $employee->id;
+                            // The TRUE original assignee (the very first
+                            // `ChecklistItemAssignment` row ever created for
+                            // this item — see `originalSignatoryFor()`'s own
+                            // docblock), not merely the template's static
+                            // `signatory_id` — so "Originally Assigned To"
+                            // reflects real reassignment history (e.g. via
+                            // `reassignChecklist()`), not just a deviation
+                            // from the template's default.
+                            $originalSignatory = $assignment->originalSignatoryFor($item);
+                            $hasOriginalAssignee = $originalSignatory !== null;
+                            $isReassigned = $hasOriginalAssignee && $effectiveSignatory?->id !== $originalSignatory->id;
+                            // True for both the CURRENT effective signatory
+                            // and the ORIGINAL one (if different) — the
+                            // latter keeps clear/approve rights on just
+                            // their own originally-assigned item even after
+                            // `reassignChecklist()` hands the rest of the
+                            // checklist to someone else (see
+                            // `ChecklistDelegationController::authorizeItemEditor()`/
+                            // `authorizeItemAction()`, which gate the real
+                            // actions the same way).
+                            $isOwnItem = $employee && (
+                                ($effectiveSignatory && $effectiveSignatory->id === $employee->id)
+                                || ($hasOriginalAssignee && $originalSignatory->id === $employee->id)
+                            );
                             // A checklist On Hold (see `ApprovalController::decline()`)
                             // freezes every one of its own items server-side, not
                             // just client-side — the same defense-in-depth
@@ -331,12 +353,15 @@ class ApprovalController extends Controller
                                 'remark' => $progress?->remark,
                                 'approverName' => $effectiveSignatory?->name,
                                 'approverCode' => $effectiveSignatory?->employee_code,
-                                // Set only when this item has actually been
-                                // reassigned away from the template's own
-                                // signatory — lets the UI show "was assigned
-                                // to X" alongside the current assignee.
-                                'originalApproverName' => $isReassigned ? $item->signatory?->name : null,
-                                'originalApproverCode' => $isReassigned ? $item->signatory?->employee_code : null,
+                                // Set whenever this item ever had a real
+                                // original assignee at all (regardless of
+                                // whether it's since been reassigned) — lets
+                                // the UI show "Originally Assigned To: X"
+                                // alongside the current assignee. `null` for
+                                // an item that never had one, per spec: no
+                                // such line renders for those.
+                                'originalApproverName' => $hasOriginalAssignee ? $originalSignatory->name : null,
+                                'originalApproverCode' => $hasOriginalAssignee ? $originalSignatory->employee_code : null,
                                 'isReassigned' => $isReassigned,
                                 'editable' => $editable,
                                 // True when the current viewer is literally the
@@ -1028,6 +1053,20 @@ class ApprovalController extends Controller
                     'onHoldRemovedAt' => $group->firstWhere('rowStatus', 'on_hold')['onHoldRemovedAtRaw'] ?? null,
                     'onHoldRemovedByName' => $group->firstWhere('rowStatus', 'on_hold')['onHoldRemovedByNameRaw'] ?? null,
                     'onHoldRemovalReason' => $group->firstWhere('rowStatus', 'on_hold')['onHoldRemovalReasonRaw'] ?? null,
+                    // Whole-checklist reassignment (see
+                    // `ChecklistDelegationController::reassignChecklist()`)
+                    // — single-checklist cards only, same `count() === 1`
+                    // rule `declineUrl`/`onHoldRemoveUrl` already use, since
+                    // there's no single checklist to reassign otherwise.
+                    // Reuses the pool already computed for the bulk "Assign
+                    // Checklist" picker (`poolOption.assignableEmployees`,
+                    // via `eligibleAssigneesForPool()`) rather than a second
+                    // identical query — this action targets exactly one
+                    // employee, but draws from the same eligible pool.
+                    'reassignChecklistUrl' => $group->pluck('checklistTemplates')->flatten()->unique()->count() === 1
+                        ? route('approvals.reassign-checklist', $first['assignmentId'])
+                        : null,
+                    'reassignEligibleEmployees' => $first['poolOption']['assignableEmployees'] ?? [],
                     'assignUrl' => $useGroupRoutes
                         ? route('approvals.group.assign', ['offboardingRequest' => $first['offboardingRequestId'], 'employee' => $first['approverEmployeeId']])
                         : ($first['approverEmployeeId'] ? route('approvals.assign', $first['assignmentId']) : null),

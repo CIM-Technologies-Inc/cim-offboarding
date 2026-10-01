@@ -124,6 +124,12 @@ Route::middleware('permission:approvals.view')->group(function () {
 
     // checklist delegation (assign to another approver)
     Route::post('/approvals/{offboardingRequestApprover}/assign', [ChecklistDelegationController::class, 'assign'])->name('approvals.assign');
+    // Whole-checklist reassignment to a single new Task Assignee,
+    // regardless of current per-item assignment state — see
+    // `ChecklistDelegationController::reassignChecklist()`'s own docblock
+    // for how this differs from `assign()` (delegate) and `assignPool()`
+    // (first-time-only bulk split across several employees).
+    Route::post('/approvals/{offboardingRequestApprover}/reassign-checklist', [ChecklistDelegationController::class, 'reassignChecklist'])->name('approvals.reassign-checklist');
     Route::post('/approvals/{offboardingRequestApprover}/save-progress', [ChecklistDelegationController::class, 'saveProgress'])->name('approvals.save-progress');
     Route::post('/approvals/{offboardingRequestApprover}/items/{checklistItem}/hold', [ChecklistDelegationController::class, 'holdItem'])->name('approvals.items.hold');
     Route::post('/approvals/{offboardingRequestApprover}/items/{checklistItem}/assign', [ChecklistDelegationController::class, 'assignItem'])->name('approvals.items.assign');

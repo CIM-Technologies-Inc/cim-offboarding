@@ -536,6 +536,126 @@ class ChecklistDelegationController extends Controller
     }
 
     /**
+     * The whole-checklist counterpart to `assignItem()` above: the
+     * Department Head/primary approver hands EVERY not-yet-completed item
+     * on this checklist to one new Task Assignee in a single action —
+     * unlike `assignPool()` (which only ever runs on a checklist that has
+     * no real per-item ownership yet at all, see
+     * `OffboardingRequestApprover::isEligibleForPoolAssignment()`), this
+     * works regardless of current per-item state, so it's the only way to
+     * reassign an already-fragmented checklist (some items already
+     * assigned, some not) to a single new owner in one click. Each
+     * eligible item's prior active `ChecklistItemAssignment` row (if any)
+     * is superseded, never deleted — so the very first row ever created
+     * for that item (see `OffboardingRequestApprover::originalSignatoryFor()`)
+     * stays permanently on record, and that original assignee keeps
+     * clear/approve rights on just their own originally-assigned items
+     * (see `authorizeItemEditor()`/`authorizeItemAction()` above) even
+     * though the checklist as a whole now belongs to the new assignee.
+     * Checked/held items are skipped entirely, same as `assignPool()`,
+     * so existing completion/approval history is never touched.
+     */
+    public function reassignChecklist(Request $request, OffboardingRequestApprover $offboardingRequestApprover): RedirectResponse|JsonResponse
+    {
+        $this->authorizePrimaryApprover($offboardingRequestApprover);
+
+        abort_if(
+            $offboardingRequestApprover->offboardingRequest->isReadOnly(),
+            422,
+            'This offboarding request has been retracted and can no longer be actioned.'
+        );
+
+        abort_unless(
+            in_array($offboardingRequestApprover->status, ['pending', 'viewed'], true),
+            422,
+            'This checklist has already been actioned.'
+        );
+
+        $validated = $request->validate([
+            'employee_id' => ['required', 'integer', 'exists:employees,id'],
+        ]);
+
+        abort_if(
+            (int) $validated['employee_id'] === $offboardingRequestApprover->employee_id,
+            422,
+            "You cannot assign the checklist's own owner as its task assignee."
+        );
+
+        abort_unless(
+            in_array((int) $validated['employee_id'], $offboardingRequestApprover->eligiblePoolAssigneeIds(), true),
+            422,
+            'This employee is not eligible to be assigned to this checklist.'
+        );
+
+        $newAssignee = Employee::findOrFail($validated['employee_id']);
+        $offboardingRequestApprover->loadMissing('checklistTemplate.items', 'itemProgress');
+
+        $checkedItemIds = $offboardingRequestApprover->itemProgress->where('is_checked', true)->pluck('checklist_item_id');
+        $heldItemIds = $offboardingRequestApprover->itemProgress->where('status', 'hold')->pluck('checklist_item_id');
+
+        $eligibleItems = $offboardingRequestApprover->checklistTemplate->items
+            ->reject(fn (ChecklistItem $item) => $checkedItemIds->contains($item->id) || $heldItemIds->contains($item->id))
+            ->values();
+
+        abort_if($eligibleItems->isEmpty(), 422, 'No eligible task lists were available to reassign.');
+
+        // Resolved BEFORE the transaction so the caller knows, once it
+        // commits, whether a brand-new account was created — same
+        // convention `assignItem()` above already uses.
+        $existingUser = User::firstWhere('username', $newAssignee->employee_code_digits);
+
+        DB::transaction(function () use ($offboardingRequestApprover, $eligibleItems, $newAssignee, $existingUser) {
+            $assignedUser = $existingUser ?? User::findOrCreateApprover($newAssignee);
+
+            foreach ($eligibleItems as $item) {
+                $offboardingRequestApprover->itemAssignments()
+                    ->where('checklist_item_id', $item->id)
+                    ->where('status', 'active')
+                    ->update(['status' => 'superseded', 'superseded_at' => now()]);
+
+                $offboardingRequestApprover->itemAssignments()->create([
+                    'checklist_item_id' => $item->id,
+                    'assigned_by_user_id' => auth()->id(),
+                    'assigned_employee_id' => $newAssignee->id,
+                    'assigned_user_id' => $assignedUser->id,
+                    'status' => 'active',
+                    'assigned_at' => now(),
+                ]);
+            }
+
+            $offboardingRequestApprover->offboardingRequest->activities()->create([
+                'user_id' => auth()->id(),
+                'offboarding_request_approver_id' => $offboardingRequestApprover->id,
+                'action' => 'checklist_reassigned',
+                'status' => $offboardingRequestApprover->offboardingRequest->status,
+                'comment' => "\"{$offboardingRequestApprover->checklistTemplate->title}\" ({$eligibleItems->count()} item(s)) reassigned to {$newAssignee->employee_code} - {$newAssignee->name}.",
+            ]);
+        });
+
+        // Reuses notifyPoolAssignees() as-is (same $assignedByEmployeeId
+        // shape it already expects: ['employee', 'isNewAccount', 'items'])
+        // instead of a third near-duplicate notifier alongside it and
+        // notifyReassignedApprover() above.
+        $this->notifyPoolAssignees($offboardingRequestApprover->offboardingRequest, [
+            $newAssignee->id => [
+                'employee' => $newAssignee,
+                'isNewAccount' => $existingUser === null,
+                'items' => $eligibleItems->map(fn (ChecklistItem $item) => [
+                    'checklistTitle' => $offboardingRequestApprover->checklistTemplate->title,
+                    'itemTitle' => $item->title,
+                    'dueAt' => $offboardingRequestApprover->due_at?->format('M d, Y'),
+                ])->all(),
+            ],
+        ]);
+
+        if ($request->wantsJson()) {
+            return response()->json(['message' => "Checklist reassigned to {$newAssignee->name}."]);
+        }
+
+        return back()->with('success', "Checklist reassigned to {$newAssignee->name}.");
+    }
+
+    /**
      * A peer item-approver voluntarily accepts responsibility for a
      * different, not-yet-checked item on the same assignment — "Check This
      * List" on the Approvals page. Unlike `assignItem()` (Department
@@ -1389,8 +1509,14 @@ class ChecklistDelegationController extends Controller
 
         $offboardingRequestApprover->loadMissing('checklistTemplate.items', 'itemProgress', 'itemAssignments.assignedEmployee');
 
+        // Also includes any item this employee was the ORIGINAL assignee
+        // for (see `OffboardingRequestApprover::originalSignatoryFor()`),
+        // even if the whole checklist has since been handed to someone
+        // else via `reassignChecklist()` — they keep clear/approve rights
+        // on just their own originally-assigned items, never the rest.
         $ownedItemIds = $offboardingRequestApprover->checklistTemplate->items
-            ->filter(fn (ChecklistItem $item) => $offboardingRequestApprover->effectiveSignatoryFor($item)?->id === $employeeId)
+            ->filter(fn (ChecklistItem $item) => $offboardingRequestApprover->effectiveSignatoryFor($item)?->id === $employeeId
+                || $offboardingRequestApprover->originalSignatoryFor($item)?->id === $employeeId)
             ->pluck('id');
 
         // Same "flagged Task Assignee of this checklist's own group"
@@ -1453,8 +1579,14 @@ class ChecklistDelegationController extends Controller
         $isPrimaryOrDelegate = $offboardingRequestApprover->employee_id === $employeeId
             || $offboardingRequestApprover->delegated_employee_id === $employeeId;
 
+        // Also lets the ORIGINAL assignee through on their own item (see
+        // `OffboardingRequestApprover::originalSignatoryFor()`), even once
+        // the checklist's current effective signatory has moved on to
+        // someone else via `reassignChecklist()`.
         abort_unless(
-            $isPrimaryOrDelegate || $offboardingRequestApprover->effectiveSignatoryFor($checklistItem)?->id === $employeeId,
+            $isPrimaryOrDelegate
+                || $offboardingRequestApprover->effectiveSignatoryFor($checklistItem)?->id === $employeeId
+                || $offboardingRequestApprover->originalSignatoryFor($checklistItem)?->id === $employeeId,
             403
         );
     }
