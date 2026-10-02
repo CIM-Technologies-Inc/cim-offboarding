@@ -2,12 +2,17 @@
 
 namespace App\Http\Controllers;
 
+use App\Mail\ChecklistSignatoryAnnouncementMail;
 use App\Models\Employee;
+use App\Models\EmailTemplate;
 use App\Models\SecurityLog;
 use App\Models\User;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\View\View;
 use Spatie\Permission\Models\Role;
@@ -90,6 +95,12 @@ class UserController extends Controller
             'roleOptions' => Role::where('guard_name', 'web')->orderBy('name')->pluck('name')->all(),
             'filteringBlocked' => $filteringBlocked && $filteredEmployeeName === null,
             'filteredEmployeeName' => $filteredEmployeeName,
+            // For the Reactivate modal's "Notification Email Template"
+            // picker — same `is_active` scope every other template dropdown
+            // in this app uses (see `OffboardeeController::index()`).
+            'emailTemplates' => EmailTemplate::where('is_active', true)
+                ->orderBy('template_name')
+                ->get(['id', 'template_name', 'subject', 'html_content', 'is_default_reactivation']),
         ]);
     }
 
@@ -158,14 +169,26 @@ class UserController extends Controller
     }
 
     /**
-     * The only way out of a block — restores access without touching
-     * `password`/`must_change_password` (reactivating is a distinct
-     * action from resetting a forgotten password; the spec explicitly
-     * says not to conflate the two). Gated by its own `users.manage-status`
-     * permission, separate from `users.manage-roles`, since this is a
-     * distinct security-relevant capability, not a role-assignment one.
+     * The only way out of a block. Since this app never retains a
+     * recoverable plaintext password (password is hashed at rest, and
+     * `ForgotPasswordController` only ever emails a reset LINK, never a
+     * password — see its own docblock), there is no real "current
+     * password" to show the employee. Instead, a fresh secure temporary
+     * password is generated here, stored only via the same `'hashed'`
+     * cast every other password write in this app already uses, and
+     * `must_change_password` is set so the employee is forced through the
+     * existing first-login password-change flow
+     * (`EnsurePasswordChanged`/`ChangePasswordController`) — no new
+     * password-change mechanism needed. The temporary password is held
+     * only in the local `$temporaryPassword` variable below: it is passed
+     * to the email template render and the Mail object, and NEVER to
+     * `Log::`/`SecurityLog::record()`.
+     *
+     * Gated by its own `users.manage-status` permission, separate from
+     * `users.manage-roles`, since this is a distinct security-relevant
+     * capability, not a role-assignment one.
      */
-    public function reactivate(Employee $employee): RedirectResponse
+    public function reactivate(Request $request, Employee $employee): RedirectResponse
     {
         $user = $employee->user;
 
@@ -175,14 +198,73 @@ class UserController extends Controller
             return back()->with('error', "{$employee->name}'s account is not currently blocked.");
         }
 
-        $user->reactivate();
+        $validated = $request->validate([
+            'email_template_id' => ['nullable', 'integer', 'exists:email_templates,id'],
+        ]);
 
+        $temporaryPassword = Str::password(12);
+
+        DB::transaction(function () use ($user, $temporaryPassword) {
+            $user->reactivate();
+            $user->update([
+                'password' => $temporaryPassword,
+                'must_change_password' => true,
+            ]);
+        });
+
+        // Reactivation itself is already committed above, BEFORE any email
+        // is attempted — an email failure below can never roll this back.
         SecurityLog::record('account_reactivated', [
             'user_id' => $user->id,
             'performed_by_user_id' => auth()->id(),
         ]);
 
-        return back()->with('success', "{$employee->name}'s account has been reactivated.");
+        $emailTemplate = ($validated['email_template_id'] ?? null)
+            ? EmailTemplate::find($validated['email_template_id'])
+            : EmailTemplate::activeDefaultReactivation();
+
+        if (! $emailTemplate || ! $employee->email || ! filter_var($employee->email, FILTER_VALIDATE_EMAIL)) {
+            Log::warning('Account reactivated but no notification email was sent (no template or no valid employee email).', [
+                'user_id' => $user->id,
+                'has_template' => (bool) $emailTemplate,
+                'has_email' => (bool) $employee->email,
+            ]);
+
+            return back()->with('warning', "{$employee->name}'s account has been reactivated, but no notification email was sent (no email template or address available).");
+        }
+
+        [$subject, $body] = $emailTemplate->render(
+            approverName: $employee->name,
+            offboardeeName: $employee->name,
+            username: $user->username,
+            temporaryPassword: $temporaryPassword,
+            accountStatus: 'Active',
+            reactivatedAt: now()->format('M d, Y g:i A'),
+        );
+
+        try {
+            Mail::to($employee->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+
+            SecurityLog::record('account_reactivation_email_sent', [
+                'user_id' => $user->id,
+                'performed_by_user_id' => auth()->id(),
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('Failed to send account reactivation email.', [
+                'user_id' => $user->id,
+                'recipient' => $employee->email,
+                'exception' => $e->getMessage(),
+            ]);
+
+            SecurityLog::record('account_reactivation_email_failed', [
+                'user_id' => $user->id,
+                'performed_by_user_id' => auth()->id(),
+            ]);
+
+            return back()->with('warning', "{$employee->name}'s account has been reactivated, but the notification email could not be sent. Please retry sending it.");
+        }
+
+        return back()->with('success', "{$employee->name}'s account has been reactivated and a notification email was sent.");
     }
 
     /**

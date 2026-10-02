@@ -14,6 +14,7 @@ class EmailTemplate extends Model
         'html_content',
         'is_active',
         'is_default_announcement',
+        'is_default_reactivation',
         'is_scheduled',
         'schedule_type',
         'schedule_timing',
@@ -27,6 +28,7 @@ class EmailTemplate extends Model
         return [
             'is_active' => 'boolean',
             'is_default_announcement' => 'boolean',
+            'is_default_reactivation' => 'boolean',
             'is_scheduled' => 'boolean',
             'schedule_days' => 'integer',
             'schedule_interval_days' => 'integer',
@@ -91,6 +93,19 @@ class EmailTemplate extends Model
     }
 
     /**
+     * The single active template flagged as the default Account
+     * Reactivation email — used automatically when HR/Admin reactivates a
+     * blocked account instead of requiring them to pick one manually. See
+     * `UserController::reactivate()`.
+     */
+    public static function activeDefaultReactivation(): ?self
+    {
+        return static::where('is_active', true)
+            ->where('is_default_reactivation', true)
+            ->first();
+    }
+
+    /**
      * Renders this template's subject/body, replacing placeholders with the
      * approver's, offboardee's, and request creator's name/link, plus
      * whichever of the optional checklist-specific values the caller has
@@ -130,7 +145,9 @@ class EmailTemplate extends Model
      * "{{checklist_type}}" for the Checklist Signatory Declined notification,
      * and "{{completed_at}}" for the Final Pay Checklist Completed
      * notification sent once `ChecklistCompletionService::checkFinalPayCompletion()`
-     * transitions the request to `completed` — plus the legacy
+     * transitions the request to `completed`, "{{account_status}}" /
+     * "{{reactivated_at}}" for the User Account Reactivation Notification
+     * sent once `UserController::reactivate()` unblocks an account — plus the legacy
      * bare-word / single-brace "approver" /
      * "offboardee" / "employee" placeholders still used by the
      * drag-and-drop email template editor. A placeholder with no value
@@ -189,6 +206,8 @@ class EmailTemplate extends Model
         ?string $checklistType = null,
         ?string $completedAt = null,
         ?string $offboardingLinkUrl = null,
+        ?string $accountStatus = null,
+        ?string $reactivatedAt = null,
     ): array {
         $values = $this->placeholderValues(
             $approverName, $offboardeeName, $creatorName, $employeeNumber, $checklistName,
@@ -200,7 +219,7 @@ class EmailTemplate extends Model
             $originalDueDate, $extensionDays, $extendedDueDate, $clearanceSignatoryName,
             $cancelledBy, $cancelledAt, $offboardingRequestId, $cancellationReason,
             $declinedBy, $declinedAt, $declineReason, $signatoryType, $checklistType,
-            $completedAt, $offboardingLinkUrl,
+            $completedAt, $offboardingLinkUrl, $accountStatus, $reactivatedAt,
         );
 
         return [
@@ -254,6 +273,8 @@ class EmailTemplate extends Model
         ?string $checklistType = null,
         ?string $completedAt = null,
         ?string $offboardingLinkUrl = null,
+        ?string $accountStatus = null,
+        ?string $reactivatedAt = null,
     ): array {
         return [
             'approver_name' => $approverName,
@@ -296,6 +317,8 @@ class EmailTemplate extends Model
             'signatory_type' => $signatoryType ?? '',
             'checklist_type' => $checklistType ?? '',
             'completed_at' => $completedAt ?? '',
+            'account_status' => $accountStatus ?? '',
+            'reactivated_at' => $reactivatedAt ?? '',
             // Defaults to the plain, generic sign-in page for every caller
             // except `ChecklistApprovalNotifier::notifyOffboardee()`'s
             // first-account-creation case, which passes a per-employee
@@ -320,7 +343,8 @@ class EmailTemplate extends Model
             . '|department_head_name|assigned_signatories|checklist_progress|remaining_items|follow_up_sent_at|general_signatory_tasks|approve_button'
             . '|original_due_date|extension_days|extended_due_date|clearance_signatory_name'
             . '|cancelled_by|cancelled_at|offboarding_request_id|cancellation_reason'
-            . '|declined_by|declined_at|decline_reason|signatory_type|checklist_type|completed_at)\s*\}\}'
+            . '|declined_by|declined_at|decline_reason|signatory_type|checklist_type|completed_at'
+            . '|account_status|reactivated_at)\s*\}\}'
             . '|\{\s*(approver|offboardee|employee)\s*\}'
             . '|\b(approver|offboardee|employee)\b/i';
 

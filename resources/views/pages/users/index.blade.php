@@ -3,7 +3,7 @@
 @section('content')
     <x-common.page-breadcrumb pageTitle="Users" />
 
-    <div x-data="flashToast(@js(session('success')), @js(session('error')))" class="mb-6">
+    <div x-data="flashToast(@js(session('success')), @js(session('error')), @js(session('warning')))" class="mb-6">
         <!-- <p class="text-sm text-gray-500 dark:text-gray-400">
             Every account here was auto-created when its Employee was made a checklist approver, an Immediate Head,
             or an offboardee. Change a user's role(s) below — a user can hold any combination of the 3 roles at
@@ -159,29 +159,19 @@
                                 @if ($user['isBlocked'])
                                     <p class="mt-1 text-theme-xs text-gray-400">Blocked {{ $user['blockedAt'] }}</p>
                                     @can('users.manage-status')
-                                        <form method="POST" action="{{ route('users.reactivate', $user['id']) }}" class="mt-2"
-                                            x-data="{ confirmed: false }"
-                                            @submit="if (!confirmed) {
-                                                $event.preventDefault();
-                                                Swal.fire({
-                                                    title: 'Reactivate this account?',
-                                                    html: 'Restore login access for <b>' + @js($user['name']) + '</b>? Their failed-attempt count will be reset to 0.',
-                                                    icon: 'question',
-                                                    showCancelButton: true,
-                                                    confirmButtonText: 'Reactivate',
-                                                    cancelButtonText: 'Cancel',
-                                                    confirmButtonColor: '#145a3a',
-                                                    cancelButtonColor: '#6b7280',
-                                                    reverseButtons: true
-                                                }).then((result) => { if (result.isConfirmed) { confirmed = true; $el.requestSubmit(); } });
-                                            }">
-                                            @csrf
-                                            @method('PATCH')
-                                            <button type="submit" data-turbo-submits-with="Reactivating..."
-                                                class="rounded-lg bg-[#145a3a] px-2.5 py-1 text-theme-xs font-medium text-white hover:bg-[#0f4630]">
-                                                Reactivate
-                                            </button>
-                                        </form>
+                                        <button type="button"
+                                            @click="$dispatch('open-reactivate-modal', {
+                                                id: {{ $user['id'] }},
+                                                name: @js($user['name']),
+                                                employeeCode: @js($user['employeeCode']),
+                                                username: @js($user['username']),
+                                                email: @js($user['email']),
+                                                blockedAt: @js($user['blockedAt']),
+                                                reactivateUrl: @js(route('users.reactivate', $user['id'])),
+                                            })"
+                                            class="mt-2 rounded-lg bg-[#145a3a] px-2.5 py-1 text-theme-xs font-medium text-white hover:bg-[#0f4630]">
+                                            Reactivate
+                                        </button>
                                     @endcan
                                 @endif
                             </td>
@@ -242,4 +232,6 @@
         </div>
         </div>
     </div>
+
+    <x-users.reactivate-modal :email-templates="$emailTemplates" />
 @endsection

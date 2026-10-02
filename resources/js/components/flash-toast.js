@@ -1,10 +1,12 @@
-export function flashToast(flashSuccess = null, flashError = null) {
+export function flashToast(flashSuccess = null, flashError = null, flashWarning = null) {
   return {
     init() {
       if (flashSuccess) {
         this.notify('success', flashSuccess);
       } else if (flashError) {
         this.notify('error', flashError);
+      } else if (flashWarning) {
+        this.notify('warning', flashWarning);
       }
     },
     notify(icon, title) {

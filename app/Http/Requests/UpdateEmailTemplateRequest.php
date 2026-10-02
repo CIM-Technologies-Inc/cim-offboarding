@@ -19,6 +19,7 @@ class UpdateEmailTemplateRequest extends FormRequest
             'subject' => ['required', 'string', 'max:255'],
             'html_content' => ['nullable', 'string'],
             'is_default_announcement' => ['boolean'],
+            'is_default_reactivation' => ['boolean'],
             'is_scheduled' => ['boolean'],
             'schedule_type' => [
                 'nullable',
@@ -49,6 +50,7 @@ class UpdateEmailTemplateRequest extends FormRequest
     {
         $this->merge([
             'is_default_announcement' => $this->boolean('is_default_announcement'),
+            'is_default_reactivation' => $this->boolean('is_default_reactivation'),
             'is_scheduled' => $this->boolean('is_scheduled'),
         ]);
     }

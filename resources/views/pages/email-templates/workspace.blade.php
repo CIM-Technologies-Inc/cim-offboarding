@@ -24,7 +24,12 @@
                                 </p>
                                 @if ($item->is_default_announcement)
                                     <span class="shrink-0 rounded-full bg-[#145a3a]/10 px-2 py-0.5 text-[10px] font-medium text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]">
-                                        Default
+                                        Default: Announcement
+                                    </span>
+                                @endif
+                                @if ($item->is_default_reactivation)
+                                    <span class="shrink-0 rounded-full bg-[#145a3a]/10 px-2 py-0.5 text-[10px] font-medium text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]">
+                                        Default: Reactivation
                                     </span>
                                 @endif
                             </div>
@@ -123,6 +128,15 @@
                                 class="h-4 w-4 rounded border-gray-300 text-[#145a3a] accent-[#145a3a] focus:ring-[#145a3a]/40 dark:border-gray-700" />
                             <label for="is_default_announcement" class="text-sm font-medium text-gray-700 dark:text-gray-400">
                                 Default Template (Offboarding Announcement)
+                            </label>
+                        </div>
+
+                        <div class="flex items-center gap-2">
+                            <input type="checkbox" id="is_default_reactivation" name="is_default_reactivation" value="1"
+                                @checked(old('is_default_reactivation', $template->is_default_reactivation ?? false))
+                                class="h-4 w-4 rounded border-gray-300 text-[#145a3a] accent-[#145a3a] focus:ring-[#145a3a]/40 dark:border-gray-700" />
+                            <label for="is_default_reactivation" class="text-sm font-medium text-gray-700 dark:text-gray-400">
+                                Default Template (Account Reactivation)
                             </label>
                         </div>
 

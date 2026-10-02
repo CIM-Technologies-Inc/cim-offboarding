@@ -48,6 +48,10 @@ class EmailTemplateController extends Controller
                 $this->clearOtherDefaultAnnouncements();
             }
 
+            if ($validated['is_default_reactivation']) {
+                $this->clearOtherDefaultReactivations();
+            }
+
             EmailTemplate::create($validated + [
                 'created_by' => $request->user()->id,
             ]);
@@ -64,6 +68,10 @@ class EmailTemplateController extends Controller
         DB::transaction(function () use ($validated, $emailTemplate) {
             if ($validated['is_default_announcement']) {
                 $this->clearOtherDefaultAnnouncements($emailTemplate->id);
+            }
+
+            if ($validated['is_default_reactivation']) {
+                $this->clearOtherDefaultReactivations($emailTemplate->id);
             }
 
             $emailTemplate->update($validated);
@@ -124,6 +132,19 @@ class EmailTemplateController extends Controller
         EmailTemplate::where('is_default_announcement', true)
             ->when($exceptId, fn ($query) => $query->whereKeyNot($exceptId))
             ->update(['is_default_announcement' => false]);
+    }
+
+    /**
+     * Only one template may be the default Account Reactivation template —
+     * same enforcement as `clearOtherDefaultAnnouncements()` above, for the
+     * same reason (a client could otherwise submit
+     * `is_default_reactivation=true` for more than one template).
+     */
+    private function clearOtherDefaultReactivations(?int $exceptId = null): void
+    {
+        EmailTemplate::where('is_default_reactivation', true)
+            ->when($exceptId, fn ($query) => $query->whereKeyNot($exceptId))
+            ->update(['is_default_reactivation' => false]);
     }
 
     public function destroy(EmailTemplate $emailTemplate): RedirectResponse

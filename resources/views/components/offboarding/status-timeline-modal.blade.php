@@ -252,15 +252,15 @@
                                          (each step has its own `open` state via x-data above, so
                                          opening one never affects the others). -->
                                     <button type="button" @click="open = !open"
-                                        class="flex w-full flex-wrap items-center justify-between gap-2 p-4 text-left">
+                                        class="group flex w-full flex-wrap items-center justify-between gap-2 p-4 text-left">
                                         <div class="min-w-0">
-                                            <p class="text-sm font-semibold text-gray-800 dark:text-white/90" x-text="step.department || 'Department'"></p>
-                                            <p class="text-xs text-gray-500 dark:text-gray-400">
+                                            <p class="text-sm font-semibold text-gray-800 group-hover:text-[#145a3a] dark:text-white/90 dark:group-hover:text-[#3aa876]" x-text="step.department || 'Department'"></p>
+                                            <p class="text-xs text-gray-500 group-hover:text-[#145a3a] dark:text-gray-400 dark:group-hover:text-[#3aa876]">
                                                 <span x-text="step.isGeneralSignatory ? 'General Signatory' : 'Clearance Signatory'"></span>: <span x-text="step.approverName"></span>
                                             </p>
                                         </div>
                                         <div class="flex shrink-0 items-center gap-3">
-                                            <span class="rounded-full px-2.5 py-1 text-xs font-medium"
+                                            <span class="rounded-full px-2.5 py-1 text-xs font-medium group-hover:text-[#145a3a] dark:group-hover:text-[#3aa876]"
                                                 :class="{
                                                     'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300': step.status === 'pending' && !step.hasRecordedProgress && !step.isOverdue,
                                                     'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400': (step.status === 'viewed' || (step.status === 'pending' && step.hasRecordedProgress)) && !step.isOverdue,
