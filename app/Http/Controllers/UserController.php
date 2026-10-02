@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Employee;
+use App\Models\SecurityLog;
 use App\Models\User;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -38,7 +39,7 @@ class UserController extends Controller
      * `updateRole()`). The assignable options come straight from the
      * `roles` table, never a hardcoded list.
      */
-    public function index(): View
+    public function index(Request $request): View
     {
         $employees = Employee::with('user.roles')
             ->orderBy('name')
@@ -50,15 +51,45 @@ class UserController extends Controller
                 'email' => $employee->email,
                 'username' => $employee->user?->username,
                 'hasAccount' => (bool) $employee->user,
+                // "Active" requires a real account that ISN'T blocked;
+                // "Inactive" covers both "no account at all" and "blocked"
+                // — see User::isBlocked()'s own docblock for why
+                // `blocked_at` alone is the single source of truth there.
+                'isBlocked' => (bool) $employee->user?->isBlocked(),
+                'accountStatus' => $employee->user && ! $employee->user->isBlocked() ? 'active' : 'inactive',
+                'blockedAt' => $employee->user?->blocked_at?->format('M d, Y g:i A'),
+                'failedLoginAttempts' => $employee->user?->failed_login_attempts ?? 0,
                 'roles' => $employee->user
                     ? $employee->user->roles->pluck('name')->values()->all()
                     : [User::ROLE_EMPLOYEE],
             ]);
 
+        // `?employee=<id>` — the specific-person deep link the "Account
+        // Blocked" notification sends admins to (see
+        // AccountBlockedNotification::toDatabase()), so clicking a
+        // notification about ONE person filters straight to that one row
+        // rather than the whole blocked list. `?status=blocked` is the
+        // coarser fallback (used when a notification's account has no
+        // linked Employee, or for a manual bookmark/link) — scoped to
+        // actually blocked accounts specifically, not merely "no account"
+        // (which `accountStatus === 'inactive'` would also match).
+        $employeeIdFilter = $request->query('employee');
+        $filteringBlocked = $request->query('status') === 'blocked';
+        $filteredEmployeeName = null;
+
+        if ($employeeIdFilter !== null) {
+            $employees = $employees->filter(fn (array $user) => (string) $user['id'] === (string) $employeeIdFilter)->values();
+            $filteredEmployeeName = $employees->first()['name'] ?? null;
+        } elseif ($filteringBlocked) {
+            $employees = $employees->filter(fn (array $user) => $user['isBlocked'])->values();
+        }
+
         return view('pages.users.index', [
             'title' => 'Users',
             'users' => $employees,
             'roleOptions' => Role::where('guard_name', 'web')->orderBy('name')->pluck('name')->all(),
+            'filteringBlocked' => $filteringBlocked && $filteredEmployeeName === null,
+            'filteredEmployeeName' => $filteredEmployeeName,
         ]);
     }
 
@@ -124,6 +155,34 @@ class UserController extends Controller
         }
 
         return $redirect;
+    }
+
+    /**
+     * The only way out of a block — restores access without touching
+     * `password`/`must_change_password` (reactivating is a distinct
+     * action from resetting a forgotten password; the spec explicitly
+     * says not to conflate the two). Gated by its own `users.manage-status`
+     * permission, separate from `users.manage-roles`, since this is a
+     * distinct security-relevant capability, not a role-assignment one.
+     */
+    public function reactivate(Employee $employee): RedirectResponse
+    {
+        $user = $employee->user;
+
+        abort_if(! $user, 404);
+
+        if (! $user->isBlocked()) {
+            return back()->with('error', "{$employee->name}'s account is not currently blocked.");
+        }
+
+        $user->reactivate();
+
+        SecurityLog::record('account_reactivated', [
+            'user_id' => $user->id,
+            'performed_by_user_id' => auth()->id(),
+        ]);
+
+        return back()->with('success', "{$employee->name}'s account has been reactivated.");
     }
 
     /**

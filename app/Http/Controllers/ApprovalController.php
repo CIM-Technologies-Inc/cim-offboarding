@@ -433,11 +433,18 @@ class ApprovalController extends Controller
                                 'headApprovalPending' => (bool) $progress?->head_approval_required && ! $progress?->head_approved_at,
                                 // Gates approveHeadItemUrl's actual
                                 // availability — see
-                                // OffboardingRequestApprover::allItemsChecked()'s
+                                // OffboardingRequestApprover::allItemsCheckedForSignatory()'s
                                 // own docblock: the Head must never approve
-                                // even one task until every task on this
-                                // checklist has been checked.
-                                'allItemsCheckedForHeadApproval' => $assignment->allItemsChecked(),
+                                // even one of THIS item's own Task
+                                // Assignee's tasks until every task
+                                // assigned to that SAME assignee has been
+                                // checked — scoped per assignee, never the
+                                // whole checklist (a Final Pay checklist
+                                // can combine several departments, each
+                                // with their own distinct Task Assignee).
+                                'allItemsCheckedForHeadApproval' => $effectiveSignatory
+                                    ? $assignment->allItemsCheckedForSignatory($effectiveSignatory)
+                                    : true,
                                 'headApproverName' => $progress?->headApprover?->name,
                                 'headApproverCode' => $progress?->headApprover?->employee_code,
                                 // True when the CURRENT viewer is the specific

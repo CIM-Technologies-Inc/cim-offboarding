@@ -149,6 +149,7 @@
                     $isApproved = $notification->type === 'offboarding_approved';
                     $isOverdue = $notification->type === 'checklist_overdue';
                     $isClearanceSigningDue = $notification->type === 'clearance_signing_due';
+                    $isAccountBlocked = $notification->type === 'account_blocked';
                     $isUnread = $notification->read_at === null;
                 @endphp
                 <li>
@@ -167,6 +168,10 @@
                                 @elseif ($isClearanceSigningDue)
                                     <span class="mb-1 block text-theme-sm font-medium text-error-600 dark:text-error-400">
                                         Clearance Signing Due Date Reached
+                                    </span>
+                                @elseif ($isAccountBlocked)
+                                    <span class="mb-1 block text-theme-sm font-medium text-error-600 dark:text-error-400">
+                                        Account Blocked
                                     </span>
                                 @endif
 
@@ -191,6 +196,11 @@
                                         Employee No.: {{ $notification->data['offboardee_employee_code'] ?? '—' }}
                                         &middot; Checklist: {{ $notification->data['checklist_title'] ?? '—' }}
                                         &middot; Due: {{ $notification->data['due_at'] ?? '—' }}
+                                    </span>
+                                @elseif ($isAccountBlocked)
+                                    <span class="mb-1 block text-xs text-gray-500 dark:text-gray-400">
+                                        Username: {{ $notification->data['blocked_username'] ?? '—' }}
+                                        &middot; Blocked: {{ $notification->data['blocked_at'] ?? '—' }}
                                     </span>
                                 @endif
 

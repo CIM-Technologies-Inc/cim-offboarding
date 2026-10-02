@@ -33,11 +33,29 @@ class User extends Authenticatable
         'profile_photo_path',
         'must_change_password',
         'combine_assigned_checklists',
+        'failed_login_attempts',
+        'blocked_at',
+        'blocked_reason',
     ];
 
     public const ROLE_ADMIN = 'admin';
     public const ROLE_APPROVER = 'approver';
     public const ROLE_EMPLOYEE = 'employee';
+
+    /**
+     * See `AuthController::store()` — the account is blocked the instant
+     * a login attempt makes this the Nth consecutive failure.
+     */
+    public const MAX_FAILED_LOGIN_ATTEMPTS = 3;
+
+    /**
+     * The single source of truth for this message — shown by
+     * `AuthController::store()` the moment a login attempt crosses the
+     * threshold (or hits an already-blocked account), and by
+     * `EnsureAccountNotBlocked` if a blocked account's own still-open
+     * session tries to keep browsing.
+     */
+    public const BLOCKED_MESSAGE = 'Your account has been blocked because you reached the maximum number of failed login attempts. Please contact the administrator to reactivate your account.';
 
     /**
      * Backed by Spatie's `HasRoles` trait rather than the plain `role`
@@ -257,7 +275,71 @@ class User extends Authenticatable
             'password' => 'hashed',
             'must_change_password' => 'boolean',
             'combine_assigned_checklists' => 'boolean',
+            'blocked_at' => 'datetime',
         ];
+    }
+
+    /**
+     * `blocked_at` is the single source of truth for "blocked" — null
+     * means not blocked, no separate boolean column exists or is needed.
+     */
+    public function isBlocked(): bool
+    {
+        return $this->blocked_at !== null;
+    }
+
+    /**
+     * Called only from the branch of `AuthController::store()` where
+     * `Auth::attempt()` has already failed for a KNOWN account (never for
+     * a nonexistent username — there's no row to increment). Returns true
+     * only on the exact attempt that just crossed the threshold, so the
+     * caller can show the "blocked" message immediately on THIS response
+     * rather than requiring one more attempt to discover it.
+     */
+    public function recordFailedLoginAttempt(): bool
+    {
+        $this->increment('failed_login_attempts');
+        $this->refresh();
+
+        if ($this->failed_login_attempts >= self::MAX_FAILED_LOGIN_ATTEMPTS && ! $this->isBlocked()) {
+            $this->update([
+                'blocked_at' => now(),
+                'blocked_reason' => 'Reached the maximum number of failed login attempts.',
+            ]);
+
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Called on every successful login — a real credential match always
+     * clears the slate, per the required "reset after success" behavior.
+     * Deliberately never called from anywhere in the BLOCKED path (see
+     * `AuthController::store()`'s own guard), so a blocked account can
+     * never claw its way back to 0 just by trying again.
+     */
+    public function resetFailedLoginAttempts(): void
+    {
+        if ($this->failed_login_attempts !== 0) {
+            $this->update(['failed_login_attempts' => 0]);
+        }
+    }
+
+    /**
+     * The only way out of a block — an authorized administrator, via
+     * `UserController::reactivate()`. Clears every field the block set,
+     * never touches `password`/`must_change_password` (reactivating is
+     * not the same as resetting a forgotten password).
+     */
+    public function reactivate(): void
+    {
+        $this->update([
+            'failed_login_attempts' => 0,
+            'blocked_at' => null,
+            'blocked_reason' => null,
+        ]);
     }
 
 }

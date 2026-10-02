@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Mail\PasswordResetMail;
 use App\Models\PasswordResetRequest;
+use App\Models\SecurityLog;
 use App\Models\User;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -12,6 +13,7 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use Illuminate\View\View;
 
 class ForgotPasswordController extends Controller
@@ -26,6 +28,16 @@ class ForgotPasswordController extends Controller
      * one. Always shows the same generic confirmation regardless of whether
      * anything actually matched, so this endpoint can't be used to probe
      * which emails are registered.
+     *
+     * The one deliberate exception: a BLOCKED account (see
+     * `User::isBlocked()`) must never have a reset link bypass its lock —
+     * per spec, this is explicitly surfaced with its own distinct message
+     * rather than folded into the generic confirmation above. When every
+     * matched account is blocked, no link is sent at all and that message
+     * is shown instead; a rare email collision between a blocked and a
+     * still-active account sends the link only to the active one (and
+     * still logs the blocked one as rejected) while keeping the normal
+     * generic confirmation, since a real link genuinely was sent.
      */
     public function sendResetLink(Request $request): RedirectResponse
     {
@@ -35,7 +47,22 @@ class ForgotPasswordController extends Controller
 
         $users = User::where('email', $validated['email'])->get();
 
+        if ($users->isNotEmpty() && $users->every(fn (User $user) => $user->isBlocked())) {
+            $users->each(fn (User $user) => SecurityLog::record('password_reset_rejected_blocked', ['user_id' => $user->id]));
+
+            throw ValidationException::withMessages([
+                'email' => 'Your account is currently blocked due to multiple failed login attempts. Please contact the administrator to reactivate your account.',
+            ]);
+        }
+
         foreach ($users as $user) {
+            if ($user->isBlocked()) {
+                SecurityLog::record('password_reset_rejected_blocked', ['user_id' => $user->id]);
+
+                continue;
+            }
+
+            SecurityLog::record('password_reset_requested', ['user_id' => $user->id]);
             $this->issueResetLink($user);
         }
 

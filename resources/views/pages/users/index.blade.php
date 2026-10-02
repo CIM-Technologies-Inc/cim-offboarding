@@ -65,6 +65,26 @@
     @endphp
 
     <div x-data="{ search: '', rows: @js($users->map(fn ($u) => strtolower(collect([$u['name'], $u['employeeCode'], $u['username'], $u['email']])->filter()->implode(' ')))->values()) }">
+        @if ($filteredEmployeeName)
+            <div class="mb-4 flex items-center justify-between gap-3 rounded-lg border border-error-200 bg-error-50 px-4 py-3 dark:border-error-500/30 dark:bg-error-500/10">
+                <p class="text-sm text-error-700 dark:text-error-400">
+                    Showing results for: <span class="font-semibold">{{ $filteredEmployeeName }}</span>
+                </p>
+                <a href="{{ route('users.index') }}" class="text-sm font-medium text-error-700 underline hover:text-error-800 dark:text-error-400 dark:hover:text-error-300">
+                    Clear filter
+                </a>
+            </div>
+        @elseif ($filteringBlocked)
+            <div class="mb-4 flex items-center justify-between gap-3 rounded-lg border border-error-200 bg-error-50 px-4 py-3 dark:border-error-500/30 dark:bg-error-500/10">
+                <p class="text-sm text-error-700 dark:text-error-400">
+                    Showing blocked accounts only.
+                </p>
+                <a href="{{ route('users.index') }}" class="text-sm font-medium text-error-700 underline hover:text-error-800 dark:text-error-400 dark:hover:text-error-300">
+                    Clear filter
+                </a>
+            </div>
+        @endif
+
         <div class="mb-4">
             <div class="relative max-w-md">
                 <svg class="absolute top-1/2 left-4 -translate-y-1/2 text-gray-400" width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -92,6 +112,9 @@
                         </th>
                         <th class="px-5 py-3 text-left sm:px-6">
                             <p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Roles</p>
+                        </th>
+                        <th class="px-5 py-3 text-left sm:px-6">
+                            <p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Account Status</p>
                         </th>
                         <th class="px-5 py-3 text-right sm:px-6">
                             <p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Change Roles</p>
@@ -128,6 +151,39 @@
                                         </span>
                                     @endforelse
                                 </div>
+                            </td>
+                            <td class="px-5 py-4 sm:px-6">
+                                <span class="inline-flex rounded-full px-2.5 py-1 text-xs font-medium {{ $user['accountStatus'] === 'active' ? 'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]' : 'bg-error-50 text-error-700 dark:bg-error-500/15 dark:text-error-400' }}">
+                                    {{ $user['accountStatus'] === 'active' ? 'Active' : 'Inactive' }}
+                                </span>
+                                @if ($user['isBlocked'])
+                                    <p class="mt-1 text-theme-xs text-gray-400">Blocked {{ $user['blockedAt'] }}</p>
+                                    @can('users.manage-status')
+                                        <form method="POST" action="{{ route('users.reactivate', $user['id']) }}" class="mt-2"
+                                            x-data="{ confirmed: false }"
+                                            @submit="if (!confirmed) {
+                                                $event.preventDefault();
+                                                Swal.fire({
+                                                    title: 'Reactivate this account?',
+                                                    html: 'Restore login access for <b>' + @js($user['name']) + '</b>? Their failed-attempt count will be reset to 0.',
+                                                    icon: 'question',
+                                                    showCancelButton: true,
+                                                    confirmButtonText: 'Reactivate',
+                                                    cancelButtonText: 'Cancel',
+                                                    confirmButtonColor: '#145a3a',
+                                                    cancelButtonColor: '#6b7280',
+                                                    reverseButtons: true
+                                                }).then((result) => { if (result.isConfirmed) { confirmed = true; $el.requestSubmit(); } });
+                                            }">
+                                            @csrf
+                                            @method('PATCH')
+                                            <button type="submit" data-turbo-submits-with="Reactivating..."
+                                                class="rounded-lg bg-[#145a3a] px-2.5 py-1 text-theme-xs font-medium text-white hover:bg-[#0f4630]">
+                                                Reactivate
+                                            </button>
+                                        </form>
+                                    @endcan
+                                @endif
                             </td>
                             <td class="px-5 py-4 sm:px-6">
                                 <form method="POST" action="{{ route('users.role.update', $user['id']) }}"
@@ -171,13 +227,13 @@
                         </tr>
                     @empty
                         <tr>
-                            <td colspan="5" class="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
+                            <td colspan="6" class="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
                                 No users found.
                             </td>
                         </tr>
                     @endforelse
                     <tr x-show="search && rows.filter((r) => r.includes(search.toLowerCase())).length === 0">
-                        <td colspan="5" class="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
+                        <td colspan="6" class="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
                             No employees match "<span x-text="search"></span>".
                         </td>
                     </tr>

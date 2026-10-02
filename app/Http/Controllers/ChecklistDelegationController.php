@@ -876,14 +876,19 @@ class ChecklistDelegationController extends Controller
         }
 
         // The Head must never finalize even one task in isolation — every
-        // task on this checklist must be checked by its own Task Assignee
-        // first, matching the required "Task 1 -> ... -> Final Approval"
-        // sequence (see OffboardingRequestApprover::allItemsChecked()'s
-        // own docblock). Checked AFTER confirming THIS item itself is
-        // checked above, so a genuinely not-yet-checked item still gets
-        // its own, more specific error message.
-        if (! $offboardingRequestApprover->allItemsChecked()) {
-            return ['status' => 'invalid', 'message' => 'All task lists under this checklist must be completed before any can be given final approval.'];
+        // task assigned to THIS SAME Task Assignee (not necessarily every
+        // task on the whole checklist — a Final Pay checklist can combine
+        // several departments, each with their own Task Assignee and
+        // approving Head) must be checked first, matching the required
+        // "Task 1 -> ... -> Final Approval" sequence (see
+        // OffboardingRequestApprover::allItemsCheckedForSignatory()'s own
+        // docblock). Checked AFTER confirming THIS item itself is checked
+        // above, so a genuinely not-yet-checked item still gets its own,
+        // more specific error message.
+        $taskAssignee = $offboardingRequestApprover->effectiveSignatoryFor($checklistItem);
+
+        if ($taskAssignee && ! $offboardingRequestApprover->allItemsCheckedForSignatory($taskAssignee)) {
+            return ['status' => 'invalid', 'message' => "All task lists assigned to {$taskAssignee->name} must be completed before any can be given final approval."];
         }
 
         if (! $progress->head_approval_required) {

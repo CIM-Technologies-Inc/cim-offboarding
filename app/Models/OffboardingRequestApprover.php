@@ -431,29 +431,44 @@ class OffboardingRequestApprover extends Model
     }
 
     /**
-     * True once every checklist item on this assignment's template has
-     * been CHECKED by its own Task Assignee — unlike `allItemsCompleted()`
-     * (which also requires head-approval to already be resolved per item,
-     * and so can't be used here without circularity), this deliberately
-     * ignores head-approval state entirely. It's the gate that gives the
-     * Head the ABILITY to approve anything at all on a "Use Task Assignee
-     * as Clearance Signatory" checklist (see
-     * `ChecklistDelegationController::approveOneHeadItem()`) — they must
-     * never be able to approve even one task until every task has been
-     * checked by its assignee, matching the required
-     * "Task 1 -> Task 2 -> ... -> Final Approval" sequence.
+     * True once every checklist item THIS SPECIFIC Task Assignee is
+     * responsible for (via `effectiveSignatoryFor()`) has been checked —
+     * deliberately scoped to just their own items, never the whole
+     * checklist template, since a single "Use Task Assignee as Clearance
+     * Signatory" checklist (most visibly a Final Pay checklist) can
+     * genuinely combine SEVERAL different departments/Task Assignees
+     * (e.g. HR items assigned to one employee, ACCT items to another),
+     * each with their own distinct approving Head. Gating on the WHOLE
+     * checklist would wrongly block one Head from approving their own
+     * person's fully-completed items just because an unrelated
+     * department's items are still outstanding.
+     *
+     * Unlike `allItemsCompleted()` (which also requires head-approval to
+     * already be resolved per item, and so can't be used here without
+     * circularity), this deliberately ignores head-approval state
+     * entirely — it's the gate that gives a Head the ABILITY to approve
+     * anything at all for their own Task Assignee (see
+     * `ChecklistDelegationController::approveOneHeadItem()`): they must
+     * never approve even one of that assignee's tasks until every task
+     * assigned to that SAME assignee has been checked, matching the
+     * required "Task 1 -> Task 2 -> ... -> Final Approval" sequence —
+     * scoped per Task Assignee, not per whole checklist.
      */
-    public function allItemsChecked(): bool
+    public function allItemsCheckedForSignatory(Employee $signatory): bool
     {
         $this->loadMissing('checklistTemplate.items', 'itemProgress');
 
-        if ($this->checklistTemplate->items->isEmpty()) {
+        $itemsForSignatory = $this->checklistTemplate->items->filter(
+            fn (ChecklistItem $item) => $this->effectiveSignatoryFor($item)?->id === $signatory->id
+        );
+
+        if ($itemsForSignatory->isEmpty()) {
             return true;
         }
 
         $progress = $this->itemProgress->keyBy('checklist_item_id');
 
-        return $this->checklistTemplate->items->every(
+        return $itemsForSignatory->every(
             fn (ChecklistItem $item) => (bool) $progress->get($item->id)?->is_checked
         );
     }

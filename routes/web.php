@@ -40,7 +40,11 @@ Route::get('/signin', [AuthController::class, 'create'])->name('login');
 // AuthController::autoFill()'s own docblock for why no separate
 // token/expiry table is needed on top of that).
 Route::get('/signin/{employee}', [AuthController::class, 'autoFill'])->name('login.auto-fill');
-Route::post('/login', [AuthController::class, 'store'])->name('login.store');
+// throttle:10,1 is defense-in-depth against rapid-fire brute forcing,
+// independent of AuthController::store()'s own permanent 3-strike block
+// (per-account, not per-IP/time-window) — same convention already used
+// on the forgot-password route just below.
+Route::post('/login', [AuthController::class, 'store'])->middleware('throttle:10,1')->name('login.store');
 Route::post('/logout', [AuthController::class, 'destroy'])->name('logout');
 
 // forgot / reset password — public, unauthenticated. Throttled since this
@@ -73,7 +77,7 @@ Route::post('/general-signatory-approval/{id}/{token}', [GeneralSignatoryApprova
 Route::get('/final-approval/{id}/{token}', [FinalApprovalController::class, 'showEmailApproval'])->name('final-approval.show');
 Route::post('/final-approval/{id}/{token}', [FinalApprovalController::class, 'confirmEmailApproval'])->name('final-approval.confirm');
 
-Route::middleware(['auth', 'password.changed'])->group(function () {
+Route::middleware(['auth', 'password.changed', 'account.active'])->group(function () {
 
 // forced first-time password change — reachable even while
 // `must_change_password` is true (EnsurePasswordChanged exempts these two
@@ -424,12 +428,16 @@ Route::middleware('permission:roles.manage')->group(function () {
     Route::put('/roles-permissions/{role}/permissions', [RoleController::class, 'syncPermissions'])->name('roles.permissions.sync');
 });
 
-// users — role assignment only, see UserController's docblock.
+// users — role assignment and account-status (block/reactivate), see
+// UserController's docblock.
 Route::middleware('permission:users.view')->group(function () {
     Route::get('/users', [UserController::class, 'index'])->name('users.index');
 });
 Route::middleware('permission:users.manage-roles')->group(function () {
     Route::put('/users/{employee}/role', [UserController::class, 'updateRole'])->name('users.role.update');
+});
+Route::middleware('permission:users.manage-status')->group(function () {
+    Route::patch('/users/{employee}/reactivate', [UserController::class, 'reactivate'])->name('users.reactivate');
 });
 
 });

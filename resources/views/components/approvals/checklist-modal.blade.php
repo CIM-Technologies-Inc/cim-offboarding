@@ -549,9 +549,10 @@
         // && item.allItemsCheckedForHeadApproval) already gates on, so
         // bulk selection can only ever affect tasks this ONE head is
         // actually recorded as the approver of — never another head's or
-        // another Task Assignee's items — and only once every task on the
-        // checklist has been checked (see
-        // OffboardingRequestApprover::allItemsChecked()'s own docblock).
+        // another Task Assignee's items — and only once every task
+        // belonging to that SAME Task Assignee has been checked (see
+        // OffboardingRequestApprover::allItemsCheckedForSignatory()'s own
+        // docblock).
         myApproveEligibleItems() {
             return (this.selected?.checklistItems || []).filter((item) => item.isHeadApprover && item.headApprovalPending && item.allItemsCheckedForHeadApproval);
         },
@@ -1387,7 +1388,7 @@
                                                  not yet counted toward the checklist's own completion until its Department/Group Head
                                                  (named here) also approves it — see `ChecklistItemProgress::isFullyApproved()`. -->
                                             <span class="block text-sm font-semibold text-warning-600 dark:text-orange-400" x-show="item.checked && item.headApprovalPending"
-                                                x-text="'Status: Pending Head Approval' + (!item.allItemsCheckedForHeadApproval ? ' — waiting for all tasks to be completed' : '') + (item.headApproverName ? ' (' + (item.headApproverCode ? item.headApproverCode + ' – ' : '') + item.headApproverName + ')' : '')"></span>
+                                                x-text="'Status: Pending Head Approval' + (!item.allItemsCheckedForHeadApproval ? ' — waiting for this assignee\'s other tasks to be completed' : '') + (item.headApproverName ? ' (' + (item.headApproverCode ? item.headApproverCode + ' – ' : '') + item.headApproverName + ')' : '')"></span>
                                             <span class="block text-sm font-semibold text-success-600 dark:text-success-400" x-show="item.checked && item.headApprovalRequired && !item.headApprovalPending">Status: Fully Approved</span>
                                             <span class="block text-sm text-gray-500 dark:text-gray-400" x-show="item.checked && item.clearedByName"
                                                 x-text="'Checked By: ' + (item.clearedByCode ? item.clearedByCode + ' – ' : '') + item.clearedByName"></span>

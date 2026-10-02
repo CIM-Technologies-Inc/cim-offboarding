@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Middleware\EnsureAccountNotBlocked;
 use App\Http\Middleware\EnsurePasswordChanged;
 use App\Http\Middleware\EnsureUserHasRole;
 use Illuminate\Foundation\Application;
@@ -22,6 +23,7 @@ return Application::configure(basePath: dirname(__DIR__))
             // app keeps working completely unchanged.
             'role' => EnsureUserHasRole::class,
             'password.changed' => EnsurePasswordChanged::class,
+            'account.active' => EnsureAccountNotBlocked::class,
             // Spatie's own permission middleware — new, only used by the
             // Roles & Permissions and Users pages.
             'permission' => PermissionMiddleware::class,

@@ -946,3 +946,48 @@ pre[class*='language-'] {
     margin-right: -60px !important;
   }
 }
+
+/* Summernote (Email Templates' rich-text "Email Body" editor — see
+   resources/js/components/summernote-init.js) renders its own DOM
+   (toolbar + editable area) with the stock summernote-lite theme's
+   light-only hardcoded colors, so — same as the FullCalendar/Prism
+   overrides above — it needs explicit dark: overrides here; without
+   them the editable area stays white-on-black-text even with the rest
+   of the app in dark mode. */
+.note-editor.note-frame {
+  @apply border-gray-300 dark:border-gray-700;
+}
+.note-editor.note-frame .note-toolbar {
+  @apply border-gray-300 bg-gray-50 dark:border-gray-700 dark:bg-gray-800;
+}
+.note-editor.note-frame .note-editing-area .note-editable {
+  @apply bg-white text-gray-800 dark:bg-gray-900 dark:text-white/90;
+}
+.note-editor.note-frame .note-editing-area .note-codable {
+  @apply bg-gray-900 text-gray-100;
+}
+.note-editor.note-frame .note-placeholder {
+  @apply text-gray-400 dark:text-white/30;
+}
+.note-editor.note-frame .note-statusbar {
+  @apply border-gray-300 bg-gray-50 dark:border-gray-700 dark:bg-gray-800;
+}
+.note-btn {
+  @apply bg-white text-gray-700 dark:bg-gray-800 dark:text-gray-300;
+}
+.note-btn:hover,
+.note-btn:focus,
+.note-btn.focus,
+.note-btn:active,
+.note-btn.active {
+  @apply bg-gray-100 text-gray-800 dark:bg-white/10 dark:text-white;
+}
+.note-dropdown-menu {
+  @apply border-gray-300 bg-white text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300;
+}
+.note-dropdown-item:hover {
+  @apply bg-gray-100 dark:bg-white/10;
+}
+.note-editor.note-frame .note-status-output .text-muted {
+  @apply text-gray-500 dark:text-gray-400;
+}
