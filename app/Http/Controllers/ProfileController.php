@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\ActivityLog;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
@@ -46,7 +47,16 @@ class ProfileController extends Controller
 
         $validated = $request->validate($rules);
 
+        $previousValues = collect($validated)->keys()->mapWithKeys(fn ($key) => [$key => $user->$key])->all();
+
         $user->update($validated);
+
+        ActivityLog::record('employee_profile_updated', 'Users', "{$user->name} updated their personal information.", [
+            'subject_type' => 'User',
+            'subject_id' => $user->id,
+            'old_values' => $previousValues,
+            'new_values' => $validated,
+        ]);
 
         return back()->with('success', 'Personal information updated.');
     }
@@ -65,7 +75,16 @@ class ProfileController extends Controller
             'address' => ['nullable', 'string', 'max:500'],
         ]);
 
+        $previousAddress = $user->address;
+
         $user->update($validated);
+
+        ActivityLog::record('employee_profile_updated', 'Users', "{$user->name} updated their address.", [
+            'subject_type' => 'User',
+            'subject_id' => $user->id,
+            'old_values' => ['address' => $previousAddress],
+            'new_values' => $validated,
+        ]);
 
         return back()->with('success', 'Address updated.');
     }
@@ -95,6 +114,13 @@ class ProfileController extends Controller
             Storage::disk('public')->delete($previousPath);
         }
 
+        ActivityLog::record('employee_profile_updated', 'Users', "{$user->name} uploaded a new e-signature.", [
+            'subject_type' => 'User',
+            'subject_id' => $user->id,
+            'old_values' => ['signature_path' => $previousPath],
+            'new_values' => ['signature_path' => $path],
+        ]);
+
         return back()->with('success', 'E-signature uploaded.');
     }
 
@@ -105,8 +131,16 @@ class ProfileController extends Controller
         abort_unless($user->can('user-profile.edit-signature'), 403);
 
         if ($user->signature_path) {
+            $previousPath = $user->signature_path;
             Storage::disk('public')->delete($user->signature_path);
             $user->update(['signature_path' => null]);
+
+            ActivityLog::record('employee_profile_updated', 'Users', "{$user->name} removed their e-signature.", [
+                'subject_type' => 'User',
+                'subject_id' => $user->id,
+                'old_values' => ['signature_path' => $previousPath],
+                'new_values' => ['signature_path' => null],
+            ]);
         }
 
         return back()->with('success', 'E-signature removed.');
@@ -138,6 +172,13 @@ class ProfileController extends Controller
             Storage::disk('public')->delete($previousPath);
         }
 
+        ActivityLog::record('employee_profile_updated', 'Users', "{$user->name} updated their profile photo.", [
+            'subject_type' => 'User',
+            'subject_id' => $user->id,
+            'old_values' => ['profile_photo_path' => $previousPath],
+            'new_values' => ['profile_photo_path' => $path],
+        ]);
+
         return back()->with('success', 'Profile photo updated.');
     }
 
@@ -148,8 +189,16 @@ class ProfileController extends Controller
         abort_unless($user->can('user-profile.edit-photo'), 403);
 
         if ($user->profile_photo_path) {
+            $previousPath = $user->profile_photo_path;
             Storage::disk('public')->delete($user->profile_photo_path);
             $user->update(['profile_photo_path' => null]);
+
+            ActivityLog::record('employee_profile_updated', 'Users', "{$user->name} removed their profile photo.", [
+                'subject_type' => 'User',
+                'subject_id' => $user->id,
+                'old_values' => ['profile_photo_path' => $previousPath],
+                'new_values' => ['profile_photo_path' => null],
+            ]);
         }
 
         return back()->with('success', 'Profile photo removed.');

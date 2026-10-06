@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Mail\ChecklistItemApproverAssignedMail;
 use App\Mail\ChecklistSignatoryAnnouncementMail;
+use App\Models\ActivityLog;
 use App\Models\ChecklistDelegation;
 use App\Models\ChecklistItem;
 use App\Models\ChecklistItemProgress;
@@ -98,6 +99,11 @@ class ChecklistDelegationController extends Controller
                 'status' => $offboardingRequestApprover->offboardingRequest->status,
                 'comment' => "Assigned to: {$employee->name} ({$employee->employee_code})",
             ]);
+
+            ActivityLog::record('checklist_assigned', 'Checklist', "Checklist assigned to {$employee->name}.", [
+                'subject_type' => 'OffboardingRequestApprover',
+                'subject_id' => $offboardingRequestApprover->id,
+            ]);
         });
 
         $this->notifyDelegatedApprover(
@@ -172,6 +178,11 @@ class ChecklistDelegationController extends Controller
                     'action' => 'checklist_assigned',
                     'status' => $member->offboardingRequest->status,
                     'comment' => "Assigned to: {$delegate->name} ({$delegate->employee_code})",
+                ]);
+
+                ActivityLog::record('checklist_assigned', 'Checklist', "Checklist assigned to {$delegate->name}.", [
+                    'subject_type' => 'OffboardingRequestApprover',
+                    'subject_id' => $member->id,
                 ]);
             }
         });
@@ -397,6 +408,11 @@ class ChecklistDelegationController extends Controller
                     'status' => $assignment->offboardingRequest->status,
                     'comment' => "\"{$assignment->checklistTemplate->title}\" ({$eligibleItems->count()} item(s)) assigned to: " . implode(', ', $assignedNames) . '.',
                 ]);
+
+                ActivityLog::record('checklist_assigned', 'Checklist', "\"{$assignment->checklistTemplate->title}\" assigned to: " . implode(', ', $assignedNames) . '.', [
+                    'subject_type' => 'OffboardingRequestApprover',
+                    'subject_id' => $assignment->id,
+                ]);
             }
         });
 
@@ -528,6 +544,13 @@ class ChecklistDelegationController extends Controller
                     . ($previousEmployee ? "{$previousEmployee->employee_code} - {$previousEmployee->name}" : 'Unassigned')
                     . " to {$newEmployee->employee_code} - {$newEmployee->name}.",
             ]);
+
+            ActivityLog::record('task_assignee_changed', 'Checklist', "\"{$checklistItem->title}\" reassigned to {$newEmployee->name}.", [
+                'subject_type' => 'ChecklistItem',
+                'subject_id' => $checklistItem->id,
+                'old_values' => ['assignee' => $previousEmployee?->name],
+                'new_values' => ['assignee' => $newEmployee->name],
+            ]);
         });
 
         $this->notifyReassignedApprover($offboardingRequestApprover, $checklistItem, $newEmployee, $existingUser === null);
@@ -630,6 +653,11 @@ class ChecklistDelegationController extends Controller
                 'status' => $offboardingRequestApprover->offboardingRequest->status,
                 'comment' => "\"{$offboardingRequestApprover->checklistTemplate->title}\" ({$eligibleItems->count()} item(s)) reassigned to {$newAssignee->employee_code} - {$newAssignee->name}.",
             ]);
+
+            ActivityLog::record('checklist_reassigned', 'Checklist', "\"{$offboardingRequestApprover->checklistTemplate->title}\" reassigned to {$newAssignee->name}.", [
+                'subject_type' => 'OffboardingRequestApprover',
+                'subject_id' => $offboardingRequestApprover->id,
+            ]);
         });
 
         // Reuses notifyPoolAssignees() as-is (same $assignedByEmployeeId
@@ -730,6 +758,13 @@ class ChecklistDelegationController extends Controller
                 'status' => $offboardingRequestApprover->offboardingRequest->status,
                 'comment' => "\"{$checklistItem->title}\" accepted by {$employee->employee_code} - {$employee->name}"
                     . ($previousEmployee ? " (previously {$previousEmployee->employee_code} - {$previousEmployee->name})." : ' (previously unassigned).'),
+            ]);
+
+            ActivityLog::record('task_assignee_changed', 'Checklist', "\"{$checklistItem->title}\" taken over by {$employee->name}.", [
+                'subject_type' => 'ChecklistItem',
+                'subject_id' => $checklistItem->id,
+                'old_values' => ['assignee' => $previousEmployee?->name],
+                'new_values' => ['assignee' => $employee->name],
             ]);
         });
 
@@ -916,6 +951,12 @@ class ChecklistDelegationController extends Controller
                 'status' => $offboardingRequestApprover->offboardingRequest->status,
                 'comment' => "\"{$checklistItem->title}\" approved by {$user->employee?->employee_code} - {$user->employee?->name} (Department/Group Head).",
             ]);
+
+            ActivityLog::record('checklist_head_approved', 'Checklist', "\"{$checklistItem->title}\" head-approved by {$user->employee?->name}.", [
+                'user' => $user,
+                'subject_type' => 'ChecklistItem',
+                'subject_id' => $checklistItem->id,
+            ]);
         });
 
         return ['status' => 'approved', 'message' => "\"{$checklistItem->title}\" has been approved."];
@@ -1044,8 +1085,15 @@ class ChecklistDelegationController extends Controller
         // the checklist has now genuinely been acted upon, so its status
         // should read "In Progress" rather than sit at "Pending" until the
         // Department Head separately views or approves it.
-        if ($items->contains(fn (array $row) => ! empty($row['is_checked']))) {
+        $checkedCount = $items->filter(fn (array $row) => ! empty($row['is_checked']))->count();
+
+        if ($checkedCount > 0) {
             $offboardingRequestApprover->markInProgressIfPending();
+
+            ActivityLog::record('checklist_item_completed', 'Checklist', "{$checkedCount} item(s) completed on \"{$offboardingRequestApprover->checklistTemplate?->title}\".", [
+                'subject_type' => 'OffboardingRequestApprover',
+                'subject_id' => $offboardingRequestApprover->id,
+            ]);
         }
 
         if ($offboardingRequestApprover->isDelegated() && $offboardingRequestApprover->delegation_status === 'assigned') {
@@ -1161,8 +1209,15 @@ class ChecklistDelegationController extends Controller
 
             // Same "genuinely acted upon" bump as the single-row
             // `saveProgress()` above, per member of the combined group.
-            if ($items->contains(fn (array $row) => ! empty($row['is_checked']))) {
+            $checkedCount = $items->filter(fn (array $row) => ! empty($row['is_checked']))->count();
+
+            if ($checkedCount > 0) {
                 $member->markInProgressIfPending();
+
+                ActivityLog::record('checklist_item_completed', 'Checklist', "{$checkedCount} item(s) completed on \"{$member->checklistTemplate?->title}\".", [
+                    'subject_type' => 'OffboardingRequestApprover',
+                    'subject_id' => $member->id,
+                ]);
             }
 
             if ($member->isDelegated() && $member->delegation_status === 'assigned') {
@@ -1423,6 +1478,12 @@ class ChecklistDelegationController extends Controller
                 'action' => 'checklist_item_held',
                 'status' => $offboardingRequestApprover->offboardingRequest->status,
                 'comment' => "\"{$checklistItem->title}\" — Reason: {$validated['remark']}",
+            ]);
+
+            ActivityLog::record('checklist_item_held', 'Checklist', "\"{$checklistItem->title}\" put on hold.", [
+                'subject_type' => 'ChecklistItem',
+                'subject_id' => $checklistItem->id,
+                'new_values' => ['remark' => $validated['remark']],
             ]);
         }
 

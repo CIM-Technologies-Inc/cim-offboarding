@@ -28,6 +28,7 @@ use App\Http\Controllers\FinalApproverController;
 use App\Http\Controllers\FinalApprovalController;
 use App\Http\Controllers\ReportController;
 use App\Http\Controllers\SeparationTypeController;
+use App\Http\Controllers\LogController;
 
 // authentication pages
 Route::get('/signin', [AuthController::class, 'create'])->name('login');
@@ -438,6 +439,13 @@ Route::middleware('permission:users.manage-roles')->group(function () {
 });
 Route::middleware('permission:users.manage-status')->group(function () {
     Route::patch('/users/{employee}/reactivate', [UserController::class, 'reactivate'])->name('users.reactivate');
+});
+
+// Logs — read-only audit trail, Admin by default; see LogController's own
+// docblock for why there is no edit/delete route here at all.
+Route::middleware('permission:logs.view')->group(function () {
+    Route::get('/logs', [LogController::class, 'index'])->name('logs.index');
+    Route::get('/logs/{activityLog}', [LogController::class, 'show'])->name('logs.show');
 });
 
 });

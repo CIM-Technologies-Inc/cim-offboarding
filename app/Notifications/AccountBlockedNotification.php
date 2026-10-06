@@ -9,7 +9,7 @@ use Illuminate\Notifications\Notification;
 /**
  * Fired once, at the moment an account hits its 3rd failed login attempt
  * (see `AuthController::store()`, right after the `account_blocked`
- * `SecurityLog` entry) — fanned out to every admin via
+ * `ActivityLog` entry) — fanned out to every admin via
  * `Notification::send(User::role(User::ROLE_ADMIN)->get(), ...)`, the
  * same "notify all admins" pattern `OffboardingApprovalUpdated` already
  * uses. Links straight to the Users page, where the new "Reactivate"

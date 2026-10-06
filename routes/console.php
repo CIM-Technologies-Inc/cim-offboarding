@@ -23,6 +23,11 @@ Schedule::command('app:notify-overdue-checklists')->everyFiveMinutes();
 // five-minute cadence and scheduler-must-be-running caveat as its sibling.
 Schedule::command('app:notify-clearance-signing-due')->everyFiveMinutes();
 
+// Best-effort sweep for idle sessions — see LogExpiredSessions' own
+// docblock for why this can't be instant. Same five-minute cadence as its
+// siblings above.
+Schedule::command('app:log-expired-sessions')->everyFiveMinutes();
+
 // Sends every active, scheduled Email and Notification template whose "N
 // days before/after Last Working Day" date is due, for every still-active
 // offboarding request. Daily is sufficient granularity since the trigger is

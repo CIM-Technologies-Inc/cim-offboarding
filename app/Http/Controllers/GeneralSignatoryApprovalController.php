@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Mail\ChecklistSignatoryAnnouncementMail;
+use App\Models\ActivityLog;
 use App\Models\EmailTemplate;
 use App\Models\Employee;
 use App\Models\EmployeeGroup;
@@ -235,6 +236,11 @@ class GeneralSignatoryApprovalController extends Controller
                 'comment' => 'Sent to: ' . $clearanceSignatory->name . ' (using template: ' . $emailTemplate->template_name . ')',
             ]);
 
+            ActivityLog::record('checklist_reminder_sent', 'Notifications', "Reminder emailed to {$clearanceSignatory->name}.", [
+                'subject_type' => 'OffboardingRequestGeneralSignatory',
+                'subject_id' => $generalSignatoryApproval->id,
+            ]);
+
             return redirect()
                 ->route('offboardees.index', ['offboardee' => $offboardingRequest->id])
                 ->with('success', 'Notification resent to ' . $clearanceSignatory->name . '.');
@@ -243,6 +249,13 @@ class GeneralSignatoryApprovalController extends Controller
                 'offboarding_request_general_signatory_id' => $generalSignatoryApproval->id,
                 'recipient' => $clearanceSignatory->email,
                 'exception' => $e->getMessage(),
+            ]);
+
+            ActivityLog::record('checklist_reminder_sent', 'Notifications', "Failed to email reminder to {$clearanceSignatory->name}.", [
+                'subject_type' => 'OffboardingRequestGeneralSignatory',
+                'subject_id' => $generalSignatoryApproval->id,
+                'status' => 'failed',
+                'failure_reason' => $e->getMessage(),
             ]);
 
             return back()->with('error', 'Failed to resend the notification email.');
@@ -398,6 +411,12 @@ class GeneralSignatoryApprovalController extends Controller
             'comment' => 'Cleared by General Signatory: ' . $signatoryName . ($remarks ? '. Remarks: ' . $remarks : ''),
         ]);
 
+        ActivityLog::record('checklist_approved', 'Checklist', "General Signatory clearance approved by {$signatoryName}.", [
+            'user' => $actor,
+            'subject_type' => 'OffboardingRequestGeneralSignatory',
+            'subject_id' => $assignment->id,
+        ]);
+
         // A General Signatory can be the LAST outstanding requirement —
         // every regular (and even Final Pay) checklist may already be fully
         // approved while this was still pending, since the two tracks are
@@ -439,6 +458,13 @@ class GeneralSignatoryApprovalController extends Controller
             'action' => 'general_signatory_declined',
             'status' => $offboardingRequest->status,
             'comment' => 'Declined by General Signatory: ' . $signatoryName . '. Reason: ' . $reason,
+        ]);
+
+        ActivityLog::record('checklist_declined', 'Checklist', "General Signatory clearance declined by {$signatoryName}.", [
+            'user' => $actor,
+            'subject_type' => 'OffboardingRequestGeneralSignatory',
+            'subject_id' => $assignment->id,
+            'new_values' => ['reason' => $reason],
         ]);
     }
 
@@ -486,6 +512,12 @@ class GeneralSignatoryApprovalController extends Controller
             'action' => 'general_signatory_on_hold_removed',
             'status' => $offboardingRequest->status,
             'comment' => 'On Hold removed by General Signatory: ' . $signatoryName . '. Reason: ' . $reason,
+        ]);
+
+        ActivityLog::record('checklist_hold_removed', 'Checklist', "Hold removed on General Signatory clearance for {$signatoryName}.", [
+            'user' => $actor,
+            'subject_type' => 'OffboardingRequestGeneralSignatory',
+            'subject_id' => $generalSignatoryApproval->id,
         ]);
 
         if ($request->wantsJson()) {

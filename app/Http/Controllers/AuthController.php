@@ -2,7 +2,7 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\SecurityLog;
+use App\Models\ActivityLog;
 use App\Models\User;
 use App\Notifications\AccountBlockedNotification;
 use Illuminate\Http\RedirectResponse;
@@ -89,9 +89,10 @@ class AuthController extends Controller
         $user = User::where('username', $credentials['username'])->first();
 
         if ($user?->isBlocked()) {
-            SecurityLog::record('blocked_login_attempt', [
-                'user_id' => $user->id,
-                'attempted_username' => $credentials['username'],
+            ActivityLog::record('login_blocked_attempt', 'Authentication', "Login attempt on {$user->name}'s already-blocked account.", [
+                'user' => $user,
+                'status' => 'failed',
+                'failure_reason' => 'Account is blocked.',
             ]);
 
             throw ValidationException::withMessages([
@@ -103,14 +104,16 @@ class AuthController extends Controller
             if ($user) {
                 $justBlocked = $user->recordFailedLoginAttempt();
 
-                SecurityLog::record('failed_login', [
-                    'user_id' => $user->id,
-                    'attempted_username' => $credentials['username'],
-                    'context' => ['attempt_number' => $user->failed_login_attempts],
+                ActivityLog::record('login_failed', 'Authentication', "Failed login attempt for {$user->name} (attempt {$user->failed_login_attempts} of 3).", [
+                    'user' => $user,
+                    'status' => 'failed',
+                    'failure_reason' => 'Incorrect password.',
                 ]);
 
                 if ($justBlocked) {
-                    SecurityLog::record('account_blocked', ['user_id' => $user->id]);
+                    ActivityLog::record('account_blocked', 'Authentication', "{$user->name}'s account was blocked after 3 failed login attempts.", [
+                        'user' => $user,
+                    ]);
 
                     // Never let a notification failure stop the lockout
                     // itself from taking effect — same safety net
@@ -134,7 +137,11 @@ class AuthController extends Controller
                 // monitoring only; the response below is byte-for-byte
                 // identical to the "wrong password for a real account"
                 // case, so this never discloses which usernames exist.
-                SecurityLog::record('failed_login', ['attempted_username' => $credentials['username']]);
+                ActivityLog::record('login_failed', 'Authentication', "Failed login attempt for unknown username \"{$credentials['username']}\".", [
+                    'user' => null,
+                    'status' => 'failed',
+                    'failure_reason' => 'No matching account.',
+                ]);
             }
 
             throw ValidationException::withMessages([
@@ -146,7 +153,7 @@ class AuthController extends Controller
 
         $user = Auth::user();
         $user->resetFailedLoginAttempts();
-        SecurityLog::record('successful_login', ['user_id' => $user->id]);
+        ActivityLog::record('login_success', 'Authentication', "{$user->name} logged in.", ['user' => $user]);
 
         // This app's established convention (see User::findOrCreateApprover())
         // creates accounts with password === username as a temporary
@@ -182,10 +189,21 @@ class AuthController extends Controller
 
     public function destroy(Request $request): RedirectResponse
     {
+        // Both captured BEFORE invalidate()/logout() replace them — pairs
+        // with 'login_success' in ActivityLog so every session has a
+        // matching start/end event (see LogExpiredSessions for the other
+        // kind of "end" — an idle timeout instead of this explicit one).
+        $user = Auth::user();
+        $sessionId = $request->session()->getId();
+
         Auth::guard('web')->logout();
 
         $request->session()->invalidate();
         $request->session()->regenerateToken();
+
+        if ($user) {
+            ActivityLog::record('logout', 'Authentication', "{$user->name} logged out.", ['user' => $user, 'session_id' => $sessionId]);
+        }
 
         return redirect()->route('login');
     }

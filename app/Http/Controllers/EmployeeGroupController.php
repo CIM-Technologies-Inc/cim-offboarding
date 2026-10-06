@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\ActivityLog;
 use App\Models\Employee;
 use App\Models\EmployeeGroup;
 use App\Models\User;
@@ -69,6 +70,11 @@ class EmployeeGroupController extends Controller
             if ($autoAddMembers) {
                 $this->syncDepartmentMembership($group, $groupHeadId, previousGroupHeadEmployeeId: null);
             }
+
+            ActivityLog::record('employee_group_updated', 'Employees', "Employee group \"{$group->name}\" created.", [
+                'subject_type' => 'EmployeeGroup',
+                'subject_id' => $group->id,
+            ]);
         });
 
         return back()->with('success', 'Group created.');
@@ -113,6 +119,13 @@ class EmployeeGroupController extends Controller
             if ($autoAddMembers) {
                 $this->syncDepartmentMembership($employeeGroup, $groupHeadId, $previousGroupHeadId);
             }
+
+            ActivityLog::record('employee_group_updated', 'Employees', "Employee group \"{$employeeGroup->name}\" updated.", [
+                'subject_type' => 'EmployeeGroup',
+                'subject_id' => $employeeGroup->id,
+                'old_values' => ['group_head_employee_id' => $previousGroupHeadId],
+                'new_values' => ['group_head_employee_id' => $groupHeadId],
+            ]);
         });
 
         return back()->with('success', 'Group updated.');
@@ -252,6 +265,11 @@ class EmployeeGroupController extends Controller
 
         $employee->update(['employee_group_id' => $employeeGroup->id]);
 
+        ActivityLog::record('employee_group_updated', 'Employees', "{$employee->name} added to group \"{$employeeGroup->name}\".", [
+            'subject_type' => 'Employee',
+            'subject_id' => $employee->id,
+        ]);
+
         $message = "{$employee->name} added to {$employeeGroup->name}.";
 
         if ($request->wantsJson()) {
@@ -275,6 +293,11 @@ class EmployeeGroupController extends Controller
         abort_unless($employee->employee_group_id === $employeeGroup->id, 404);
 
         $employee->update(['employee_group_id' => null]);
+
+        ActivityLog::record('employee_group_updated', 'Employees', "{$employee->name} removed from group \"{$employeeGroup->name}\".", [
+            'subject_type' => 'Employee',
+            'subject_id' => $employee->id,
+        ]);
 
         $message = "{$employee->name} removed from {$employeeGroup->name}.";
 
@@ -304,7 +327,15 @@ class EmployeeGroupController extends Controller
     {
         abort_unless($employee->employee_group_id === $employeeGroup->id, 404);
 
+        $wasTaskAssignee = $employee->is_task_assignee;
         $employee->update(['is_task_assignee' => ! $employee->is_task_assignee]);
+
+        ActivityLog::record('employee_group_updated', 'Employees', "{$employee->name}'s Task Assignee eligibility toggled.", [
+            'subject_type' => 'Employee',
+            'subject_id' => $employee->id,
+            'old_values' => ['is_task_assignee' => $wasTaskAssignee],
+            'new_values' => ['is_task_assignee' => $employee->is_task_assignee],
+        ]);
 
         $message = "{$employee->name} marked as " . ($employee->is_task_assignee ? 'a Task Assignee.' : 'not a Task Assignee.');
 
@@ -457,6 +488,10 @@ class EmployeeGroupController extends Controller
         });
 
         $total = $created + $updated;
+
+        ActivityLog::record('employee_roster_imported', 'Employees', "Employee Master roster imported: {$created} added, {$updated} updated, {$deleted} removed.", [
+            'new_values' => ['created' => $created, 'updated' => $updated, 'deleted' => $deleted],
+        ]);
 
         return back()->with('success', "Imported {$total} employee(s) ({$created} added, {$updated} updated, {$deleted} removed).");
     }

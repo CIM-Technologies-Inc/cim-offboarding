@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Mail\ChecklistSignatoryAnnouncementMail;
+use App\Models\ActivityLog;
 use App\Models\ChecklistApprovalToken;
 use App\Models\ChecklistDueDateExtension;
 use App\Models\ChecklistItemProgress;
@@ -2026,6 +2027,11 @@ class ApprovalController extends Controller
                 'comment' => 'Sent to: ' . $approverEmployee->name,
             ]);
 
+            ActivityLog::record('checklist_reminder_sent', 'Notifications', "Reminder emailed to {$approverEmployee->name}.", [
+                'subject_type' => 'OffboardingRequestApprover',
+                'subject_id' => $offboardingRequestApprover->id,
+            ]);
+
             return redirect()
                 ->route('offboardees.index', ['offboardee' => $offboardingRequest->id])
                 ->with('success', 'Reminder sent to ' . $approverEmployee->name . '.');
@@ -2034,6 +2040,13 @@ class ApprovalController extends Controller
                 'offboarding_request_approver_id' => $offboardingRequestApprover->id,
                 'recipient' => $approverEmployee->email,
                 'exception' => $e->getMessage(),
+            ]);
+
+            ActivityLog::record('checklist_reminder_sent', 'Notifications', "Failed to email reminder to {$approverEmployee->name}.", [
+                'subject_type' => 'OffboardingRequestApprover',
+                'subject_id' => $offboardingRequestApprover->id,
+                'status' => 'failed',
+                'failure_reason' => $e->getMessage(),
             ]);
 
             return back()->with('error', 'Failed to send the reminder email.');
@@ -2295,6 +2308,13 @@ class ApprovalController extends Controller
                 return [$approver, $previousDueDate, $extension];
             });
         });
+
+        ActivityLog::record('last_working_day_extended', 'Offboarding', "Last Working Day for {$offboardingRequest->employee->name} extended from {$currentLastWorkingDay->format('M d, Y')} to {$newLastWorkingDay->format('M d, Y')}.", [
+            'subject_type' => 'OffboardingRequest',
+            'subject_id' => $offboardingRequest->id,
+            'old_values' => ['last_working_day' => $currentLastWorkingDay->format('M d, Y')],
+            'new_values' => ['last_working_day' => $newLastWorkingDay->format('M d, Y'), 'reason' => $reason],
+        ]);
 
         // Shared across every checklist's own notification call below — see
         // `notifyClearanceSignatoriesOfExtension()`'s own docblock for why:
@@ -2571,6 +2591,24 @@ class ApprovalController extends Controller
     private function recordActivityAndNotify(OffboardingRequest $offboardingRequest, string $action, ?string $comment, ?User $actor = null, ?int $offboardingRequestApproverId = null): void
     {
         $actor ??= auth()->user();
+
+        // Single hook covering approve()/approveGroup()/confirmEmailApproval()
+        // (all funnel through finalizeGroupApproval(), which calls this with
+        // 'approved'), decline(), and removeHold() — see ActivityLog's own
+        // docblock for why this is this app's permanent, un-wipeable audit
+        // trail (unlike `OffboardingActivity` above, which `reset()` clears).
+        $activityLogAction = match ($action) {
+            'approved' => 'checklist_approved',
+            'declined' => 'checklist_declined',
+            'on_hold_removed' => 'checklist_hold_removed',
+            default => 'checklist_' . $action,
+        };
+
+        ActivityLog::record($activityLogAction, 'Checklist', $comment ?? ucfirst(str_replace('_', ' ', $action)), [
+            'user' => $actor,
+            'subject_type' => $offboardingRequestApproverId ? 'OffboardingRequestApprover' : 'OffboardingRequest',
+            'subject_id' => $offboardingRequestApproverId ?? $offboardingRequest->id,
+        ]);
 
         try {
             $offboardingRequest->activities()->create([

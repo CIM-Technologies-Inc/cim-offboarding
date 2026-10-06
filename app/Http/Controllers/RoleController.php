@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\ActivityLog;
 use App\Models\User;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -50,7 +51,12 @@ class RoleController extends Controller
             'name' => ['required', 'string', 'max:255', 'unique:roles,name'],
         ]);
 
-        Role::create(['name' => $validated['name'], 'guard_name' => 'web']);
+        $role = Role::create(['name' => $validated['name'], 'guard_name' => 'web']);
+
+        ActivityLog::record('role_created', 'Roles & Permissions', "Role \"{$role->name}\" created.", [
+            'subject_type' => 'Role',
+            'subject_id' => $role->id,
+        ]);
 
         return back()->with('success', "Role \"{$validated['name']}\" created.");
     }
@@ -65,7 +71,15 @@ class RoleController extends Controller
             return back()->with('error', "\"{$role->name}\" is a system role — its name can't be changed, since the app's access control is hardcoded to it.");
         }
 
+        $previousName = $role->name;
         $role->update(['name' => $validated['name']]);
+
+        ActivityLog::record('role_updated', 'Roles & Permissions', "Role renamed from \"{$previousName}\" to \"{$role->name}\".", [
+            'subject_type' => 'Role',
+            'subject_id' => $role->id,
+            'old_values' => ['name' => $previousName],
+            'new_values' => ['name' => $role->name],
+        ]);
 
         return back()->with('success', 'Role updated.');
     }
@@ -82,7 +96,14 @@ class RoleController extends Controller
             return back()->with('error', "Cannot delete \"{$role->name}\" — it is currently assigned to {$userCount} user(s). Reassign them first.");
         }
 
+        $roleName = $role->name;
+        $roleId = $role->id;
         $role->delete();
+
+        ActivityLog::record('role_deleted', 'Roles & Permissions', "Role \"{$roleName}\" deleted.", [
+            'subject_type' => 'Role',
+            'subject_id' => $roleId,
+        ]);
 
         return back()->with('success', 'Role deleted.');
     }
@@ -104,9 +125,18 @@ class RoleController extends Controller
         // NAMES, so passing raw ids here throws PermissionDoesNotExist for
         // every one of them. Resolving to actual Permission models first
         // sidesteps that entirely.
+        $previousPermissions = $role->permissions->pluck('name')->values()->all();
+
         $permissions = Permission::whereIn('id', $validated['permissions'] ?? [])->get();
 
         $role->syncPermissions($permissions);
+
+        ActivityLog::record('role_permissions_updated', 'Roles & Permissions', "Permissions updated for role \"{$role->name}\".", [
+            'subject_type' => 'Role',
+            'subject_id' => $role->id,
+            'old_values' => ['permissions' => $previousPermissions],
+            'new_values' => ['permissions' => $permissions->pluck('name')->values()->all()],
+        ]);
 
         return back()->with('success', "Permissions updated for \"{$role->name}\".");
     }

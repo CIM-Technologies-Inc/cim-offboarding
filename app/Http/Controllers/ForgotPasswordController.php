@@ -3,8 +3,8 @@
 namespace App\Http\Controllers;
 
 use App\Mail\PasswordResetMail;
+use App\Models\ActivityLog;
 use App\Models\PasswordResetRequest;
-use App\Models\SecurityLog;
 use App\Models\User;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -48,7 +48,11 @@ class ForgotPasswordController extends Controller
         $users = User::where('email', $validated['email'])->get();
 
         if ($users->isNotEmpty() && $users->every(fn (User $user) => $user->isBlocked())) {
-            $users->each(fn (User $user) => SecurityLog::record('password_reset_rejected_blocked', ['user_id' => $user->id]));
+            $users->each(fn (User $user) => ActivityLog::record('password_reset_rejected_blocked', 'Authentication', "Password reset requested for {$user->name}'s blocked account — rejected.", [
+                'user' => $user,
+                'status' => 'failed',
+                'failure_reason' => 'Account is blocked.',
+            ]));
 
             throw ValidationException::withMessages([
                 'email' => 'Your account is currently blocked due to multiple failed login attempts. Please contact the administrator to reactivate your account.',
@@ -57,12 +61,16 @@ class ForgotPasswordController extends Controller
 
         foreach ($users as $user) {
             if ($user->isBlocked()) {
-                SecurityLog::record('password_reset_rejected_blocked', ['user_id' => $user->id]);
+                ActivityLog::record('password_reset_rejected_blocked', 'Authentication', "Password reset requested for {$user->name}'s blocked account — rejected.", [
+                    'user' => $user,
+                    'status' => 'failed',
+                    'failure_reason' => 'Account is blocked.',
+                ]);
 
                 continue;
             }
 
-            SecurityLog::record('password_reset_requested', ['user_id' => $user->id]);
+            ActivityLog::record('password_reset_requested', 'Authentication', "{$user->name} requested a password reset link.", ['user' => $user]);
             $this->issueResetLink($user);
         }
 
@@ -129,6 +137,12 @@ class ForgotPasswordController extends Controller
         $resetRequest = PasswordResetRequest::find($id);
 
         if (! $resetRequest || ! $resetRequest->isValid() || ! Hash::check($token, $resetRequest->token)) {
+            ActivityLog::record('password_reset', 'Authentication', 'Password reset attempted with an invalid or expired link.', [
+                'user' => $resetRequest?->user,
+                'status' => 'failed',
+                'failure_reason' => 'Invalid or expired reset link.',
+            ]);
+
             return redirect()
                 ->route('password.reset', ['id' => $id, 'token' => $token])
                 ->with('error', 'This password reset link has expired. Please request a new password reset link.');
@@ -158,6 +172,8 @@ class ForgotPasswordController extends Controller
 
             PasswordResetRequest::where('user_id', $user->id)->whereNull('used_at')->update(['used_at' => now()]);
         });
+
+        ActivityLog::record('password_reset', 'Authentication', "{$user->name} reset their password via a forgot-password link.", ['user' => $user]);
 
         return redirect()->route('login')->with('success', 'Your password has been reset successfully. Please sign in with your new password.');
     }

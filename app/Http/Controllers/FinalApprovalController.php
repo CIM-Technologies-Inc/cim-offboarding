@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Mail\FinalApprovalCompletedMail;
 use App\Mail\FinalApprovalRequestMail;
+use App\Models\ActivityLog;
 use App\Models\EmailTemplate;
 use App\Models\Employee;
 use App\Models\FinalApprovalToken;
@@ -114,6 +115,11 @@ class FinalApprovalController extends Controller
             'action' => 'final_approval_sent',
             'status' => $offboardingRequest->status,
             'comment' => 'Sent to: ' . $signatoryEmployee->name . ' (using template: ' . self::EMAIL_TEMPLATE_NAME . ')',
+        ]);
+
+        ActivityLog::record('final_approval_sent', 'Notifications', "Final Approval request sent to {$signatoryEmployee->name}.", [
+            'subject_type' => 'OffboardingRequestFinalApproval',
+            'subject_id' => $finalApproval->id,
         ]);
 
         return redirect()
@@ -302,6 +308,12 @@ class FinalApprovalController extends Controller
                 'status' => $offboardingRequest->status,
                 'comment' => 'Final Approval given by: ' . $actor->name . " ({$via})"
                     . ($remarks ? ' — Remarks: ' . $remarks : ''),
+            ]);
+
+            ActivityLog::record('checklist_approved', 'Checklist', "Final Approval given by {$actor->name}.", [
+                'user' => $actor,
+                'subject_type' => 'OffboardingRequestFinalApproval',
+                'subject_id' => $locked->id,
             ]);
 
             return true;

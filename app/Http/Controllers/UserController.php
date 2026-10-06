@@ -3,9 +3,9 @@
 namespace App\Http\Controllers;
 
 use App\Mail\ChecklistSignatoryAnnouncementMail;
+use App\Models\ActivityLog;
 use App\Models\Employee;
 use App\Models\EmailTemplate;
-use App\Models\SecurityLog;
 use App\Models\User;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -134,6 +134,9 @@ class UserController extends Controller
         // took. This flag is only used to decide which message/modal the
         // admin sees below — it never changes what account ends up existing.
         $accountExisted = User::where('username', $employee->employee_code_digits)->exists();
+        $previousRoles = $accountExisted
+            ? User::where('username', $employee->employee_code_digits)->first()?->roles->pluck('name')->values()->all()
+            : [];
 
         $user = DB::transaction(function () use ($employee, $roles) {
             $user = User::findOrCreateEmployee($employee);
@@ -144,6 +147,13 @@ class UserController extends Controller
         });
 
         $label = collect($roles)->map(fn ($role) => ucfirst($role))->implode(' + ');
+
+        ActivityLog::record('user_role_updated', 'Users', "{$employee->name}'s role(s) set to \"{$label}\".", [
+            'subject_type' => 'User',
+            'subject_id' => $user->id,
+            'old_values' => ['roles' => $previousRoles],
+            'new_values' => ['roles' => $roles],
+        ]);
 
         $accountNote = $accountExisted
             ? 'This employee already has an existing user account.'
@@ -182,7 +192,7 @@ class UserController extends Controller
      * password-change mechanism needed. The temporary password is held
      * only in the local `$temporaryPassword` variable below: it is passed
      * to the email template render and the Mail object, and NEVER to
-     * `Log::`/`SecurityLog::record()`.
+     * `Log::`/`ActivityLog::record()`.
      *
      * Gated by its own `users.manage-status` permission, separate from
      * `users.manage-roles`, since this is a distinct security-relevant
@@ -214,9 +224,9 @@ class UserController extends Controller
 
         // Reactivation itself is already committed above, BEFORE any email
         // is attempted — an email failure below can never roll this back.
-        SecurityLog::record('account_reactivated', [
-            'user_id' => $user->id,
-            'performed_by_user_id' => auth()->id(),
+        ActivityLog::record('account_reactivated', 'Users', "{$employee->name}'s account was reactivated.", [
+            'subject_type' => 'User',
+            'subject_id' => $user->id,
         ]);
 
         $emailTemplate = ($validated['email_template_id'] ?? null)
@@ -245,9 +255,9 @@ class UserController extends Controller
         try {
             Mail::to($employee->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
 
-            SecurityLog::record('account_reactivation_email_sent', [
-                'user_id' => $user->id,
-                'performed_by_user_id' => auth()->id(),
+            ActivityLog::record('account_reactivation_email_sent', 'Notifications', "Reactivation notification emailed to {$employee->name}.", [
+                'subject_type' => 'User',
+                'subject_id' => $user->id,
             ]);
         } catch (\Throwable $e) {
             Log::error('Failed to send account reactivation email.', [
@@ -256,9 +266,11 @@ class UserController extends Controller
                 'exception' => $e->getMessage(),
             ]);
 
-            SecurityLog::record('account_reactivation_email_failed', [
-                'user_id' => $user->id,
-                'performed_by_user_id' => auth()->id(),
+            ActivityLog::record('account_reactivation_email_failed', 'Notifications', "Failed to email {$employee->name}'s reactivation notification.", [
+                'subject_type' => 'User',
+                'subject_id' => $user->id,
+                'status' => 'failed',
+                'failure_reason' => $e->getMessage(),
             ]);
 
             return back()->with('warning', "{$employee->name}'s account has been reactivated, but the notification email could not be sent. Please retry sending it.");

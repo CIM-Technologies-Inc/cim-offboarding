@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Mail\ChecklistSignatoryAnnouncementMail;
+use App\Models\ActivityLog;
 use App\Models\ChecklistItemScheduledSend;
 use App\Models\ChecklistTemplate;
 use App\Models\EmailTemplate;
@@ -195,6 +196,11 @@ class OffboardingRequestController extends Controller
             return [$offboardingRequest, $employeeUser, $isNewEmployeeAccount];
         });
 
+        ActivityLog::record('offboarding_request_created', 'Offboarding', "Offboarding request created for {$employee->name}.", [
+            'subject_type' => 'OffboardingRequest',
+            'subject_id' => $offboardingRequest->id,
+        ]);
+
         $successMessage = 'Offboarding request submitted.';
 
         try {
@@ -332,6 +338,11 @@ class OffboardingRequestController extends Controller
         });
 
         $offboardingRequest->refresh();
+
+        ActivityLog::record('offboarding_request_reset', 'Offboarding', "Offboarding request for {$employee->name} was reset and restarted.", [
+            'subject_type' => 'OffboardingRequest',
+            'subject_id' => $offboardingRequest->id,
+        ]);
 
         // Identical account-provisioning shape to `store()` — idempotent,
         // never promotes/downgrades an existing account, so re-running this
@@ -503,6 +514,12 @@ class OffboardingRequestController extends Controller
             'cancelled_by' => $admin->name,
             'cancelled_at' => now()->toDateTimeString(),
             'result' => 'success',
+        ]);
+
+        ActivityLog::record('offboarding_request_cancelled', 'Offboarding', "Offboarding request for {$employeeSnapshot['name']} was retracted.", [
+            'subject_type' => 'OffboardingRequest',
+            'subject_id' => $offboardingRequestId,
+            'new_values' => ['reason' => $reason],
         ]);
 
         // Reads the SAVED column (the same in-memory instance `update()`

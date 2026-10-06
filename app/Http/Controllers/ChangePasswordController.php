@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\ActivityLog;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\View\View;
@@ -42,6 +43,8 @@ class ChangePasswordController extends Controller
             'password' => $validated['password'],
             'must_change_password' => false,
         ]);
+
+        ActivityLog::record('password_change', 'Authentication', "{$user->name} set their password.", ['user' => $user]);
 
         $homeRoute = match (true) {
             $user->isAdmin() => 'dashboard',

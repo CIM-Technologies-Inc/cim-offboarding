@@ -95,6 +95,12 @@ class MenuHelper
                 'path' => '/users',
                 'permission' => 'users.view',
             ],
+            [
+                'icon' => 'pages',
+                'name' => 'Logs',
+                'path' => '/logs',
+                'permission' => 'logs.view',
+            ],
         ];
 
         return array_values(array_filter($items, function ($item) use ($user) {
