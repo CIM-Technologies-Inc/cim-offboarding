@@ -200,7 +200,7 @@
                         </template>
 
                         <template x-if="!hideStatusTab">
-                            <div class="mt-7 mb-4 flex items-center gap-6 border-b border-gray-200 dark:border-gray-800">
+                            <div class="mt-7 mb-4 flex flex-wrap items-center gap-6 border-b border-gray-200 dark:border-gray-800">
                                 <button type="button" @click="activeTab = 'status'"
                                     class="border-b-2 pb-3 text-sm font-medium transition-colors"
                                     :class="activeTab === 'status'

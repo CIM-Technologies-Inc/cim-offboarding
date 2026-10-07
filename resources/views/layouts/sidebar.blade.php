@@ -153,6 +153,7 @@
                                                 @foreach ($item['subItems'] as $subItem)
                                                     <li>
                                                         <a href="{{ $subItem['path'] }}" class="menu-dropdown-item"
+                                                            @click="$store.sidebar.setMobileOpen(false)"
                                                             :class="isActive('{{ $subItem['path'] }}') ?
                                                                 'menu-dropdown-item-active' :
                                                                 'menu-dropdown-item-inactive'">
@@ -183,6 +184,7 @@
                                     @else
                                         <!-- Simple Menu Item -->
                                         <a href="{{ $item['path'] }}" class="menu-item group"
+                                            @click="$store.sidebar.setMobileOpen(false)"
                                             :class="[
                                                 isActive('{{ $item['path'] }}') ? 'menu-item-active' :
                                                 'menu-item-inactive',
@@ -227,7 +229,3 @@
 
     </div>
 </aside>
-
-<!-- Mobile Overlay -->
-<div x-show="$store.sidebar.isMobileOpen" @click="$store.sidebar.setMobileOpen(false)"
-    class="fixed z-50 h-screen w-full bg-gray-900/50"></div>

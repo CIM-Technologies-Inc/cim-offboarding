@@ -16,6 +16,22 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
+        // Without this, Laravel can't tell a request reaching it through a
+        // reverse proxy/load balancer (the normal production setup —
+        // nginx/Apache terminating HTTPS in front of PHP-FPM) was actually
+        // HTTPS: it only sees whatever scheme the internal proxy-to-app
+        // hop uses, usually plain HTTP. That mismatch makes the session
+        // cookie unreliable across requests (set/recognized inconsistently
+        // depending on how `secure` gets resolved), which surfaces as
+        // exactly this symptom — a CSRF/session-expired (419) error on a
+        // form submit that works fine in local dev, where there's no
+        // proxy in front of it at all. `at: '*'` trusts whichever proxy
+        // the request actually came through (standard, safe default for
+        // "behind our own hosting provider's proxy, not a public one" —
+        // see Laravel's own docs on TrustProxies) and reads the standard
+        // X-Forwarded-* headers it sets.
+        $middleware->trustProxies(at: '*');
+
         $middleware->alias([
             // Kept as the app's own alias (Spatie-backed internally, see
             // EnsureUserHasRole) rather than Spatie's own `role` middleware,

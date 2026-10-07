@@ -3,6 +3,7 @@
 namespace App\Providers;
 
 use App\Listeners\RedirectMailInNonProduction;
+use App\Services\MailConfigurator;
 use Illuminate\Mail\Events\MessageSending;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider;
@@ -26,5 +27,13 @@ class AppServiceProvider extends ServiceProvider
         // set — see RedirectMailInNonProduction's own docblock. A no-op in
         // production, where that env var must stay unset.
         Event::listen(MessageSending::class, RedirectMailInNonProduction::class);
+
+        // Applies the admin-configured SMTP settings (if any, and only
+        // when active) over the .env-sourced mail config, on every
+        // request — see MailConfigurator's own docblock for why this
+        // needs no config:cache/restart, and why it safely no-ops before
+        // the smtp_settings table exists (e.g. during the very first
+        // `migrate` run).
+        MailConfigurator::apply();
     }
 }

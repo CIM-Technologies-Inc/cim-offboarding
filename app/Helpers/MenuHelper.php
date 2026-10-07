@@ -101,6 +101,12 @@ class MenuHelper
                 'path' => '/logs',
                 'permission' => 'logs.view',
             ],
+            [
+                'icon' => 'email',
+                'name' => 'Mail Settings',
+                'path' => '/smtp-settings',
+                'permission' => 'smtp-settings.view',
+            ],
         ];
 
         return array_values(array_filter($items, function ($item) use ($user) {

@@ -1495,7 +1495,7 @@
                             </template>
                         </div>
 
-                        <div class="shrink-0 flex items-center justify-end gap-3 border-t border-gray-100 p-6 pt-4 dark:border-gray-800 lg:px-8 lg:pb-8">
+                        <div class="shrink-0 flex flex-wrap items-center justify-end gap-3 border-t border-gray-100 p-6 pt-4 dark:border-gray-800 lg:px-8 lg:pb-8">
                             <!-- <button @click="open = false" type="button"
                                 class="flex justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03]">
                                 Close

@@ -105,7 +105,7 @@
                             <textarea name="remarks" x-model="remarksText" rows="3" placeholder="Add any remarks before giving Final Approval..."
                                 class="dark:bg-dark-900 w-full rounded-lg border border-gray-300 bg-transparent px-3 py-2 text-sm text-gray-800 placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30"></textarea>
                         </div>
-                        <div class="mt-4 flex items-center justify-end gap-3">
+                        <div class="mt-4 flex flex-wrap items-center justify-end gap-3">
                             <button @click="open = false" type="button"
                                 class="flex justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03]">
                                 Cancel

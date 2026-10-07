@@ -41,7 +41,7 @@
                 </p>
             </div>
         @else
-            <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3">
+            <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
                 <template x-for="group in groups" :key="group.id">
                     <div class="rounded-2xl border border-gray-200 bg-white p-5 transition-all duration-200 hover:-translate-y-1 hover:border-[#145a3a]/40 hover:shadow-lg dark:border-gray-800 dark:bg-white/[0.03] dark:hover:border-[#3aa876]/40">
                         <div class="flex items-start justify-between gap-2">

@@ -29,6 +29,7 @@ use App\Http\Controllers\FinalApprovalController;
 use App\Http\Controllers\ReportController;
 use App\Http\Controllers\SeparationTypeController;
 use App\Http\Controllers\LogController;
+use App\Http\Controllers\SmtpSettingController;
 
 // authentication pages
 Route::get('/signin', [AuthController::class, 'create'])->name('login');
@@ -446,6 +447,19 @@ Route::middleware('permission:users.manage-status')->group(function () {
 Route::middleware('permission:logs.view')->group(function () {
     Route::get('/logs', [LogController::class, 'index'])->name('logs.index');
     Route::get('/logs/{activityLog}', [LogController::class, 'show'])->name('logs.show');
+});
+
+// Mail/SMTP Settings — Admin by default; see SmtpSettingController's own
+// docblock for the password-safety rules enforced here.
+Route::middleware('permission:smtp-settings.view')->group(function () {
+    Route::get('/smtp-settings', [SmtpSettingController::class, 'edit'])->name('smtp-settings.edit');
+});
+Route::middleware('permission:smtp-settings.manage')->group(function () {
+    Route::put('/smtp-settings', [SmtpSettingController::class, 'update'])->name('smtp-settings.update');
+});
+Route::middleware('permission:smtp-settings.test')->group(function () {
+    Route::post('/smtp-settings/test-connection', [SmtpSettingController::class, 'testConnection'])->name('smtp-settings.test-connection');
+    Route::post('/smtp-settings/send-test-email', [SmtpSettingController::class, 'sendTestEmail'])->name('smtp-settings.send-test-email');
 });
 
 });

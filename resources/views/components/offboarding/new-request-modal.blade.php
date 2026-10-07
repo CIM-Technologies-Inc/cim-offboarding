@@ -66,7 +66,7 @@
 <x-ui.modal x-data="{ open: false }" @open-offboarding-request-modal.window="open = true"
     :isOpen="$offboardingRequestHasErrors"
     class="max-w-[830px]">
-    <div class="no-scrollbar relative w-full max-w-[830px] overflow-y-auto rounded-3xl bg-white p-4 dark:bg-gray-900 lg:p-11">
+    <div class="no-scrollbar relative max-h-[85vh] w-full max-w-[830px] overflow-y-auto rounded-3xl bg-white p-4 dark:bg-gray-900 lg:p-11">
         <div class="px-2 pr-14">
             <h4 class="mb-2 text-2xl font-semibold text-gray-800 dark:text-white/90">
                 New Offboarding Request
@@ -109,7 +109,7 @@
                 submitting = true;
             }"
             @csrf
-            <div class="custom-scrollbar h-[458px] overflow-y-auto p-2">
+            <div class="custom-scrollbar max-h-[45vh] overflow-y-auto p-2 sm:h-[458px] sm:max-h-none">
                 <div class="grid grid-cols-1 gap-x-6 gap-y-5 lg:grid-cols-2">
                     <div class="col-span-2 space-y-5"
                         x-data="{
@@ -651,7 +651,7 @@
 
                 </div>
             </div>
-            <div class="flex items-center gap-3 px-2 mt-6 lg:justify-end">
+            <div class="flex flex-wrap items-center gap-3 px-2 mt-6 lg:justify-end">
                 <button @click="open = false; resetForm()" type="button" :disabled="submitting"
                     class="flex w-full justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03] sm:w-auto">
                     Close
