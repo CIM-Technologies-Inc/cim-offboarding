@@ -50,7 +50,7 @@
                                 'text-blue-600 dark:text-blue-400': item.status === 'in_progress',
                                 'text-gray-400': item.status === 'pending'
                             }"
-                            x-text="{ completed: 'Completed', on_hold: 'On Hold', declined: 'Declined', in_progress: 'In Progress', pending: 'Pending' }[item.status]"></span>
+                            x-text="{ completed: 'Cleared', on_hold: 'On Hold', declined: 'Declined', in_progress: 'In Progress', pending: 'Pending' }[item.status]"></span>
                     </div>
                     {{-- Never shown for 'pending' — `item.timestamp` is only ever
                          populated server-side for 'completed'/'on_hold'. --}}

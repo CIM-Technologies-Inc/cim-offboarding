@@ -384,7 +384,28 @@ class ApprovalController extends Controller
                                 // above) — their access is for tracking their
                                 // own employee's progress, never for taking
                                 // over the work itself.
-                                'canTakeOver' => ! $editable && ! $isChecked && ! $onHold && ! $isMonitoring && $assignment->status !== 'on_hold',
+                                //
+                                // Never offered on a "Use Task Assignee as
+                                // Clearance Signatory" checklist (e.g. the
+                                // Final Pay Checklist) either, regardless of
+                                // who's viewing it — every item on this
+                                // checklist kind already has its own
+                                // genuine, individually responsible Task
+                                // Assignee (via the template's own
+                                // `signatory_id` or a live per-item
+                                // reassignment), gated separately by
+                                // `editable`/`isOwnItem` above and
+                                // completely unaffected by this flag. This
+                                // only removes the PEER take-over path for
+                                // this checklist kind — one Task Assignee
+                                // grabbing a DIFFERENT Task Assignee's own
+                                // item — never the real assignee's own
+                                // ability to process their own item. Keyed
+                                // off the template's own configuration
+                                // flag, not its title, so this applies to
+                                // every such checklist, not just Final Pay.
+                                'canTakeOver' => ! $editable && ! $isChecked && ! $onHold && ! $isMonitoring && $assignment->status !== 'on_hold'
+                                    && ! $template?->use_task_assignee_as_signatory,
                                 'clearedByName' => $isChecked ? $progress?->checkedBy?->name : null,
                                 'clearedByCode' => $isChecked ? $checkedByEmployee?->employee_code : null,
                                 'clearedAt' => $isChecked ? $progress?->checked_at?->format('M d, Y g:i A') : null,
@@ -504,8 +525,24 @@ class ApprovalController extends Controller
         // existing/new account; purely a view-layer choice, toggled below.
         $combineChecklists = (bool) ($user->combine_assigned_checklists ?? true);
 
-        $approvals = $this->groupIntoCombinedApprovals($rows, $combineChecklists)
-            ->concat($this->buildGeneralSignatoryApprovals($user))
+        $combinedChecklistCards = $this->groupIntoCombinedApprovals($rows, $combineChecklists);
+        $generalSignatoryCards = $this->buildGeneralSignatoryApprovals($user);
+
+        // Merges a General Signatory card into a checklist card's own
+        // `checklists` tab breakdown when (and only when) the SAME employee
+        // owns both for the SAME offboarding request and this user has
+        // Combined Checklist enabled — see mergeGeneralSignatoryIntoCombinedCards()'s
+        // own docblock for why General Signatory needed this as a separate
+        // step rather than joining groupIntoCombinedApprovals()'s own
+        // grouping directly.
+        [$combinedChecklistCards, $generalSignatoryCards] = $this->mergeGeneralSignatoryIntoCombinedCards(
+            $combinedChecklistCards,
+            $generalSignatoryCards,
+            $combineChecklists
+        );
+
+        $approvals = $combinedChecklistCards
+            ->concat($generalSignatoryCards)
             ->concat($this->buildFinalApprovalApprovals($user));
 
         // Filter dropdown options, dynamically sourced from whatever's
@@ -542,7 +579,12 @@ class ApprovalController extends Controller
             $approvals = $approvals->filter(fn (array $approval) => match ($statusFilter) {
                 'pending' => $approval['displayStatus'] === 'pending',
                 'in_progress' => in_array($approval['displayStatus'], ['in_progress', 'assigned'], true),
-                'completed' => $approval['displayStatus'] === 'ready_for_approval',
+                // 'for_approval' (a task-less General Signatory card, see
+                // buildGeneralSignatoryApprovals()'s own docblock) buckets
+                // alongside 'ready_for_approval' here — both mean the same
+                // thing to this filter: nothing left to work through,
+                // ready for a decision.
+                'completed' => in_array($approval['displayStatus'], ['ready_for_approval', 'for_approval'], true),
                 'due' => $approval['isOverdue'],
                 default => true,
             });
@@ -653,6 +695,15 @@ class ApprovalController extends Controller
                 return [
                     'id' => 'general-signatory-' . $assignment->id,
                     'kind' => 'general_signatory',
+                    // Internal-only — never read by this card's own standalone
+                    // modal. Lets index()'s merge step match this assignment's
+                    // owning employee against a checklist card's own
+                    // approverEmployeeId (same employee, same offboarding
+                    // request), and gives the merge step a plain numeric id to
+                    // build a namespaced tab key from. See
+                    // mergeGeneralSignatoryIntoCombinedCards().
+                    'approverEmployeeId' => $generalSignatory->clearance_signatory_id,
+                    'rawAssignmentId' => $assignment->id,
                     'offboardingRequestId' => $request->id,
                     'name' => $request->employee->name,
                     // Same discrete name parts as the checklist rows above —
@@ -664,16 +715,27 @@ class ApprovalController extends Controller
                     'department' => $request->employee->department,
                     'designation' => $request->employee->designation,
                     'status' => $request->status,
-                    // Always 'pending' — this card only ever shows while
-                    // THIS General Signatory's own action on it is pending
-                    // (see the `where('status', 'pending')` query above),
-                    // matching every other approval card's queue badge.
-                    // Deliberately NOT the request's own overall processing
-                    // status — see `requestStatus`/`requestStatusLabel`
-                    // below for that, a separate field so this queue badge
-                    // (shared by every approval kind on this page) is never
-                    // affected by adding it.
-                    'displayStatus' => $assignment->status === 'on_hold' ? 'on_hold' : 'pending',
+                    // 'on_hold' / 'pending' / 'for_approval' — this card
+                    // only ever shows while THIS General Signatory's own
+                    // action on it is pending (see the `where('status',
+                    // 'pending')` query above; once genuinely approved it
+                    // leaves this queue entirely, so there's no 'approved'
+                    // case to handle here), matching every other approval
+                    // card's queue badge. Deliberately NOT the request's own
+                    // overall processing status — see `requestStatus`/
+                    // `requestStatusLabel` below for that, a separate field
+                    // so this queue badge (shared by every approval kind on
+                    // this page) is never affected by adding it.
+                    //
+                    // 'for_approval' (see $statusBadges in index.blade.php)
+                    // replaces 'pending' specifically when this General
+                    // Signatory has no task list at all — there is nothing
+                    // to work through first, so showing the same "Pending"
+                    // badge a real task list earns is misleading; they can
+                    // go straight to approving.
+                    'displayStatus' => $assignment->status === 'on_hold'
+                        ? 'on_hold'
+                        : ($generalSignatory->tasks->isEmpty() ? 'for_approval' : 'pending'),
                     // The offboarding request's own current overall
                     // processing status (Pending/In Progress/Overdue/
                     // Completed/etc.) — see `OffboardingRequest::displayStatus()`,
@@ -745,6 +807,99 @@ class ApprovalController extends Controller
                 ];
             })
             ->values();
+    }
+
+    /**
+     * Folds a General Signatory card into the SAME combined checklist card
+     * as every other checklist the SAME employee owns on the SAME
+     * offboarding request — i.e. extends "Combined Checklist" to cover
+     * General Signatory too, not just Clearance Signatory/Immediate Head/
+     * Department Head (those three already share one mechanism —
+     * `OffboardingRequestApprover.employee_id` — and were already being
+     * combined by `groupIntoCombinedApprovals()`'s own grouping key before
+     * this method ever runs).
+     *
+     * General Signatory can't join that SAME grouping step directly: it has
+     * no `employee_id` of its own (the owning employee is two relations
+     * away — `generalSignatory->clearance_signatory_id`), no per-item
+     * checklist at all (see `GeneralSignatoryTask`'s own docblock — Approve/
+     * Decline/Remove-Hold are single whole-assignment actions, there is
+     * nothing to "Save Progress" on), and is queried from a completely
+     * different table (`offboarding_request_general_signatories`) than the
+     * `OffboardingRequestApprover` rows `$rows`/`groupIntoCombinedApprovals()`
+     * operate on. Running it through this separate, later step — instead of
+     * trying to force it into the same `$rows`/grouping pipeline — keeps
+     * every one of those real structural differences from ever leaking into
+     * `groupIntoCombinedApprovals()`, which stays exactly as it was.
+     *
+     * When `$combine` is false, both collections are returned completely
+     * untouched — every card stays separate, identical to today.
+     *
+     * @param  \Illuminate\Support\Collection<int, array<string, mixed>>  $combinedChecklistCards
+     * @param  \Illuminate\Support\Collection<int, array<string, mixed>>  $generalSignatoryCards
+     * @return array{0: \Illuminate\Support\Collection<int, array<string, mixed>>, 1: \Illuminate\Support\Collection<int, array<string, mixed>>}
+     */
+    private function mergeGeneralSignatoryIntoCombinedCards($combinedChecklistCards, $generalSignatoryCards, bool $combine)
+    {
+        if (! $combine) {
+            return [$combinedChecklistCards, $generalSignatoryCards];
+        }
+
+        $consumedGeneralSignatoryIds = [];
+
+        $mergedChecklistCards = $combinedChecklistCards->map(function (array $card) use ($generalSignatoryCards, &$consumedGeneralSignatoryIds) {
+            // Same offboarding request AND the same owning employee — never
+            // looser than that (never merely the same offboardee, the same
+            // Clearance Signatory group, or the same task assignee). A
+            // headless checklist card (no owning employee at all — see
+            // `groupIntoCombinedApprovals()`'s own `$useGroupRoutes`
+            // docblock) can never match here either, since its
+            // `approverEmployeeId` is null and the comparison below requires
+            // a real, non-null match on both sides.
+            $match = $card['approverEmployeeId'] === null
+                ? null
+                : $generalSignatoryCards->first(
+                    fn (array $gs) => $gs['offboardingRequestId'] === $card['offboardingRequestId']
+                        && $gs['approverEmployeeId'] === $card['approverEmployeeId']
+                );
+
+            if (! $match) {
+                return $card;
+            }
+
+            $consumedGeneralSignatoryIds[] = $match['id'];
+
+            $card['checklists'][] = [
+                'kind' => 'general_signatory',
+                // Namespaced ('gs-' prefix) — a General Signatory assignment
+                // id and an OffboardingRequestApprover id come from
+                // different tables and could otherwise collide as an
+                // Alpine :key within the same tab bar.
+                'assignmentId' => 'gs-' . $match['rawAssignmentId'],
+                'title' => 'Signatory Checklist',
+                'displayStatus' => $match['displayStatus'],
+                'generalSignatoryTasks' => $match['generalSignatoryTasks'],
+                'submitUrl' => $match['submitUrl'],
+                'declineUrl' => $match['declineUrl'],
+                'onHoldRemoveUrl' => $match['onHoldRemoveUrl'],
+                'isOnHold' => $match['isOnHold'],
+                'declineReason' => $match['declineReason'],
+                'declinedAt' => $match['declinedAt'],
+                'onHoldRemovedAt' => $match['onHoldRemovedAt'],
+                'onHoldRemovedByName' => $match['onHoldRemovedByName'],
+                'onHoldRemovalReason' => $match['onHoldRemovalReason'],
+                'clearanceSigningDueAt' => $match['clearanceSigningDueAt'],
+                'isClearanceSigningOverdue' => $match['isClearanceSigningOverdue'],
+            ];
+
+            return $card;
+        });
+
+        $remainingGeneralSignatoryCards = $generalSignatoryCards->reject(
+            fn (array $gs) => in_array($gs['id'], $consumedGeneralSignatoryIds, true)
+        );
+
+        return [$mergedChecklistCards, $remainingGeneralSignatoryCards];
     }
 
     /**
@@ -1092,6 +1247,47 @@ class ApprovalController extends Controller
                         ? route('approvals.group.save-progress', ['offboardingRequest' => $first['offboardingRequestId'], 'employee' => $first['approverEmployeeId']])
                         : route('approvals.save-progress', $first['assignmentId']),
                     'timeline' => $first['timeline'],
+                    // Per-checklist breakdown for the new tab/wizard UI —
+                    // one entry per member checklist, ALWAYS using the
+                    // single-assignment routes (never `approvals.group.*`),
+                    // so a card combining several checklists for the same
+                    // approver can still act on exactly one of them at a
+                    // time (Save Progress/Decline/Approve), the same way
+                    // "Separate Checklist" mode and a headless card already
+                    // do today — see this method's own docblock. Purely
+                    // additive: every field above is unchanged, and a card
+                    // with only one member checklist simply carries a
+                    // `checklists` array of length 1 that the modal never
+                    // needs to render tabs for.
+                    'checklists' => $group->map(fn (array $row) => [
+                        'assignmentId' => $row['assignmentId'],
+                        'templateId' => $row['checklistTemplateId'],
+                        'title' => $row['checklistTemplates'][0] ?? 'Checklist',
+                        'displayStatus' => $this->aggregateDisplayStatus(collect([$row])),
+                        'checklistItems' => $row['checklistItems'],
+                        'allItemsCompleted' => $row['allItemsCompleted'],
+                        'isOnHold' => $row['rowStatus'] === 'on_hold',
+                        'declineReason' => $row['declineReasonRaw'],
+                        'declinedAt' => $row['declinedAtRaw'],
+                        'onHoldRemovedAt' => $row['onHoldRemovedAtRaw'],
+                        'onHoldRemovedByName' => $row['onHoldRemovedByNameRaw'],
+                        'onHoldRemovalReason' => $row['onHoldRemovalReasonRaw'],
+                        'isPrimaryApprover' => $row['isPrimaryApprover'],
+                        'isAssignedApprover' => $row['isAssignedApprover'],
+                        'isMonitoring' => $row['isMonitoring'],
+                        'isDelegate' => $row['isDelegate'],
+                        'usesPerItemApprovers' => $row['usesPerItemApprovers'],
+                        'isImmediateHeadChecklist' => $row['isImmediateHeadChecklist'],
+                        'isCorePrimaryChecklist' => $row['isCorePrimaryChecklist'],
+                        'isOverdue' => $row['isOverdue'],
+                        'hasReachedDueDate' => $row['dueDateReached'],
+                        'reassignEligibleEmployees' => $row['poolOption']['assignableEmployees'] ?? [],
+                        'saveProgressUrl' => route('approvals.save-progress', $row['assignmentId']),
+                        'approveUrl' => route('approvals.approve', $row['assignmentId']),
+                        'declineUrl' => route('approvals.decline', $row['assignmentId']),
+                        'onHoldRemoveUrl' => route('approvals.remove-hold', $row['assignmentId']),
+                        'reassignChecklistUrl' => route('approvals.reassign-checklist', $row['assignmentId']),
+                    ])->values()->all(),
                 ];
             })
             ->values();
@@ -2377,8 +2573,11 @@ class ApprovalController extends Controller
                 // future (reopening this) just as easily as it can leave it
                 // unchanged; re-derived fresh here so the card's button
                 // reacts immediately, same convention as every other field
-                // in this response. See `OffboardingRequest::isBeforeLastWorkingDay()`.
-                'canRetractOffboarding' => $offboardingRequest->isBeforeLastWorkingDay(),
+                // in this response. See `OffboardingRequest::isBeforeLastWorkingDay()`
+                // and `hasAnyApprovedChecklist()` — same combined rule
+                // `OffboardeeController::index()`'s initial page load uses.
+                'canRetractOffboarding' => $offboardingRequest->isBeforeLastWorkingDay()
+                    && ! $offboardingRequest->hasAnyApprovedChecklist(),
                 'canBulkExtendDue' => $freshApplicable->isNotEmpty(),
                 'extendDueChecklists' => $freshApplicable->map(fn (OffboardingRequestApprover $approver) => [
                     'title' => $approver->checklistTemplate?->title,

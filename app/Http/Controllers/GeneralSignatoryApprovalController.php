@@ -408,7 +408,7 @@ class GeneralSignatoryApprovalController extends Controller
             'user_id' => $actor?->id,
             'action' => 'general_signatory_approved',
             'status' => $offboardingRequest->status,
-            'comment' => 'Cleared by General Signatory: ' . $signatoryName . ($remarks ? '. Remarks: ' . $remarks : ''),
+            'comment' => 'Cleared by Signatory: ' . $signatoryName . ($remarks ? '. Remarks: ' . $remarks : ''),
         ]);
 
         ActivityLog::record('checklist_approved', 'Checklist', "General Signatory clearance approved by {$signatoryName}.", [
@@ -457,7 +457,7 @@ class GeneralSignatoryApprovalController extends Controller
             'user_id' => $actor?->id,
             'action' => 'general_signatory_declined',
             'status' => $offboardingRequest->status,
-            'comment' => 'Declined by General Signatory: ' . $signatoryName . '. Reason: ' . $reason,
+            'comment' => 'Declined by Signatory: ' . $signatoryName . '. Reason: ' . $reason,
         ]);
 
         ActivityLog::record('checklist_declined', 'Checklist', "General Signatory clearance declined by {$signatoryName}.", [
@@ -511,7 +511,7 @@ class GeneralSignatoryApprovalController extends Controller
             'user_id' => $actor->id,
             'action' => 'general_signatory_on_hold_removed',
             'status' => $offboardingRequest->status,
-            'comment' => 'On Hold removed by General Signatory: ' . $signatoryName . '. Reason: ' . $reason,
+            'comment' => 'On Hold removed by Signatory: ' . $signatoryName . '. Reason: ' . $reason,
         ]);
 
         ActivityLog::record('checklist_hold_removed', 'Checklist', "Hold removed on General Signatory clearance for {$signatoryName}.", [

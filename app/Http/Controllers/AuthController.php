@@ -19,7 +19,7 @@ class AuthController extends Controller
         if (Auth::check()) {
             $user = Auth::user();
 
-            return redirect()->route($user->must_change_password ? 'password.change' : $this->homeRouteFor($user));
+            return redirect()->route($user->must_change_password ? 'password.change' : $user->defaultHomeRouteName());
         }
 
         return view('pages.auth.signin', ['title' => 'Sign In']);
@@ -170,21 +170,7 @@ class AuthController extends Controller
             return redirect()->route('password.change');
         }
 
-        return redirect()->intended(route($this->homeRouteFor($user)));
-    }
-
-    /**
-     * The approver role can't see the admin dashboard, so it lands on
-     * Approvals instead; the Employee role can't see either, so it lands on
-     * its own dashboard.
-     */
-    private function homeRouteFor(User $user): string
-    {
-        return match (true) {
-            $user->isAdmin() => 'dashboard',
-            $user->isEmployee() => 'employee.dashboard',
-            default => 'approvals.index',
-        };
+        return redirect()->intended(route($user->defaultHomeRouteName()));
     }
 
     public function destroy(Request $request): RedirectResponse

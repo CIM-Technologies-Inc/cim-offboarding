@@ -72,6 +72,10 @@
     <x-common.preloader/>
     {{-- preloader end --}}
 
+    @if (session('impersonator_id'))
+        <x-common.impersonation-banner />
+    @endif
+
     <div class="min-h-screen xl:flex">
         @include('layouts.backdrop')
         @include('layouts.sidebar')

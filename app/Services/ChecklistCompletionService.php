@@ -2,7 +2,9 @@
 
 namespace App\Services;
 
+use App\Http\Controllers\ClearanceFormController;
 use App\Mail\ChecklistSignatoryAnnouncementMail;
+use App\Mail\FinalPayCompletionMail;
 use App\Models\ChecklistTemplate;
 use App\Models\EmailTemplate;
 use App\Models\GeneralSignatory;
@@ -507,6 +509,19 @@ class ChecklistCompletionService
      * this specifically announces the offboarding process itself finishing).
      * Same recipients/never-lets-a-mail-failure-fail-the-caller convention as
      * `ApprovalController::sendDeclineNotification()`.
+     *
+     * Also attaches the combined Clearance Form + Offboarding Timeline PDF
+     * (see `ClearanceFormController::generateCompletionPdfBytes()`) — a
+     * permanent, printable record of the whole completed process, generated
+     * exactly once per call (never per-recipient; nothing in it is
+     * recipient-specific) and reused for every recipient below. Only ever
+     * called from `checkFinalPayCompletion()`'s own `$justCompleted` guard
+     * — the single call that actually won the completion race — so this
+     * never runs more than once per genuine completion, and the PDF is
+     * never generated/attached twice for the same request. A PDF generation
+     * failure must never block the notification itself: on failure, every
+     * recipient below falls back to the original, attachment-less
+     * `ChecklistSignatoryAnnouncementMail` instead.
      */
     private function sendFinalPayCompletionNotification(OffboardingRequest $offboardingRequest): void
     {
@@ -540,6 +555,17 @@ class ChecklistCompletionService
 
         $completedAt = $offboardingRequest->completed_at?->format('M d, Y g:i A') ?? now()->format('M d, Y g:i A');
 
+        $pdfBytes = null;
+
+        try {
+            $pdfBytes = app(ClearanceFormController::class)->generateCompletionPdfBytes($offboardingRequest);
+        } catch (\Throwable $e) {
+            Log::error('Failed to generate the combined Clearance Form + Timeline PDF for the Final Pay Checklist completion notification — sending without it.', [
+                'offboarding_request_id' => $offboardingRequest->id,
+                'exception' => $e->getMessage(),
+            ]);
+        }
+
         foreach ($recipients as $recipient) {
             try {
                 [$subject, $body] = $emailTemplate->render(
@@ -555,7 +581,11 @@ class ChecklistCompletionService
                     completedAt: $completedAt,
                 );
 
-                Mail::to($recipient->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+                $mailable = $pdfBytes !== null
+                    ? new FinalPayCompletionMail($subject, $body, $pdfBytes, $offboardee->name)
+                    : new ChecklistSignatoryAnnouncementMail($subject, $body);
+
+                Mail::to($recipient->email)->send($mailable);
             } catch (\Throwable $e) {
                 Log::error('Failed to send Final Pay Checklist completion notification.', [
                     'offboarding_request_id' => $offboardingRequest->id,

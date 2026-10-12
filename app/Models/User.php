@@ -342,4 +342,25 @@ class User extends Authenticatable
         ]);
     }
 
+    /**
+     * The single source of truth for "where does this account land after
+     * authenticating" — used by `AuthController::store()` for a normal
+     * login AND by `ImpersonationController::start()` so "Login As User"
+     * lands an admin on exactly the same page the employee themselves
+     * would see, per the role-priority rule: the approver role can't see
+     * the admin dashboard, so it lands on Approvals instead; the Employee
+     * role can't see either, so it lands on its own dashboard. A user
+     * holding multiple roles (e.g. Admin + Approver) still gets the
+     * highest-priority match, same as every other multi-role check in
+     * this app.
+     */
+    public function defaultHomeRouteName(): string
+    {
+        return match (true) {
+            $this->isAdmin() => 'dashboard',
+            $this->isEmployee() => 'employee.dashboard',
+            default => 'approvals.index',
+        };
+    }
+
 }

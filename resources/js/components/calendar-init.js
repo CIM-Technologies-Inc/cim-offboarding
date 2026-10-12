@@ -44,22 +44,37 @@ export function calendarInit() {
       eventClick: calendarEventClick,
       displayEventTime: false,
       eventContent(eventInfo) {
+        // A retracted (status === 'cancelled') offboarding request is a
+        // read-only historical record — see
+        // `OffboardingRequestController::cancel()`'s own docblock — so the
+        // event turns red (the SAME `fc-bg-danger` class already defined in
+        // app.css for other calendar event types, just never used by this
+        // one until now) and replaces the Notice Period badge below with a
+        // plain "Retracted" badge, rather than showing a Notice Period
+        // status that no longer means anything once the request itself has
+        // been retracted.
+        const isRetracted = eventInfo.event.extendedProps.status === 'cancelled';
+
         // Notice Period indicator — a small colored badge next to the
         // offboardee's name so Admin/HR can spot an approaching, due, or
         // already-past Notification Date at a glance without opening the
         // event. Based on the SAVED `notificationDate`/`noticePeriodStatus`
         // (see `CalendarController::index()`), never recalculated here.
+        // Skipped entirely for a retracted request (see `isRetracted` above).
         const noticePeriodStatus = eventInfo.event.extendedProps.noticePeriodStatus;
         const badgesByStatus = {
           upcoming: '<span class="ml-1 shrink-0 rounded-full bg-blue-100 px-1.5 py-0.5 text-[9px] font-semibold leading-none text-blue-700">Notice: Upcoming</span>',
           today: '<span class="ml-1 shrink-0 rounded-full bg-orange-100 px-1.5 py-0.5 text-[9px] font-semibold leading-none text-orange-700">Notice: Today</span>',
           past: '<span class="ml-1 shrink-0 rounded-full bg-gray-200 px-1.5 py-0.5 text-[9px] font-semibold leading-none text-gray-600">Notice: Past</span>',
         };
-        const noticeBadge = badgesByStatus[noticePeriodStatus] ?? '';
+        const retractedBadge = '<span class="ml-1 shrink-0 rounded-full bg-error-100 px-1.5 py-0.5 text-[9px] font-semibold leading-none text-error-700">Retracted</span>';
+        const noticeBadge = isRetracted ? retractedBadge : (badgesByStatus[noticePeriodStatus] ?? '');
+
+        const colorClass = isRetracted ? 'fc-bg-danger' : 'fc-bg-offboarding';
 
         return {
           html: `
-            <div class="event-fc-color flex items-center fc-event-main fc-bg-offboarding p-1 rounded-sm cursor-pointer">
+            <div class="event-fc-color flex items-center fc-event-main ${colorClass} p-1 rounded-sm cursor-pointer">
               <div class="fc-daygrid-event-dot"></div>
               <div class="fc-event-title">${eventInfo.event.title}</div>
               ${noticeBadge}

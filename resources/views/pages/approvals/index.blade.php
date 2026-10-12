@@ -57,6 +57,12 @@
                 'on_hold' => ['label' => 'On Hold', 'class' => 'bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400'],
                 'overdue' => ['label' => 'Overdue', 'class' => 'bg-orange-50 text-orange-700 dark:bg-orange-500/15 dark:text-orange-400'],
                 'ready_for_approval' => ['label' => 'Ready for Approval', 'class' => 'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]'],
+                // A General Signatory with no task list at all (see
+                // `ApprovalController::buildGeneralSignatoryApprovals()`'s
+                // own docblock) — same color as 'ready_for_approval' (both
+                // mean "nothing left to work through, just approve"), own
+                // label to match the exact wording asked for on this page.
+                'for_approval' => ['label' => 'For Approval', 'class' => 'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]'],
             ];
 
             // Filter dropdown/chip labels for the Status filter — deliberately
@@ -147,6 +153,35 @@
                 hasMatches() {
                     const query = this.search.trim().toLowerCase();
                     return query === '' || this.haystacks.some((haystack) => haystack.includes(query));
+                },
+                // Card View / List View — same session-only (not localStorage)
+                // preference convention as `pages/offboardees/index.blade.php`'s
+                // own toggle: remembered for this browser tab/session only,
+                // reset on a fresh session, and forced to List View past the
+                // same 20-card threshold that page uses. A separate storage
+                // key ('approvalsViewMode') keeps this independent of that
+                // other page's own remembered preference.
+                viewMode: (() => {
+                    try {
+                        return sessionStorage.getItem('approvalsViewMode') || 'card';
+                    } catch (e) {
+                        return 'card';
+                    }
+                })(),
+                totalCount: {{ $approvals->count() }},
+                isForcedListView() {
+                    return this.totalCount >= 20;
+                },
+                effectiveView() {
+                    return this.isForcedListView() ? 'list' : this.viewMode;
+                },
+                setViewMode(mode) {
+                    this.viewMode = mode;
+                    try {
+                        sessionStorage.setItem('approvalsViewMode', mode);
+                    } catch (e) {
+                        // ignore — view just won't persist across navigations
+                    }
                 },
                 // Live 5-days-before / on-or-after Clearance Signing Due
                 // Date urgency for every card's Clearance Signing Due row
@@ -287,6 +322,41 @@
                             </form>
                         </div>
                     </div>
+
+                    <!-- Card View / List View toggle — hidden entirely once the
+                         20-card threshold forces List View, since there's no
+                         real choice to offer at that point (see
+                         `isForcedListView()`/`effectiveView()` above). Same
+                         markup/behavior as `pages/offboardees/index.blade.php`'s
+                         own toggle. -->
+                    <div class="flex items-center gap-1 rounded-lg border border-gray-300 bg-white p-1 dark:border-gray-700 dark:bg-gray-900"
+                        x-show="!isForcedListView()" x-cloak>
+                        <button type="button" @click="setViewMode('card')"
+                            :class="viewMode === 'card' ? 'bg-[#145a3a] text-white' : 'text-gray-500 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-white/[0.03]'"
+                            class="flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium transition-colors"
+                            :aria-pressed="viewMode === 'card'" title="Card View">
+                            <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <rect x="2.5" y="2.5" width="6.5" height="6.5" rx="1.25" stroke="currentColor" stroke-width="1.5" />
+                                <rect x="11" y="2.5" width="6.5" height="6.5" rx="1.25" stroke="currentColor" stroke-width="1.5" />
+                                <rect x="2.5" y="11" width="6.5" height="6.5" rx="1.25" stroke="currentColor" stroke-width="1.5" />
+                                <rect x="11" y="11" width="6.5" height="6.5" rx="1.25" stroke="currentColor" stroke-width="1.5" />
+                            </svg>
+                            <span class="hidden sm:inline">Card</span>
+                        </button>
+                        <button type="button" @click="setViewMode('list')"
+                            :class="viewMode === 'list' ? 'bg-[#145a3a] text-white' : 'text-gray-500 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-white/[0.03]'"
+                            class="flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium transition-colors"
+                            :aria-pressed="viewMode === 'list'" title="List View">
+                            <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M3.5 5.5h13M3.5 10h13M3.5 14.5h13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                            </svg>
+                            <span class="hidden sm:inline">List</span>
+                        </button>
+                    </div>
+                    <span x-show="isForcedListView()" x-cloak
+                        class="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-500 dark:bg-white/[0.03] dark:text-gray-400">
+                        List View (automatic for 20+ requests)
+                    </span>
                 </div>
 
                 <div x-show="!hasMatches()" class="rounded-2xl border border-gray-200 bg-white p-10 text-center dark:border-gray-800 dark:bg-white/[0.03]">
@@ -295,15 +365,55 @@
                     </p>
                 </div>
 
-            <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+            <div :class="effectiveView() === 'card'
+                    ? 'grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3'
+                    : 'flex flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03]'">
                 @foreach ($approvals as $approval)
                     @php
                         $badge = $statusBadges[$approval['displayStatus']] ?? $statusBadges['pending'];
+                        // Only a regular checklist card (no "kind", i.e.
+                        // neither General Signatory nor Final Approval) has
+                        // its own "View Checklist" button/modal at all (see
+                        // the default branch further down this same card).
+                        // Clicking THAT kind of card now opens the Checklist
+                        // itself, the exact same event/payload its own
+                        // "View Checklist" button uses, so the two are
+                        // always identical. A General Signatory/Final
+                        // Approval card has no such button at all (it has
+                        // "Review and Approve" instead, a different action
+                        // entirely) and keeps its original click behavior —
+                        // opening the Offboarding Status/Timeline modal —
+                        // completely unchanged. Decided once in plain PHP so
+                        // the click attribute below stays a single, plain
+                        // Blade-level @js() ternary, not a hand-built JS
+                        // string assembled in PHP.
+                        $isChecklistKind = ! in_array($approval['kind'] ?? null, ['general_signatory', 'final_approval'], true);
+                        // "View Checklist Status" vs "Checklist Status" — the
+                        // viewer is a plain Task Assignee (only tasked with
+                        // checking off item(s), no signing authority on this
+                        // card) when they're assigned but hold none of the
+                        // signatory-type roles below; every other viewer
+                        // (Clearance Signatory/Immediate Head — both
+                        // `isPrimaryApprover`/a delegate standing in for one
+                        // — General Signatory merged into this same card, or
+                        // a Group Head merely `isMonitoring`) gets the
+                        // shorter label since they're the one being asked to
+                        // sign off, not just complete a task.
+                        $isTaskAssigneeViewer = ! empty($approval['isAssignedApprover'])
+                            && empty($approval['isPrimaryApprover'])
+                            && empty($approval['isDelegate'])
+                            && empty($approval['isMonitoring']);
+                        $checklistStatusButtonLabel = $isTaskAssigneeViewer ? 'View Checklist Status' : 'Checklist Status';
                     @endphp
                     <div x-show="search.trim() === '' || @js($searchHaystacks[$loop->index]).includes(search.trim().toLowerCase())"
-                        @click="$dispatch('open-offboardee-modal', @js($approval))"
+                        @click="@js($isChecklistKind) ? $dispatch('open-checklist-modal', Object.assign({}, @js($approval), window.__approvalCardOverrides?.['{{ $approval['id'] }}'] || {})) : $dispatch('open-offboardee-modal', @js($approval))"
                         data-card-id="{{ $approval['id'] }}"
-                        class="group cursor-pointer rounded-2xl border border-gray-200 bg-white p-5 transition-all duration-200 hover:-translate-y-1 hover:border-[#145a3a]/40 hover:shadow-lg dark:border-gray-800 dark:bg-white/[0.03] dark:hover:border-[#3aa876]/40">
+                        :class="effectiveView() === 'card'
+                            ? 'group cursor-pointer rounded-2xl border border-gray-200 bg-white p-5 transition-all duration-200 hover:-translate-y-1 hover:border-[#145a3a]/40 hover:shadow-lg dark:border-gray-800 dark:bg-white/[0.03] dark:hover:border-[#3aa876]/40'
+                            : 'group cursor-pointer border-b border-gray-100 px-4 py-3 transition-colors last:border-b-0 hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-white/[0.03]'">
+                        {{-- ============================= CARD VIEW ============================= --}}
+                        <template x-if="effectiveView() === 'card'">
+                        <div>
                         <div class="flex items-start justify-between">
                             <div class="flex h-12 w-12 items-center justify-center rounded-full bg-gray-100 text-base font-semibold text-gray-600 dark:bg-gray-800 dark:text-gray-300">
                                 {{ collect(explode(' ', $approval['name']))->map(fn ($part) => mb_substr($part, 0, 1))->take(2)->implode('') }}
@@ -317,13 +427,34 @@
                             {{ $approval['name'] }}
                         </h4>
                         <p class="text-sm text-gray-500 dark:text-gray-400">{{ $approval['designation'] }}</p>
-                        @if (!empty($approval['checklistTemplates']))
-                            <p class="mt-2 text-sm font-medium text-[#145a3a] dark:text-[#3aa876]">
-                                {{ implode(', ', $approval['checklistTemplates']) }}
-                            </p>
+                        {{-- Reads `checklists` (every checklist/role ApprovalController
+                             actually resolved for this viewer on this request —
+                             including a General Signatory role merged in by
+                             `mergeGeneralSignatoryIntoCombinedCards()` when Combined
+                             Checklist is on), never the earlier `checklistTemplates`
+                             list — that one is captured BEFORE the General Signatory
+                             merge step runs and is never updated afterward, which
+                             previously left a merged General Signatory role entirely
+                             invisible here (e.g. an Immediate Head who is ALSO a
+                             General Signatory on the same request only ever showed
+                             "Immediate Head"). Numbered sequentially (1-based,
+                             restarting at 1 for every card) regardless of whether
+                             Combined Checklist is on — in "Separate Checklist" mode
+                             `checklists` is simply a length-1 list, so this renders
+                             a single numbered badge there too, same mechanism either
+                             way. The number itself renders as a small badge beside
+                             each checklist's plain-text title (see
+                             `partials/checklist-badge-list.blade.php`), not inline
+                             "N. Title" text — that partial also explains the
+                             whole-item, never-splits-a-badge-from-its-title wrapping
+                             behavior. --}}
+                        @if (!empty($approval['checklists']))
+                            <div class="mt-2">
+                                @include('pages.approvals.partials.checklist-badge-list')
+                            </div>
                         @elseif (($approval['kind'] ?? null) === 'general_signatory')
                             <p class="mt-2 text-sm font-medium text-[#145a3a] dark:text-[#3aa876]">
-                                General Signatory Clearance
+                                Signatory Clearance
                             </p>
                         @endif
 
@@ -349,10 +480,6 @@
                             <div class="flex items-center justify-between text-xs">
                                 <span class="text-gray-400">Last Working Day</span>
                                 <span class="font-medium text-gray-700 dark:text-gray-300">{{ $approval['lastWorkingDay'] }}</span>
-                            </div>
-                            <div class="flex items-center justify-between text-xs">
-                                <span class="text-gray-400">Approval Mode</span>
-                                <span class="font-medium text-gray-700 dark:text-gray-300">{{ $approval['approvalMode'] }}</span>
                             </div>
                             @if ($approval['dueAt'])
                                 <div class="flex items-center justify-between text-xs">
@@ -385,84 +512,69 @@
                         </div>
 
                         <div class="mt-4 flex items-center gap-2 border-t border-gray-100 pt-4 dark:border-gray-800">
-                            @if (($approval['kind'] ?? null) === 'general_signatory')
-                                {{-- Merges in any client-side patch left by
-                                     general-signatory-modal.blade.php's own
-                                     rememberCardOverride() (declined-then-
-                                     reopened this session) — see that
-                                     method's own docblock for why the plain
-                                     @js($approval) snapshot below, baked in
-                                     at this page's render time, would
-                                     otherwise show stale pre-decline data
-                                     on every later reopen. --}}
-                                <button type="button" @click.stop="$dispatch('open-general-signatory-modal', Object.assign({}, @js($approval), window.__approvalCardOverrides?.['{{ $approval['id'] }}'] || {}))"
-                                    class="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-[#145a3a] px-3 py-2 text-sm font-medium text-white hover:bg-[#0f4630]">
-                                    <svg width="16" height="16" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                        <path fill-rule="evenodd" clip-rule="evenodd" d="M3 4.5C3 4.08579 3.33579 3.75 3.75 3.75H14.25C14.6642 3.75 15 4.08579 15 4.5C15 4.91421 14.6642 5.25 14.25 5.25H3.75C3.33579 5.25 3 4.91421 3 4.5ZM3 9C3 8.58579 3.33579 8.25 3.75 8.25H14.25C14.6642 8.25 15 8.58579 15 9C15 9.41421 14.6642 9.75 14.25 9.75H3.75C3.33579 9.75 3 9.41421 3 9ZM3.75 12.75C3.33579 12.75 3 13.0858 3 13.5C3 13.9142 3.33579 14.25 3.75 14.25H10.5C10.9142 14.25 11.25 13.9142 11.25 13.5C11.25 13.0858 10.9142 12.75 10.5 12.75H3.75Z" fill="currentColor" />
-                                    </svg>
-                                    Review & Approve
-                                </button>
-                            @elseif (($approval['kind'] ?? null) === 'final_approval')
-                                <button type="button" @click.stop="$dispatch('open-final-approval-modal', @js($approval))"
-                                    class="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-[#145a3a] px-3 py-2 text-sm font-medium text-white hover:bg-[#0f4630]">
-                                    <svg width="16" height="16" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                        <path fill-rule="evenodd" clip-rule="evenodd" d="M3 4.5C3 4.08579 3.33579 3.75 3.75 3.75H14.25C14.6642 3.75 15 4.08579 15 4.5C15 4.91421 14.6642 5.25 14.25 5.25H3.75C3.33579 5.25 3 4.91421 3 4.5ZM3 9C3 8.58579 3.33579 8.25 3.75 8.25H14.25C14.6642 8.25 15 8.58579 15 9C15 9.41421 14.6642 9.75 14.25 9.75H3.75C3.33579 9.75 3 9.41421 3 9ZM3.75 12.75C3.33579 12.75 3 13.0858 3 13.5C3 13.9142 3.33579 14.25 3.75 14.25H10.5C10.9142 14.25 11.25 13.9142 11.25 13.5C11.25 13.0858 10.9142 12.75 10.5 12.75H3.75Z" fill="currentColor" />
-                                    </svg>
-                                    Review & Approve
-                                </button>
-                            @else
-                                {{-- Merges in any client-side patch left by
-                                     checklist-modal.blade.php's own
-                                     rememberCardOverride() — see that
-                                     method's own docblock. --}}
-                                <button type="button" @click.stop="$dispatch('open-checklist-modal', Object.assign({}, @js($approval), window.__approvalCardOverrides?.['{{ $approval['id'] }}'] || {}))"
-                                    class="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-[#145a3a] px-3 py-2 text-sm font-medium text-white hover:bg-[#0f4630]">
-                                    <svg width="16" height="16" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                        <path fill-rule="evenodd" clip-rule="evenodd" d="M3 4.5C3 4.08579 3.33579 3.75 3.75 3.75H14.25C14.6642 3.75 15 4.08579 15 4.5C15 4.91421 14.6642 5.25 14.25 5.25H3.75C3.33579 5.25 3 4.91421 3 4.5ZM3 9C3 8.58579 3.33579 8.25 3.75 8.25H14.25C14.6642 8.25 15 8.58579 15 9C15 9.41421 14.6642 9.75 14.25 9.75H3.75C3.33579 9.75 3 9.41421 3 9ZM3.75 12.75C3.33579 12.75 3 13.0858 3 13.5C3 13.9142 3.33579 14.25 3.75 14.25H10.5C10.9142 14.25 11.25 13.9142 11.25 13.5C11.25 13.0858 10.9142 12.75 10.5 12.75H3.75Z" fill="currentColor" />
-                                    </svg>
-                                    View Checklist
-                                </button>
-                                {{-- Hidden once this card combines more than one checklist —
-                                     bulk "Assign Checklist" below takes over for that case,
-                                     since whole-card reassignment to a single person no longer
-                                     makes sense once several distinct checklists are involved.
-                                     Also hidden for a headless "Use Task Assignee as Clearance
-                                     Signatory" card (`reassignChecklistUrl` null) — there's no
-                                     owner to reassign FROM on a checklist that's designed to have
-                                     none. Hands every not-yet-completed task on this checklist to
-                                     the selected employee — see
-                                     `ChecklistDelegationController::reassignChecklist()`'s own
-                                     docblock — reusing checklist-modal.blade.php's own
-                                     reassignChecklist()/SweetAlert picker without needing the
-                                     modal itself open first (see that component's own
-                                     `@reassign-checklist-request.window` listener). Merges in any
-                                     client-side patch left by that same handler, same convention
-                                     the other two card buttons already use. --}}
-                                @if ($approval['isPrimaryApprover'] && count($approval['checklistTemplates']) <= 1 && $approval['reassignChecklistUrl'])
-                                    <button type="button" title="Assign To" @click.stop="$dispatch('reassign-checklist-request', Object.assign({}, @js($approval), window.__approvalCardOverrides?.['{{ $approval['id'] }}'] || {}))"
-                                        class="flex items-center justify-center gap-1.5 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
-                                        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                            <path d="M10 10a3.75 3.75 0 100-7.5 3.75 3.75 0 000 7.5ZM3.5 17.25a6.5 6.5 0 0113 0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-                                            <path d="M16.25 6.25v4M18.25 8.25h-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-                                        </svg>
-                                    </button>
-                                @endif
-                                {{-- Bulk "Assign Checklist": only shown when this card actually
-                                     combines more than one checklist template (e.g. the same
-                                     person is both a Clearance Signatory and the Immediate Head)
-                                     — a single-checklist card has nothing else to bulk-open. --}}
-                                @if ($approval['showAssignChecklistPool'])
-                                    <button type="button" title="Assign Checklist" @click.stop="$dispatch('open-assign-checklist-pool-modal', @js($approval))"
-                                        class="flex items-center justify-center gap-1.5 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
-                                        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                            <path d="M8.75 4.167h-2.5A1.667 1.667 0 0 0 4.583 5.833v9.167A1.667 1.667 0 0 0 6.25 16.667h7.5a1.667 1.667 0 0 0 1.667-1.667V5.833a1.667 1.667 0 0 0-1.667-1.666h-2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-                                            <path d="M8.75 2.5h2.5a.833.833 0 0 1 .833.833V4.167a.833.833 0 0 1-.833.833h-2.5a.833.833 0 0 1-.833-.833V3.333A.833.833 0 0 1 8.75 2.5Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-                                            <path d="M7.5 10.833l1.667 1.667L12.5 9.167" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-                                        </svg>
-                                    </button>
-                                @endif
-                            @endif
+                            @include('pages.approvals.partials.card-buttons')
                         </div>
+                        </div>
+                        </template>
+
+                        {{-- ============================= LIST VIEW ============================= --}}
+                        <template x-if="effectiveView() === 'list'">
+                        <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-6">
+                            <div class="flex min-w-0 items-center gap-3 sm:w-56 sm:shrink-0">
+                                <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gray-100 text-sm font-semibold text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                                    {{ collect(explode(' ', $approval['name']))->map(fn ($part) => mb_substr($part, 0, 1))->take(2)->implode('') }}
+                                </div>
+                                <div class="min-w-0">
+                                    <p class="truncate text-sm font-semibold text-gray-800 group-hover:text-[#145a3a] dark:text-white/90 dark:group-hover:text-[#3aa876]">{{ $approval['name'] }}</p>
+                                    <p class="truncate text-xs text-gray-500 dark:text-gray-400">{{ $approval['designation'] }}</p>
+                                </div>
+                            </div>
+
+                            {{-- Same numbered checklist list the Card View shows
+                                 (see its own detailed comment above) — reused as-is
+                                 so the two views never describe the same card
+                                 differently. --}}
+                            <div class="sm:w-48 sm:shrink-0">
+                                @if (!empty($approval['checklists']))
+                                    @include('pages.approvals.partials.checklist-badge-list')
+                                @elseif (($approval['kind'] ?? null) === 'general_signatory')
+                                    <p class="text-sm font-medium text-[#145a3a] dark:text-[#3aa876]">Signatory Clearance</p>
+                                @else
+                                    <p class="text-sm text-gray-400">—</p>
+                                @endif
+                            </div>
+
+                            <div class="sm:w-44 sm:shrink-0">
+                                <p class="text-sm text-gray-500 dark:text-gray-400">Last Working Day: <span class="font-medium text-gray-700 dark:text-gray-300">{{ $approval['lastWorkingDay'] }}</span></p>
+                            </div>
+
+                            {{-- Same guard/urgency coloring as the Card View's own
+                                 Clearance Signing Due row above. --}}
+                            <div class="sm:w-48 sm:shrink-0">
+                                @if (!empty($approval['isPrimaryApprover']) && !empty($approval['clearanceSigningDueAt']))
+                                    <p :class="{
+                                            'text-sm text-gray-500 dark:text-gray-400': clearanceSigningUrgency(@js($approval['clearanceSigningDueAtIso'] ?? null)) === 'none',
+                                            'text-sm font-semibold text-orange-600 dark:text-orange-400': clearanceSigningUrgency(@js($approval['clearanceSigningDueAtIso'] ?? null)) === 'warning',
+                                            'text-sm font-bold text-error-600 dark:text-error-400': clearanceSigningUrgency(@js($approval['clearanceSigningDueAtIso'] ?? null)) === 'danger',
+                                        }">
+                                        Clearance Due: <span :class="clearanceSigningUrgency(@js($approval['clearanceSigningDueAtIso'] ?? null)) === 'none' ? 'font-medium text-gray-700 dark:text-gray-300' : ''">{{ $approval['clearanceSigningDueAt'] }}</span>
+                                    </p>
+                                @else
+                                    <p class="text-sm text-gray-400">—</p>
+                                @endif
+                            </div>
+
+                            <div class="sm:w-32 sm:shrink-0">
+                                <span data-status-badge class="inline-flex rounded-full px-2.5 py-1 text-xs font-medium {{ $badge['class'] }}">
+                                    {{ $badge['label'] }}
+                                </span>
+                            </div>
+
+                            <div class="flex flex-1 flex-wrap items-center gap-2 sm:justify-end" @click.stop="">
+                                @include('pages.approvals.partials.card-buttons')
+                            </div>
+                        </div>
+                        </template>
                     </div>
                 @endforeach
             </div>
@@ -477,7 +589,7 @@
         <x-offboarding.status-timeline-modal :hide-status-tab="! (auth()->user()?->isAdmin() ?? false)" />
 
         <!-- Approval Checklist Modal -->
-        <x-approvals.checklist-modal />
+        <x-approvals.checklist-modal :status-badges="$statusBadges" />
 
         <!-- General Signatory Approval Modal -->
         <x-approvals.general-signatory-modal />

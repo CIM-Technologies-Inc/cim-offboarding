@@ -200,7 +200,15 @@ class OffboardeeController extends Controller
             // awareness of its own — the card partial's own
             // `status !== 'cancelled'` check (see the blade) is the
             // authoritative gate for that case.
-            'canRetractOffboarding' => $offboardingRequest?->isBeforeLastWorkingDay() ?? false,
+            // ALSO false the moment any checklist — Department/Immediate
+            // Head, Final Pay, or General Signatory — has been approved by
+            // its Clearance Signatory, regardless of what the others are
+            // doing; see `OffboardingRequest::hasAnyApprovedChecklist()`'s
+            // own docblock for why this is the single source of truth
+            // `OffboardingRequestController::cancel()`'s backend guard also
+            // calls, so the button and the server can never disagree.
+            'canRetractOffboarding' => ($offboardingRequest?->isBeforeLastWorkingDay() ?? false)
+                && ! ($offboardingRequest?->hasAnyApprovedChecklist() ?? false),
             // Extend Due (bulk, the ONLY Extend Due entry point — there is
             // no more per-checklist button) — same "generate the URL
             // unconditionally, gate the button in the view" convention as
@@ -277,6 +285,9 @@ class OffboardeeController extends Controller
             // between showing the button and a plain "Approved" badge.
             'finalApprovalStatus' => $offboardingRequest?->finalApproval?->status,
             'finalSignatoryName' => $offboardingRequest?->finalApproval?->employee?->name,
+            // Display-only, for the Card/List View "Created" field — the
+            // request's own creation timestamp, never recomputed/derived.
+            'createdAt' => $offboardingRequest?->created_at?->format('M d, Y'),
             ];
         };
 

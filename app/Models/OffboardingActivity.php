@@ -80,9 +80,9 @@ class OffboardingActivity extends Model
             'approved' => $this->user
                 ? "Cleared by {$actor}{$suffix}"
                 : 'All checklist items completed — auto-approved',
-            'general_signatory_approved' => "Cleared by General Signatory: {$actor}{$suffix}",
-            'general_signatory_declined' => "Declined by General Signatory: {$actor}{$suffix}",
-            'general_signatory_on_hold_removed' => "On Hold Removed by General Signatory: {$actor}{$suffix}",
+            'general_signatory_approved' => "Cleared by Signatory: {$actor}{$suffix}",
+            'general_signatory_declined' => "Declined by Signatory: {$actor}{$suffix}",
+            'general_signatory_on_hold_removed' => "On Hold Removed by Signatory: {$actor}{$suffix}",
             // Names the checklist itself — on a "Use Task Assignee as
             // Clearance Signatory" checklist this can be a Task Assignee,
             // their Immediate/Group/Department Head, or anyone else
@@ -93,7 +93,7 @@ class OffboardingActivity extends Model
             'checklist_viewed' => $this->offboardingRequestApprover?->checklistTemplate?->title
                 ? "Viewed \"{$this->offboardingRequestApprover->checklistTemplate->title}\" by {$actor}{$suffix}"
                 : "Viewed by {$actor}{$suffix}",
-            'general_signatory_viewed' => "Viewed by {$actor} (General Signatory)",
+            'general_signatory_viewed' => "Viewed by {$actor} (Signatory)",
             'offboarding_reset' => "Offboarding Request Reset by {$actor}",
             'offboarding_cancelled' => "Offboarding Request Cancelled by {$actor}",
             // Names the checklist itself, same reasoning as `checklist_viewed`

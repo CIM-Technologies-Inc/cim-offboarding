@@ -1,5 +1,39 @@
+@props(['statusBadges' => []])
 <div x-data="{
         selected: null,
+        // Which of `selected.checklists` (see `ApprovalController::
+        // groupIntoCombinedApprovals()`'s own `checklists` field) is
+        // currently shown — only meaningful once that array has more than
+        // one entry (a combined card with >1 underlying checklist); a
+        // single-checklist or Separate-Checklist-mode card never renders
+        // the tab bar and this index is simply never consulted.
+        activeChecklistIndex: 0,
+        // True once the active tab is a MERGED-IN General Signatory entry
+        // (see ApprovalController::mergeGeneralSignatoryIntoCombinedCards()'s
+        // own `kind: 'general_signatory'` entries inside `selected.checklists`).
+        // General Signatory has no per-item checklist at all (no Save
+        // Progress, no items, a single whole-assignment Approve/Decline),
+        // so it never re-points the shared selected.checklistItems/
+        // saveProgressUrl/approveUrl/etc. fields the way a checklist tab
+        // does — its own small block of markup below reads straight from
+        // selected.checklists[activeChecklistIndex] instead, and this
+        // helper is just the one shared guard both that markup and
+        // selectChecklistTab() below use to agree on which case they're in.
+        isGeneralSignatoryTabActive() {
+            return this.selected?.checklists?.[this.activeChecklistIndex]?.kind === 'general_signatory';
+        },
+        // Independent of every checklist-tab decline/hold state above
+        // (`declining`/`declineReasonDraft`/`removingHold`/
+        // `onHoldRemovalReasonDraft`) — kept entirely separate so a General
+        // Signatory tab's own Decline/Remove Hold can never cross-talk with
+        // whatever a checklist tab on the same card is doing, mirroring
+        // general-signatory-modal.blade.php's own equivalent fields.
+        gsDeclining: false,
+        gsDeclineReasonDraft: '',
+        gsRemovingHold: false,
+        gsOnHoldRemovalReasonDraft: '',
+        gsRemarksText: '',
+        gsProcessing: false,
         // The logged-in viewer's own employee code — compared against each
         // task's approverCode/originalApproverCode below to append (You)
         // next to their own name. Display-only: never consulted for any
@@ -66,9 +100,323 @@
             // when it failed — never carried over to a different card
             // opened afterward.
             this.declineReasonDraft = '';
+            // Same reset, same reasoning, for a merged-in General Signatory
+            // tab's own independent decline/hold/remarks drafts.
+            this.gsDeclining = false;
+            this.gsDeclineReasonDraft = '';
+            this.gsRemovingHold = false;
+            this.gsOnHoldRemovalReasonDraft = '';
+            this.gsRemarksText = '';
+            this.gsProcessing = false;
             this.selected = detail;
             this.selectedLoading = true;
             this.refreshCheckedItems();
+            // Combined multi-checklist card (see `ApprovalController::
+            // groupIntoCombinedApprovals()`'s `checklists` field) — default
+            // to its first checklist's tab. `selectChecklistTab()` below
+            // re-points `selected.checklistItems`/`saveProgressUrl`/etc. to
+            // that one checklist, so everything below in this component
+            // keeps reading those same top-level keys unchanged. A single-
+            // checklist or Separate-Checklist-mode card never reaches this
+            // branch — `checklists` is absent or has only one entry, and
+            // the whole-card data already populated above is exactly right.
+            this.activeChecklistIndex = 0;
+            if (detail.checklists && detail.checklists.length > 1) {
+                this.selectChecklistTab(0);
+            }
+        },
+        // Switches the checklist modal's tab/wizard UI to a different
+        // underlying checklist within a combined card. This is the ONLY
+        // place that knows about tabs at all — every other method/binding
+        // in this component (canApprove(), declineChecklist(), the Save
+        // Progress/Approve forms, every per-item Hold/Assign/Take-Over/
+        // Head-Approve action) reads the same `selected.checklistItems`/
+        // `selected.saveProgressUrl`/`selected.approveUrl`/`selected.
+        // declineUrl`/etc. it always has — switching tabs just re-points
+        // those same keys to a different checklist's own data, so none of
+        // that existing, already-validated logic needs to change.
+        selectChecklistTab(index) {
+            if (!this.selected?.checklists?.[index]) {
+                return;
+            }
+
+            // Persist whatever happened on the OUTGOING tab (a Decline/
+            // Save Progress/Done/Remove Hold — all fetch-based, no page
+            // reload) back into its own entry in `selected.checklists`
+            // before switching away, so coming back to it later reflects
+            // the real current state instead of the original page-load
+            // snapshot.
+            //
+            // Guarded on index !== activeChecklistIndex — `setSelected()`
+            // calls `selectChecklistTab(0)` on every open while
+            // `activeChecklistIndex` is ALREADY 0 (its default), which
+            // means outgoing and incoming would otherwise resolve to
+            // the SAME `checklists[0]` entry. Writing `this.selected`'s
+            // still-unscoped, full flat `checklistItems` onto it at that
+            // point — before this method ever gets to read it back out
+            // two lines below — corrupted that one tab with every OTHER
+            // checklist's items too, on every single open. Skipping the
+            // write-back when there's no actual tab change avoids it.
+            // A merged-in General Signatory entry (see `isGeneralSignatoryTabActive()`
+            // above) never had its data copied onto these shared top-level
+            // `selected.*` fields in the first place — its own markup reads
+            // straight off `selected.checklists[activeChecklistIndex]`
+            // instead — so there is nothing real to write back from it, and
+            // skipping that keeps a checklist tab's own last-known state
+            // from ever being overwritten with General-Signatory-shaped
+            // leftovers.
+            const outgoing = this.activeChecklistIndex !== index
+                ? this.selected.checklists[this.activeChecklistIndex]
+                : null;
+
+            if (outgoing && outgoing.kind !== 'general_signatory') {
+                Object.assign(outgoing, {
+                    checklistItems: this.selected.checklistItems,
+                    allItemsCompleted: this.selected.allItemsCompleted,
+                    isOnHold: this.selected.isOnHold,
+                    declineReason: this.selected.declineReason,
+                    declinedAt: this.selected.declinedAt,
+                    onHoldRemovedAt: this.selected.onHoldRemovedAt,
+                    onHoldRemovedByName: this.selected.onHoldRemovedByName,
+                    onHoldRemovalReason: this.selected.onHoldRemovalReason,
+                    displayStatus: this.selected.displayStatus,
+                });
+            }
+
+            const tab = this.selected.checklists[index];
+            this.activeChecklistIndex = index;
+
+            // General Signatory has no per-item checklist at all (see
+            // `isGeneralSignatoryTabActive()`'s own docblock) — nothing
+            // below this point applies, so stop here once the tab index
+            // itself has switched. Its own small markup block reads
+            // `selected.checklists[activeChecklistIndex]` directly.
+            if (tab.kind === 'general_signatory') {
+                this.gsDeclineReasonDraft = '';
+                this.gsOnHoldRemovalReasonDraft = '';
+                this.gsRemarksText = '';
+                this.selectedLoading = false;
+
+                return;
+            }
+
+            Object.assign(this.selected, {
+                checklistItems: tab.checklistItems,
+                saveProgressUrl: tab.saveProgressUrl,
+                approveUrl: tab.approveUrl,
+                declineUrl: tab.declineUrl,
+                onHoldRemoveUrl: tab.onHoldRemoveUrl,
+                reassignChecklistUrl: tab.reassignChecklistUrl,
+                reassignEligibleEmployees: tab.reassignEligibleEmployees,
+                allItemsCompleted: tab.allItemsCompleted,
+                isOnHold: tab.isOnHold,
+                declineReason: tab.declineReason,
+                declinedAt: tab.declinedAt,
+                onHoldRemovedAt: tab.onHoldRemovedAt,
+                onHoldRemovedByName: tab.onHoldRemovedByName,
+                onHoldRemovalReason: tab.onHoldRemovalReason,
+                displayStatus: tab.displayStatus,
+                isPrimaryApprover: tab.isPrimaryApprover,
+                isAssignedApprover: tab.isAssignedApprover,
+                isMonitoring: tab.isMonitoring,
+                isDelegate: tab.isDelegate,
+                usesPerItemApprovers: tab.usesPerItemApprovers,
+                isImmediateHeadChecklist: tab.isImmediateHeadChecklist,
+                isCorePrimaryChecklist: tab.isCorePrimaryChecklist,
+                isOverdue: tab.isOverdue,
+                hasReachedDueDate: tab.hasReachedDueDate,
+            });
+
+            // Same per-item state population `setSelected()` does for the
+            // whole card, scoped here to just this one checklist's items.
+            const checked = {};
+            const remarks = {};
+            const takeOverProcessing = {};
+            const doneProcessing = {};
+            const approveProcessing = {};
+            const selectedApprove = {};
+
+            (tab.checklistItems || []).forEach((item) => {
+                checked[item.id] = !!item.checked;
+                remarks[item.id] = item.remark || '';
+                takeOverProcessing[item.id] = false;
+                doneProcessing[item.id] = false;
+                approveProcessing[item.id] = false;
+                selectedApprove[item.id] = false;
+            });
+
+            this.checked = checked;
+            this.remarks = remarks;
+            this.holdProcessing = {};
+            this.takeOverProcessing = takeOverProcessing;
+            this.doneProcessing = doneProcessing;
+            this.approveProcessing = approveProcessing;
+            this.selectedApprove = selectedApprove;
+            this.declining = false;
+            this.declineReasonDraft = '';
+            this.selectedLoading = true;
+            this.refreshCheckedItems();
+        },
+        // Declines a merged-in General Signatory tab — places THAT one
+        // assignment on hold (see `GeneralSignatoryApprovalController::decline()`),
+        // mirroring general-signatory-modal.blade.php's own
+        // declineGeneralSignatory() exactly (same mandatory-reason confirm,
+        // same fetch-based no-reload flow, same route shape), just reading/
+        // writing `selected.checklists[activeChecklistIndex]` instead of
+        // `selected` directly, since a General Signatory tab's data never
+        // lives on the shared top-level fields.
+        declineGeneralSignatoryTab() {
+            const tab = this.selected?.checklists?.[this.activeChecklistIndex];
+
+            if (this.gsDeclining || !tab?.declineUrl) {
+                return;
+            }
+
+            Swal.fire({
+                title: 'Decline This General Signatory Checklist?',
+                text: 'This General Signatory checklist will be placed ON HOLD and cannot proceed — Approve and further decline actions will be disabled until you remove the hold. Please provide a reason.',
+                icon: 'warning',
+                input: 'textarea',
+                inputLabel: 'Reason for Declining',
+                inputPlaceholder: 'Explain why this General Signatory checklist is being declined...',
+                inputValue: this.gsDeclineReasonDraft,
+                inputValidator: (value) => {
+                    if (!value || !value.trim()) {
+                        return 'A reason is required to decline this General Signatory checklist.';
+                    }
+                },
+                showCancelButton: true,
+                confirmButtonText: 'Yes, Decline',
+                cancelButtonText: 'Cancel',
+                confirmButtonColor: '#dc2626',
+                cancelButtonColor: '#6b7280',
+                reverseButtons: true,
+            }).then((result) => {
+                if (!result.isConfirmed) {
+                    return;
+                }
+
+                this.gsDeclining = true;
+                this.gsDeclineReasonDraft = (result.value || '').trim();
+
+                const formData = new FormData();
+                formData.append('reason', this.gsDeclineReasonDraft);
+
+                window.fetchWithTimeout(tab.declineUrl, {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                        'Accept': 'application/json',
+                    },
+                    body: formData,
+                }).then(async (res) => {
+                    const data = await res.json();
+
+                    if (!res.ok) {
+                        throw new Error(data.message || 'request failed');
+                    }
+
+                    this.gsDeclining = false;
+                    tab.isOnHold = true;
+                    tab.declinedAt = data.declinedAt;
+                    tab.declineReason = this.gsDeclineReasonDraft;
+                    this.gsDeclineReasonDraft = '';
+
+                    window.Swal?.fire({
+                        icon: 'success',
+                        title: 'Placed On Hold',
+                        text: 'This General Signatory checklist has been placed on hold and the reason has been recorded. It will stay unavailable until you remove the hold.',
+                        confirmButtonColor: '#145a3a',
+                    });
+                }).catch((e) => {
+                    this.gsDeclining = false;
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'Failed to Decline',
+                        text: e?.name === 'AbortError'
+                            ? 'This is taking longer than expected. Please check before trying again.'
+                            : (e?.message || 'This General Signatory checklist could not be declined. Please try again.'),
+                        confirmButtonColor: '#145a3a',
+                    });
+                });
+            });
+        },
+        // The only way out of On Hold for a merged-in General Signatory tab
+        // — mirrors general-signatory-modal.blade.php's own removeHold()
+        // exactly, including reloading the whole page on success (a rare,
+        // deliberate action, so re-deriving every affected field correctly
+        // client-side isn't worth it there either).
+        removeHoldGeneralSignatoryTab() {
+            const tab = this.selected?.checklists?.[this.activeChecklistIndex];
+
+            if (this.gsRemovingHold || !tab?.onHoldRemoveUrl) {
+                return;
+            }
+
+            Swal.fire({
+                title: 'Remove On Hold?',
+                text: 'This General Signatory checklist will become available for review and action again. Please provide a reason.',
+                icon: 'question',
+                input: 'textarea',
+                inputLabel: 'Reason for Removing the Hold',
+                inputPlaceholder: 'Explain why this hold is being removed...',
+                inputValue: this.gsOnHoldRemovalReasonDraft,
+                inputValidator: (value) => {
+                    if (!value || !value.trim()) {
+                        return 'A reason is required to remove this hold.';
+                    }
+                },
+                showCancelButton: true,
+                confirmButtonText: 'Yes, Remove Hold',
+                cancelButtonText: 'Cancel',
+                confirmButtonColor: '#145a3a',
+                cancelButtonColor: '#6b7280',
+                reverseButtons: true,
+            }).then((result) => {
+                if (!result.isConfirmed) {
+                    return;
+                }
+
+                this.gsRemovingHold = true;
+                this.gsOnHoldRemovalReasonDraft = (result.value || '').trim();
+
+                const formData = new FormData();
+                formData.append('reason', this.gsOnHoldRemovalReasonDraft);
+
+                window.fetchWithTimeout(tab.onHoldRemoveUrl, {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                        'Accept': 'application/json',
+                    },
+                    body: formData,
+                }).then(async (res) => {
+                    const data = await res.json();
+
+                    if (!res.ok) {
+                        throw new Error(data.message || 'request failed');
+                    }
+
+                    window.Swal?.fire({
+                        icon: 'success',
+                        title: 'Hold Removed',
+                        text: 'This General Signatory checklist is available for review again. Reloading...',
+                        confirmButtonColor: '#145a3a',
+                        timer: 1500,
+                        showConfirmButton: false,
+                    }).then(() => window.location.reload());
+                }).catch((e) => {
+                    this.gsRemovingHold = false;
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'Failed to Remove Hold',
+                        text: e?.name === 'AbortError'
+                            ? 'This is taking longer than expected. Please check before trying again.'
+                            : (e?.message || 'The hold could not be removed. Please try again.'),
+                        confirmButtonColor: '#145a3a',
+                    });
+                });
+            });
         },
         // The page's own checklist data is a static snapshot baked into the
         // page's HTML at render time — it never changes after load, so
@@ -1189,6 +1537,86 @@
 
                     <div x-show="!selectedLoading">
 
+                    <!-- Checklist tabs/wizard — only for a combined card that actually
+                         bundles more than one checklist for this approver (see
+                         `ApprovalController::groupIntoCombinedApprovals()`'s `checklists`
+                         field). A single-checklist card, or any card while "Separate
+                         Checklist" mode is on, never reaches more than one entry here, so
+                         this block simply never renders and the rest of this modal behaves
+                         exactly as it always has. Horizontally scrollable (not wrapped) so
+                         several checklist titles never overlap or overflow on a narrow
+                         screen — Save Progress/Decline/Approve below stay reachable either
+                         way since they're outside this scrolling row. -->
+                    <template x-if="selected.checklists && selected.checklists.length > 1">
+                        <div class="mb-4 mt-4 -mx-1 flex gap-4 overflow-x-auto border-b border-gray-200 px-1 dark:border-gray-800">
+                            <template x-for="(checklist, index) in selected.checklists" :key="checklist.assignmentId">
+                                <button type="button" @click="selectChecklistTab(index)"
+                                    class="flex shrink-0 items-center gap-2 whitespace-nowrap border-b-2 pb-3 text-sm font-medium transition-colors"
+                                    :class="activeChecklistIndex === index
+                                        ? 'border-[#145a3a] text-[#145a3a] dark:border-[#3aa876] dark:text-[#3aa876]'
+                                        : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'">
+                                    {{-- Selected-tab indicator — purely visual, before the checklist
+                                         name, shown only on whichever tab is currently active and
+                                         moves the instant a different tab is selected. Never affects
+                                         the status dot/title/numbering already here, and the tab bar
+                                         itself only ever renders for a genuine multi-checklist
+                                         Combined Checklist card in the first place. --}}
+                                    <template x-if="activeChecklistIndex === index">
+                                        <svg class="h-5 w-5 shrink-0 text-[#145a3a] dark:text-[#3aa876]" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                            <path fill-rule="evenodd" clip-rule="evenodd" d="M16.7045 5.29546C17.0984 5.68933 17.0984 6.32818 16.7045 6.72205L8.95455 14.4721C8.56067 14.8659 7.92183 14.8659 7.52795 14.4721L3.65295 10.5971C3.25908 10.2032 3.25908 9.56433 3.65295 9.17045C4.04683 8.77658 4.68567 8.77658 5.07955 9.17045L8.24125 12.3321L15.2779 5.29546C15.6718 4.90158 16.3106 4.90158 16.7045 5.29546Z" fill="currentColor" />
+                                        </svg>
+                                    </template>
+                                    <span class="h-2 w-2 shrink-0 rounded-full"
+                                        :class="(@js($statusBadges)[checklist.displayStatus] || @js($statusBadges)['pending']).class.split(' ').filter((c) => c.includes('bg-')).join(' ')"></span>
+                                    {{-- Checklist number — a small primary-colored badge beside
+                                         the title (replacing the previous inline "N. Title" text),
+                                         same number/order as before: just `index + 1`, the tab's
+                                         own position in `selected.checklists`. --}}
+                                    <span class="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#145a3a] text-xs font-semibold text-white dark:bg-[#3aa876]"
+                                        x-text="index + 1"></span>
+                                    {{-- Active tab's name renders larger/bolder than inactive tabs —
+                                         on top of the border/color highlight and checkmark above,
+                                         so the currently selected checklist is unmistakable at a
+                                         glance even before reading the icon or color. --}}
+                                    <span :class="activeChecklistIndex === index ? 'text-base font-semibold' : 'text-sm font-medium'"
+                                        x-text="checklist.title"></span>
+                                </button>
+                            </template>
+                        </div>
+                    </template>
+
+                    {{-- ============== GENERAL SIGNATORY TAB (merged-in) ==============
+                         Only ever shown for a `kind: 'general_signatory'` entry inside
+                         `selected.checklists` (see ApprovalController::
+                         mergeGeneralSignatoryIntoCombinedCards()) — a single whole-
+                         assignment Approve/Decline/Remove-Hold, no per-item checklist at
+                         all, mirroring general-signatory-modal.blade.php's own markup. --}}
+                    <template x-if="isGeneralSignatoryTabActive()">
+                        <div>
+                            <template x-if="selected.checklists[activeChecklistIndex].isOnHold">
+                                <div class="mb-4 mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm dark:border-amber-500/30 dark:bg-amber-500/10">
+                                    <p class="font-medium text-amber-700 dark:text-amber-400">This General Signatory checklist is On Hold.</p>
+                                    <p class="mt-1 text-amber-600 dark:text-amber-400" x-show="selected.checklists[activeChecklistIndex].declinedAt">
+                                        Declined: <span x-text="selected.checklists[activeChecklistIndex].declinedAt"></span>
+                                    </p>
+                                    <p class="mt-1 text-amber-600 dark:text-amber-400" x-show="selected.checklists[activeChecklistIndex].declineReason">
+                                        Reason: <span x-text="selected.checklists[activeChecklistIndex].declineReason"></span>
+                                    </p>
+                                    <button type="button" @click="removeHoldGeneralSignatoryTab()" :disabled="gsRemovingHold"
+                                        :class="gsRemovingHold ? 'opacity-70 cursor-not-allowed' : 'hover:bg-amber-100 dark:hover:bg-amber-500/20'"
+                                        class="mt-3 flex items-center justify-center gap-1.5 rounded-lg border border-amber-500 px-4 py-2 text-sm font-medium text-amber-700 dark:border-amber-400 dark:text-amber-400">
+                                        <span x-show="gsRemovingHold" class="h-4 w-4 animate-spin rounded-full border-2 border-solid border-amber-600 border-t-transparent dark:border-amber-400"></span>
+                                        <span x-text="gsRemovingHold ? 'Removing Hold...' : 'Remove On Hold'"></span>
+                                    </button>
+                                </div>
+                            </template>
+                            <p class="mb-5 text-sm text-gray-500 dark:text-gray-400">
+                                You are assigned as Signatory (Clearance Signatory) on this offboarding request.
+                            </p>
+                        </div>
+                    </template>
+
+                    <div x-show="!isGeneralSignatoryTabActive()">
                     <!-- On Hold banner — shown from page load (selected.isOnHold, computed
                          server-side off this checklist's actual `status`) or the instant a
                          decline succeeds (patched in place by declineChecklist() above, no
@@ -1356,9 +1784,10 @@
                         </div>
                     </template>
                     </div>
+                    </div>
                 </div>
 
-                <form method="POST" :action="selected.saveProgressUrl" x-show="!selectedLoading"
+                <form method="POST" :action="selected.saveProgressUrl" x-show="!selectedLoading && !isGeneralSignatoryTabActive()"
                     id="checklistProgressForm" x-data="{ processing: false, remarksResolved: false, approvalRemarks: '' }" @submit="processing = true"
                     class="flex min-h-0 flex-1 flex-col">
                         @csrf
@@ -1466,7 +1895,7 @@
                                                 })"
                                                 :class="takeOverProcessing[item.id] ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#145a3a]/5 dark:hover:bg-[#3aa876]/10'"
                                                 class="rounded-lg border border-[#145a3a] px-3 py-1.5 text-xs font-medium text-[#145a3a] dark:border-[#3aa876] dark:text-[#3aa876]">
-                                                Check This List
+                                                Process Task List
                                             </button>
                                         </div>
                                     </template>
@@ -1569,6 +1998,65 @@
                                         }
                                     "
                                     :class="(processing || !canApprove()) ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#0f4630]'"
+                                    class="flex items-center justify-center gap-1.5 rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white">
+                                    Approve
+                                </button>
+                            </template>
+                        </div>
+                    </form>
+
+                    {{-- Sibling form for a merged-in General Signatory tab — see the
+                         matching GS header block above. A single whole-assignment
+                         Approve/Decline, no items, no Save Progress (see
+                         GeneralSignatoryTask's own docblock — nothing to persist
+                         partial progress on), mirroring general-signatory-modal.blade.php's
+                         own form exactly. --}}
+                    <form method="POST" :action="selected.checklists?.[activeChecklistIndex]?.submitUrl"
+                        x-show="isGeneralSignatoryTabActive()" @submit="gsProcessing = true"
+                        class="flex min-h-0 flex-1 flex-col">
+                        @csrf
+                        <div class="custom-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto px-6 pb-2 lg:px-8">
+                            <template x-if="isGeneralSignatoryTabActive() && selected.checklists[activeChecklistIndex].generalSignatoryTasks && selected.checklists[activeChecklistIndex].generalSignatoryTasks.length">
+                                <div class="mb-5">
+                                    <p class="mb-2 text-sm font-medium text-gray-700 dark:text-gray-300">Task List</p>
+                                    <div class="space-y-2">
+                                        <template x-for="(task, taskIndex) in selected.checklists[activeChecklistIndex].generalSignatoryTasks" :key="taskIndex">
+                                            <div class="rounded-lg border border-gray-200 px-4 py-2.5 dark:border-gray-800">
+                                                <span class="block text-sm font-medium text-gray-800 dark:text-white/90" x-text="task.title"></span>
+                                                <span class="block text-xs text-gray-400" x-show="task.assigneeName"
+                                                    x-text="'Assignee: ' + task.assigneeName"></span>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </div>
+                            </template>
+                            <template x-if="isGeneralSignatoryTabActive() && (!selected.checklists[activeChecklistIndex].generalSignatoryTasks || !selected.checklists[activeChecklistIndex].generalSignatoryTasks.length)">
+                                <p class="mb-5 rounded-lg bg-gray-50 px-4 py-3 text-sm text-gray-500 dark:bg-white/[0.03] dark:text-gray-400">
+                                    No task list is configured for this Checklist — only your clearance approval is required.
+                                </p>
+                            </template>
+                            <template x-if="isGeneralSignatoryTabActive() && !selected.checklists[activeChecklistIndex].isOnHold">
+                                <div>
+                                    <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                                        Remarks <span class="font-normal text-gray-400">(optional)</span>
+                                    </label>
+                                    <textarea name="remarks" x-model="gsRemarksText" rows="3" placeholder="Add any remarks before approving..."
+                                        class="dark:bg-dark-900 w-full rounded-lg border border-gray-300 bg-transparent px-3 py-2 text-sm text-gray-800 placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30"></textarea>
+                                </div>
+                            </template>
+                        </div>
+                        <div class="shrink-0 flex flex-wrap items-center justify-end gap-3 border-t border-gray-100 p-6 pt-4 dark:border-gray-800 lg:px-8 lg:pb-8">
+                            <template x-if="isGeneralSignatoryTabActive() && !selected.checklists[activeChecklistIndex].isOnHold">
+                                <button type="button" @click="declineGeneralSignatoryTab()" :disabled="gsDeclining"
+                                    :class="gsDeclining ? 'opacity-70 cursor-not-allowed' : 'hover:bg-red-50 dark:hover:bg-red-500/10'"
+                                    class="flex items-center justify-center gap-1.5 rounded-lg border border-red-500 px-4 py-2.5 text-sm font-medium text-red-600 dark:border-red-400 dark:text-red-400">
+                                    <span x-show="gsDeclining" class="h-4 w-4 animate-spin rounded-full border-2 border-solid border-red-600 border-t-transparent dark:border-red-400"></span>
+                                    <span x-text="gsDeclining ? 'Declining...' : 'Decline'"></span>
+                                </button>
+                            </template>
+                            <template x-if="isGeneralSignatoryTabActive() && !selected.checklists[activeChecklistIndex].isOnHold">
+                                <button type="submit" :disabled="gsProcessing" data-turbo-submits-with="Submitting..."
+                                    :class="gsProcessing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#0f4630]'"
                                     class="flex items-center justify-center gap-1.5 rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white">
                                     Approve
                                 </button>

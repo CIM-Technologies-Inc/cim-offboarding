@@ -147,6 +147,20 @@ class RoleController extends Controller
     }
 
     /**
+     * A handful of module prefixes whose mechanically title-cased label
+     * (`Str::of($module)->replace('-', ' ')->title()`) wouldn't match
+     * what the rest of the app actually calls that module elsewhere (nav
+     * item name, page title) — e.g. "smtp-settings" → "Smtp Settings"
+     * mechanically, but the page/nav item is "Mail Settings". Purely a
+     * display-label override; the permission names themselves
+     * (`smtp-settings.view` etc.) are completely unchanged everywhere
+     * else (routes, middleware, MenuHelper).
+     */
+    private const MODULE_LABEL_OVERRIDES = [
+        'smtp-settings' => 'Mail Settings',
+    ];
+
+    /**
      * Every permission grouped by its "module.action" prefix, for the
      * checkbox panel — e.g. "offboarding-checklists.view" and
      * "offboarding-checklists.edit" both land under the "Offboarding
@@ -160,7 +174,7 @@ class RoleController extends Controller
             ->get()
             ->groupBy(fn (Permission $permission) => Str::before($permission->name, '.'))
             ->map(fn ($permissions, $module) => [
-                'label' => Str::of($module)->replace('-', ' ')->title()->toString(),
+                'label' => self::MODULE_LABEL_OVERRIDES[$module] ?? Str::of($module)->replace('-', ' ')->title()->toString(),
                 'permissions' => $permissions->values(),
             ])
             ->values()

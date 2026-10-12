@@ -13,6 +13,39 @@
         hasMatches() {
             const query = this.search.trim().toLowerCase();
             return query === '' || this.names.some((name) => name.includes(query));
+        },
+        // Card View / List View — `viewMode` is the user's own explicit
+        // choice, persisted per `sessionStorage` (mirrors the `theme`
+        // store's localStorage pattern in
+        // resources/views/partials/theme-init.blade.php, but scoped to
+        // this session/navigation rather than kept indefinitely).
+        // `totalCount` is this page's already-filtered (status/department)
+        // offboardee count — forcing List View at 20+ is a pure DISPLAY
+        // override via `effectiveView()`: it never calls `setViewMode()`,
+        // so a remembered preference survives a temporary excursion above
+        // the threshold and resumes the instant the count drops back
+        // below it, instead of being permanently reset to List.
+        viewMode: (() => {
+            try {
+                return sessionStorage.getItem('offboardeesViewMode') || 'card';
+            } catch (e) {
+                return 'card';
+            }
+        })(),
+        totalCount: {{ $offboardees->count() }},
+        isForcedListView() {
+            return this.totalCount >= 20;
+        },
+        effectiveView() {
+            return this.isForcedListView() ? 'list' : this.viewMode;
+        },
+        setViewMode(mode) {
+            this.viewMode = mode;
+            try {
+                sessionStorage.setItem('offboardeesViewMode', mode);
+            } catch (e) {
+                // ignore — view just won't persist across navigations
+            }
         }
     }">
         @php
@@ -209,6 +242,39 @@
                         </form>
                     </div>
                 </div>
+
+                <!-- Card View / List View toggle — hidden entirely once the
+                     20-request threshold forces List View, since there's no
+                     real choice to offer at that point (see the page-level
+                     `isForcedListView()`/`effectiveView()` above). -->
+                <div class="flex items-center gap-1 rounded-lg border border-gray-300 bg-white p-1 dark:border-gray-700 dark:bg-gray-900"
+                    x-show="!isForcedListView()" x-cloak>
+                    <button type="button" @click="setViewMode('card')"
+                        :class="viewMode === 'card' ? 'bg-[#145a3a] text-white' : 'text-gray-500 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-white/[0.03]'"
+                        class="flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium transition-colors"
+                        :aria-pressed="viewMode === 'card'" title="Card View">
+                        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <rect x="2.5" y="2.5" width="6.5" height="6.5" rx="1.25" stroke="currentColor" stroke-width="1.5" />
+                            <rect x="11" y="2.5" width="6.5" height="6.5" rx="1.25" stroke="currentColor" stroke-width="1.5" />
+                            <rect x="2.5" y="11" width="6.5" height="6.5" rx="1.25" stroke="currentColor" stroke-width="1.5" />
+                            <rect x="11" y="11" width="6.5" height="6.5" rx="1.25" stroke="currentColor" stroke-width="1.5" />
+                        </svg>
+                        <span class="hidden sm:inline">Card</span>
+                    </button>
+                    <button type="button" @click="setViewMode('list')"
+                        :class="viewMode === 'list' ? 'bg-[#145a3a] text-white' : 'text-gray-500 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-white/[0.03]'"
+                        class="flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium transition-colors"
+                        :aria-pressed="viewMode === 'list'" title="List View">
+                        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M3.5 5.5h13M3.5 10h13M3.5 14.5h13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                        </svg>
+                        <span class="hidden sm:inline">List</span>
+                    </button>
+                </div>
+                <span x-show="isForcedListView()" x-cloak
+                    class="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-500 dark:bg-white/[0.03] dark:text-gray-400">
+                    List View (automatic for 20+ requests)
+                </span>
             </div>
 
             <div x-show="!hasMatches()" class="rounded-2xl border border-gray-200 bg-white p-10 text-center dark:border-gray-800 dark:bg-white/[0.03]">
@@ -217,7 +283,9 @@
                 </p>
             </div>
 
-            <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            <div :class="effectiveView() === 'card'
+                    ? 'grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'
+                    : 'flex flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03]'">
                 @foreach ($offboardees as $offboardee)
                     @php
                         // 'cancelled' IS shown here now — a retracted request
@@ -308,7 +376,12 @@
                         data-offboardee-card="{{ $offboardee['id'] }}"
                         @click="if (!cancelling && !extending) $dispatch('open-offboardee-modal', { ...@js($offboardee), status, lastWorkingDay, originalLastWorkingDay, isLastWorkingDayExtended, timeline })"
                         x-show="search.trim() === '' || @js(Str::lower($offboardee['name'])).includes(search.trim().toLowerCase())"
-                        class="group cursor-pointer rounded-2xl border border-gray-200 bg-white p-5 transition-all duration-200 hover:-translate-y-1 hover:border-[#145a3a]/40 hover:shadow-lg dark:border-gray-800 dark:bg-white/[0.03] dark:hover:border-[#3aa876]/40">
+                        :class="effectiveView() === 'card'
+                            ? 'group cursor-pointer rounded-2xl border border-gray-200 bg-white p-5 transition-all duration-200 hover:-translate-y-1 hover:border-[#145a3a]/40 hover:shadow-lg dark:border-gray-800 dark:bg-white/[0.03] dark:hover:border-[#3aa876]/40'
+                            : 'group cursor-pointer border-b border-gray-100 px-4 py-3 transition-colors last:border-b-0 hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-white/[0.03]'">
+                    {{-- ============================= CARD VIEW ============================= --}}
+                    <template x-if="effectiveView() === 'card'">
+                        <div>
                         <div class="flex items-start justify-between">
                             <div class="flex h-12 w-12 items-center justify-center rounded-full bg-gray-100 text-base font-semibold text-gray-600 dark:bg-gray-800 dark:text-gray-300">
                                 {{ collect(explode(' ', $offboardee['name']))->map(fn ($part) => mb_substr($part, 0, 1))->take(2)->implode('') }}
@@ -335,28 +408,7 @@
                             </div>
                         </div>
 
-                        {{-- Retraction history — read-only, shown only for a Retracted
-                             request, occupying the same space the Retract/Extend
-                             buttons below would otherwise use (neither is available
-                             once retracted — see their own x-show conditions). Visually
-                             set apart (bordered, tinted background) from the plain
-                             Department/Last Working Day rows above, so it clearly reads
-                             as a distinct historical record rather than an active
-                             request detail. --}}
-                        <div class="mt-4 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 dark:border-gray-800 dark:bg-white/[0.03]"
-                            x-show="status === 'cancelled'" @click.stop="">
-                            <div class="flex items-center justify-between text-xs">
-                                <span class="text-gray-400">Retracted By</span>
-                                <span class="font-medium text-gray-700 dark:text-gray-300" x-text="cancelledByName || '—'"></span>
-                            </div>
-                            <div class="mt-1.5 text-xs">
-                                <span class="text-gray-400">Retraction Reason</span>
-                                <p class="mt-0.5 text-gray-600 dark:text-gray-300" x-text="cancellationReason || '—'"></p>
-                            </div>
-                            <template x-if="cancelledAt">
-                                <p class="mt-1.5 text-xs text-gray-400" x-text="'Retracted on ' + cancelledAt"></p>
-                            </template>
-                        </div>
+                        @include('pages.offboardees.partials.retraction-history', ['compact' => false])
 
                         <!-- @can('offboarding-requests.reset')
                             @if ($offboardee['resetOffboardingUrl'] && $offboardee['hasOffboardingProgress'] && $offboardee['status'] !== 'completed')
@@ -389,434 +441,50 @@
                             @endif
                         @endcan -->
 
-                        @can('offboarding-requests.cancel')
-                            @if ($offboardee['cancelOffboardingUrl'])
-                                {{-- Reactive, not a static Blade `@if`, for the same reason
-                                     `canBulkExtendDue` gates Extend Due below: a successful
-                                     extension can push the Last Working Day back into the
-                                     future and must reopen this button immediately, with no
-                                     page reload — see the `canRetractOffboarding`/`status`
-                                     patch-in-place after a successful Extend Due submit. --}}
-                                <div class="mt-4 border-t border-gray-100 pt-4 dark:border-gray-800"
-                                    x-show="canRetractOffboarding && status !== 'cancelled' && status !== 'completed'"
-                                    @click.stop="">
-                                    {{-- Deliberately not a native form submit: cancellation must stay on
-                                         THIS page and remove just this one card the instant the server
-                                         confirms success, with no full-page reload — a plain
-                                         `$el.requestSubmit()`/Turbo navigation can't do that. The fetch
-                                         call awaits the full response (DB transaction + notification
-                                         dispatch all complete server-side before it resolves), so the
-                                         loading state below covers the entire cancellation, not just the
-                                         network round trip start. --}}
-                                    <form method="POST" action="{{ $offboardee['cancelOffboardingUrl'] }}"
-                                        @submit.prevent="if (cancelling) return;
-                                            Swal.fire({
-                                                title: 'Retract Offboarding Request?',
-                                                html: '&lt;p style=\'text-align:left;font-size:14px;margin:0 0 12px;\'&gt;Are you sure you want to retract this offboarding request for ' + @js($offboardee['name']) + '? The request will be marked Retracted and kept as a read-only historical record — nothing is deleted.&lt;/p&gt;'
-                                                    + '&lt;label style=\'display:block;text-align:left;font-size:12px;color:#6b7280;margin:0 0 4px;\'&gt;Retraction Reason/Remarks&lt;/label&gt;'
-                                                    + '&lt;textarea id=\'cancel-offboarding-reason-input\' class=\'swal2-textarea\' style=\'margin:0;width:100%;box-sizing:border-box;\' rows=\'3\' placeholder=\'Explain why this offboarding request is being retracted...\'&gt;&lt;/textarea&gt;',
-                                                icon: 'warning',
-                                                showCancelButton: true,
-                                                confirmButtonText: 'Confirm Retraction',
-                                                cancelButtonText: 'Cancel',
-                                                confirmButtonColor: '#dc2626',
-                                                cancelButtonColor: '#6b7280',
-                                                reverseButtons: true,
-                                                // Requirement: the dialog itself must show a loading state on
-                                                // its own Confirm Retraction button and stay open — not close
-                                                // immediately and hand off to a second, separate popup — for
-                                                // the network round trip, only closing on genuine success and
-                                                // staying open (with the error shown inline, via
-                                                // `showValidationMessage`) on failure so the reason stays typed
-                                                // and the user can retry without starting over. Same
-                                                // async-`preConfirm` + `showLoaderOnConfirm` pair the Extend
-                                                // Last Working Day dialog already uses, for consistency.
-                                                showLoaderOnConfirm: true,
-                                                preConfirm: async () => {
-                                                    const reason = (document.getElementById('cancel-offboarding-reason-input').value || '').trim();
-                                                    if (!reason) {
-                                                        Swal.showValidationMessage('A reason is required to retract this offboarding request.');
-                                                        return false;
-                                                    }
-                                                    cancelling = true;
-                                                    try {
-                                                        const response = await fetch($el.action, {
-                                                            method: 'POST',
-                                                            headers: {
-                                                                'Accept': 'application/json',
-                                                                'X-Requested-With': 'XMLHttpRequest',
-                                                                'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
-                                                                'Content-Type': 'application/json',
-                                                            },
-                                                            body: JSON.stringify({ reason: reason }),
-                                                        });
-                                                        const data = await response.json().catch(() => ({}));
-                                                        if (!response.ok) {
-                                                            // Same prefer-the-specific-field-error-over-Laravel's-
-                                                            // generic-422-wrapper convention the Extend Due flow
-                                                            // already uses — the client-side check above blocks an
-                                                            // empty reason before this is ever reached in normal use,
-                                                            // but a direct/bypassed request still gets a real message.
-                                                            const fieldError = data.errors ? Object.values(data.errors)[0]?.[0] : null;
-                                                            throw new Error(fieldError || data.message || 'Retraction failed. Please try again.');
-                                                        }
-                                                        return data;
-                                                    } catch (error) {
-                                                        // Surfaced INSIDE the still-open dialog (SweetAlert2's own
-                                                        // validation-message banner) rather than a separate error
-                                                        // popup — the reason already typed stays exactly as it
-                                                        // was, ready to retry without reopening the dialog.
-                                                        Swal.showValidationMessage(error.message);
-                                                        return false;
-                                                    } finally {
-                                                        cancelling = false;
-                                                    }
-                                                }
-                                            }).then((result) => {
-                                                if (!result.isConfirmed) return;
-                                                const data = result.value;
-                                                // Patch in place — not `.remove()` — so the retracted
-                                                // request stays visible as a read-only historical card
-                                                // (see OffboardingRequestController::cancel()'s own
-                                                // docblock) instead of disappearing. Same flip-the-
-                                                // reactive-status, let-the-existing-badge/action-
-                                                // bindings-react convention Extend Due's own success
-                                                // handler already uses on this same card.
-                                                status = 'cancelled';
-                                                // Read back from the server's own response — the actual
-                                                // persisted `cancelled_by`/`cancellation_reason` columns
-                                                // (see cancel()'s own docblock) — never the currently
-                                                // logged-in viewer or a client-side echo of the typed
-                                                // reason, so this always matches the real historical
-                                                // record even if it's ever read back by someone else.
-                                                cancelledByName = data.cancelledByName;
-                                                cancellationReason = data.cancellationReason;
-                                                cancelledAt = data.cancelledAt;
-                                                // Retracting reverts the employee to `active` server-side
-                                                // (see cancel()'s own docblock), which makes them eligible
-                                                // for a brand new request immediately — but the New
-                                                // Offboarding Request modal's own employee/Immediate Head
-                                                // pickers each build their list ONCE, at page load, baked
-                                                // into their own x-data (see new-request-modal.blade.php).
-                                                // Dispatched here, listened for there, so this employee is
-                                                // selectable again with no page reload — same cross-
-                                                // component window-event convention that modal's own
-                                                // immediate-head-auto-select already uses.
-                                                $dispatch('employee-available-for-offboarding', {
-                                                    id: @js((string) $offboardee['employeeId']),
-                                                    name: @js($offboardee['name']),
-                                                    code: @js($offboardee['employeeCode']),
-                                                    department: @js($offboardee['department']),
-                                                    position: @js($offboardee['designation']),
-                                                });
-                                                Swal.fire({
-                                                    icon: 'success',
-                                                    title: 'Retracted',
-                                                    text: data.message || 'Offboarding request has been retracted.',
-                                                    confirmButtonColor: '#145a3a',
-                                                });
-                                            });
-                                        ">
-                                        @csrf
-                                        <button type="submit" :disabled="cancelling"
-                                            class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-error-200 px-3 py-2 text-xs font-medium text-error-600 hover:bg-error-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-error-500/30 dark:text-error-400 dark:hover:bg-error-500/10">
-                                            <svg x-show="!cancelling" width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                <path d="M10 17.5C14.1421 17.5 17.5 14.1421 17.5 10C17.5 5.85786 14.1421 2.5 10 2.5C5.85786 2.5 2.5 5.85786 2.5 10C2.5 14.1421 5.85786 17.5 10 17.5Z" stroke="currentColor" stroke-width="1.5" />
-                                                <path d="M7.5 7.5L12.5 12.5M12.5 7.5L7.5 12.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-                                            </svg>
-                                            <svg x-show="cancelling" x-cloak class="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
-                                            </svg>
-                                            <span x-text="cancelling ? 'Retracting...' : 'Retract Offboarding'"></span>
-                                        </button>
-                                    </form>
-                                </div>
-                            @endif
-                        @endcan
+                        @include('pages.offboardees.partials.retract-button', ['offboardee' => $offboardee, 'compact' => false])
 
-                        @can('checklists.extend-due')
-                            @if ($offboardee['extendAllDueUrl'])
-                                <div class="border-t border-gray-100 pt-4 dark:border-gray-800" x-show="canBulkExtendDue && status !== 'cancelled'" :class="{ 'pointer-events-none opacity-50': cancelling }" @click.stop="">
-                                    {{-- Same fetch-based (not native form submit) convention as Cancel
-                                         Offboarding above — the loading state must cover the ENTIRE
-                                         bulk extension (every checklist's due date pushed forward, its
-                                         own audit row + Timeline entry, and the extension emails), not
-                                         just the network round trip start. --}}
-                                    <form method="POST" action="{{ $offboardee['extendAllDueUrl'] }}"
-                                        @submit.prevent="if (extending) return;
-                                            let extendDueFlatpickr = null;
-                                            // Per-checklist breakdown — replaces a single combined 'Current Due
-                                            // Date' value with each applicable checklist's OWN due date and a
-                                            // Due/Not Due badge, so it's clear exactly WHICH checklist(s)
-                                            // triggered the button rather than only the latest date across all
-                                            // of them (a request can have some checklists already overdue
-                                            // alongside others that aren't yet). Reads the CARD's own reactive
-                                            // `extendDueChecklists` (a bare identifier — Alpine resolves this
-                                            // via its own `with()` scope chaining, same as `extending`/
-                                            // `cancelling` elsewhere on this card; an explicit `this.x` or a
-                                            // `const self = this` capture does NOT reliably reach the
-                                            // component's reactive data from inside an event-handler
-                                            // expression like this one, and silently reads `undefined`
-                                            // instead) so a second click after a successful extension shows
-                                            // fresh data without a page reload.
-                                            const extendDueChecklistRows = (extendDueChecklists || []).map((c) => (
-                                                '&lt;div style=\'display:flex;justify-content:space-between;align-items:center;gap:12px;padding:6px 0;border-bottom:1px solid #f3f4f6;font-size:13px;\'&gt;'
-                                                + '&lt;span&gt;' + c.title + '&lt;/span&gt;'
-                                                + '&lt;span style=\'display:flex;align-items:center;gap:8px;flex-shrink:0;\'&gt;'
-                                                + '&lt;span style=\'color:' + (c.hasReachedDueDate ? '#dc2626' : '#374151') + ';\'&gt;' + c.dueDate + '&lt;/span&gt;'
-                                                + '&lt;span style=\'background:' + (c.hasReachedDueDate ? '#fee2e2' : '#f3f4f6') + ';color:' + (c.hasReachedDueDate ? '#dc2626' : '#6b7280') + ';font-size:11px;font-weight:600;padding:2px 8px;border-radius:9999px;white-space:nowrap;\'&gt;' + (c.hasReachedDueDate ? 'Due' : 'Not Due') + '&lt;/span&gt;'
-                                                + '&lt;/span&gt;'
-                                                + '&lt;/div&gt;'
-                                            )).join('');
-                                            Swal.fire({
-                                                title: 'Extend Last Working Day',
-                                                html: '&lt;div style=\'text-align:left;border-bottom:1px solid #e5e7eb;padding-bottom:10px;margin-bottom:10px;\'&gt;'
-                                                    + '&lt;p style=\'font-size:15px;font-weight:700;margin:0 0 2px;\'&gt;' + @js($offboardee['name'] ?? '—') + '&lt;/p&gt;'
-                                                    + '&lt;p style=\'font-size:12px;color:#6b7280;margin:0;\'&gt;' + @js($offboardee['designation'] ?? '—') + ' &middot; ' + @js($offboardee['department'] ?? '—') + '&lt;/p&gt;'
-                                                    + '&lt;/div&gt;'
-                                                    + '&lt;p style=\'text-align:left;font-size:13px;line-height:1.6;\'&gt;'
-                                                    + 'At least one checklist has reached its due date. Select the new Last Working Day — every checklist still awaiting approval will have its own due date recalculated from it, using its configured Due Date Extension (Days).&lt;/p&gt;'
-                                                    + '&lt;p style=\'text-align:left;font-size:12px;color:#6b7280;margin:10px 0 2px;\'&gt;Current Last Working Day&lt;/p&gt;'
-                                                    + '&lt;p style=\'text-align:left;font-size:15px;font-weight:700;margin:0 0 10px;\'&gt;' + (lastWorkingDay || '—') + '&lt;/p&gt;'
-                                                    + '&lt;p style=\'text-align:left;font-size:12px;color:#6b7280;margin:0 0 2px;\'&gt;Checklist Due Dates&lt;/p&gt;'
-                                                    + '&lt;div style=\'margin-bottom:12px;\'&gt;' + (extendDueChecklistRows || '&lt;p style=\'font-size:12px;color:#9ca3af;margin:4px 0;\'&gt;No applicable checklists.&lt;/p&gt;') + '&lt;/div&gt;'
-                                                    + '&lt;label style=\'display:block;text-align:left;font-size:12px;color:#6b7280;margin:0 0 4px;\'&gt;Extend Last Working Day&lt;/label&gt;'
-                                                    + '&lt;input id=\'extend-due-date-input\' type=\'text\' class=\'swal2-input\' style=\'margin:0;width:100%;\' placeholder=\'Select date\' autocomplete=\'off\' readonly /&gt;'
-                                                    + '&lt;div id=\'extend-due-date-spacer\' style=\'height:0;transition:height 0.15s ease;\'&gt;&lt;/div&gt;'
-                                                    // Hidden until the first click of the Extend Due button (see
-                                                    // `preConfirm` below) — asking for a reason before a date is
-                                                    // even picked reads as premature, so it only appears once
-                                                    // there's actually something to justify.
-                                                    + '&lt;div id=\'extend-due-reason-wrapper\' style=\'display:none;\'&gt;'
-                                                    + '&lt;label style=\'display:block;text-align:left;font-size:12px;color:#6b7280;margin:12px 0 4px;\'&gt;Reason for Extension&lt;/label&gt;'
-                                                    + '&lt;textarea id=\'extend-due-reason-input\' class=\'swal2-textarea\' style=\'margin:0;width:100%;box-sizing:border-box;\' rows=\'3\' placeholder=\'Explain why the Last Working Day is being extended...\'&gt;&lt;/textarea&gt;'
-                                                    + '&lt;/div&gt;',
-                                                didOpen: () => {
-                                                    // flatpickr's `static: true` calendar is `position: absolute`,
-                                                    // so — unlike a normal in-flow element — it contributes NOTHING
-                                                    // to its container's height: the modal never grows for it, and
-                                                    // the calendar just renders past the popup's bottom edge, either
-                                                    // getting clipped or forcing `.swal2-html-container`'s own
-                                                    // overflow:auto to kick in as a cramped inner scrollbar. The
-                                                    // spacer div right after the input is a normal in-flow element
-                                                    // that DOES count — onOpen/onClose below resize it to exactly
-                                                    // match the calendar's own rendered height, so the modal grows
-                                                    // to make room for it (pushing Cancel/Extend Due down) the
-                                                    // instant it opens, and shrinks back the instant it closes.
-                                                    const spacer = document.getElementById('extend-due-date-spacer');
-                                                    // flatpickr parses a STRING `minDate` using this same instance's
-                                                    // own `dateFormat` ('M d, Y') — a plain 'Y-m-d' string like
-                                                    // '2026-09-22' fails that parse silently (logs 'Invalid date
-                                                    // provided' and disables nothing at all), so it's converted to a
-                                                    // real JS Date object here instead, which bypasses string
-                                                    // parsing entirely. Reads the CARD's reactive
-                                                    // `extendDueMinSelectableDateIso`, same reasoning as
-                                                    // `extendDueChecklistRows` above.
-                                                    const minSelectableIso = extendDueMinSelectableDateIso;
-                                                    extendDueFlatpickr = flatpickr(document.getElementById('extend-due-date-input'), {
-                                                        dateFormat: 'M d, Y',
-                                                        static: true,
-                                                        monthSelectorType: 'static',
-                                                        minDate: minSelectableIso ? new Date(minSelectableIso + 'T00:00:00') : null,
-                                                        onOpen: (selectedDates, dateStr, instance) => {
-                                                            spacer.style.height = instance.calendarContainer.offsetHeight + 'px';
-                                                        },
-                                                        onClose: () => {
-                                                            spacer.style.height = '0px';
-                                                        },
-                                                    });
-                                                },
-                                                willClose: () => {
-                                                    if (extendDueFlatpickr) { extendDueFlatpickr.destroy(); extendDueFlatpickr = null; }
-                                                },
-                                                showCancelButton: true,
-                                                confirmButtonText: 'Extend Date',
-                                                cancelButtonText: 'Cancel',
-                                                confirmButtonColor: '#145a3a',
-                                                cancelButtonColor: '#6b7280',
-                                                reverseButtons: true,
-                                                // Requirement: the dialog itself must show a loading state on
-                                                // its own Extend Due button and stay open — not close
-                                                // immediately and hand off to a second, separate popup — for
-                                                // the network round trip, only closing on genuine success and
-                                                // staying open (with the error shown inline, via
-                                                // `showValidationMessage`) on failure so the admin can correct
-                                                // the date/reason and retry without starting over. SweetAlert2's
-                                                // own async-`preConfirm` + `showLoaderOnConfirm` pair is exactly
-                                                // built for this: it disables both buttons and shows a spinner
-                                                // on Extend Due for as long as this returned promise is
-                                                // pending, and only closes the dialog if it resolves to a
-                                                // truthy value — a validation failure inside it (via `return
-                                                // false` after `showValidationMessage`) keeps the dialog open
-                                                // exactly like the two-step date/reason checks below already
-                                                // do, unifying both kinds of not-ready-yet into the same
-                                                // mechanism.
-                                                showLoaderOnConfirm: true,
-                                                preConfirm: async () => {
-                                                    const selected = extendDueFlatpickr?.selectedDates?.[0];
-                                                    if (!selected) {
-                                                        Swal.showValidationMessage('Extend the Last Working Day.');
-                                                        return false;
-                                                    }
-                                                    // Two-step confirm: the Reason field stays hidden until a
-                                                    // date is actually picked and this button is clicked once —
-                                                    // that first click only reveals it (and stops here, without
-                                                    // submitting), so it's never shown before there's a date to
-                                                    // justify. A second click, with the reason now visible and
-                                                    // filled in, actually submits.
-                                                    const reasonWrapper = document.getElementById('extend-due-reason-wrapper');
-                                                    const reasonInput = document.getElementById('extend-due-reason-input');
-                                                    if (reasonWrapper.style.display === 'none') {
-                                                        reasonWrapper.style.display = '';
-                                                        reasonInput.focus();
-                                                        return false;
-                                                    }
-                                                    const reason = (reasonInput.value || '').trim();
-                                                    if (!reason) {
-                                                        Swal.showValidationMessage('A reason is required to extend the Last Working Day.');
-                                                        return false;
-                                                    }
-                                                    const y = selected.getFullYear();
-                                                    const m = String(selected.getMonth() + 1).padStart(2, '0');
-                                                    const d = String(selected.getDate()).padStart(2, '0');
+                        @include('pages.offboardees.partials.extend-due-button', ['offboardee' => $offboardee, 'compact' => false])
 
-                                                    extending = true;
-                                                    try {
-                                                        const response = await fetch($el.action, {
-                                                            method: 'POST',
-                                                            headers: {
-                                                                'Accept': 'application/json',
-                                                                'X-Requested-With': 'XMLHttpRequest',
-                                                                'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
-                                                                'Content-Type': 'application/json',
-                                                            },
-                                                            body: JSON.stringify({ new_last_working_day: y + '-' + m + '-' + d, reason: reason }),
-                                                        });
-                                                        const data = await response.json().catch(() => ({}));
-                                                        if (!response.ok) {
-                                                            // A 422 validation failure (e.g. the picked date turned
-                                                            // out to be no longer later than the request's CURRENT
-                                                            // Last Working Day — this can genuinely happen if it was
-                                                            // changed elsewhere since the dialog opened) carries its
-                                                            // specific field message under `data.errors`, not
-                                                            // `data.message` (that's just Laravel's own generic
-                                                            // wrapper text) — prefer the first real field error
-                                                            // when present.
-                                                            const fieldError = data.errors ? Object.values(data.errors)[0]?.[0] : null;
-                                                            throw new Error(fieldError || data.message || 'Extending the Last Working Day failed. Please try again.');
-                                                        }
-                                                        return data;
-                                                    } catch (error) {
-                                                        // Surfaced INSIDE the still-open dialog (SweetAlert2's own
-                                                        // validation-message banner) rather than a separate error
-                                                        // popup — the date/reason the admin already entered stay
-                                                        // exactly as they were, ready to correct and retry.
-                                                        Swal.showValidationMessage(error.message);
-                                                        return false;
-                                                    } finally {
-                                                        extending = false;
-                                                    }
-                                                }
-                                            }).then((result) => {
-                                                if (!result.isConfirmed) return;
-                                                const data = result.value;
-                                                // Reactive update — no page reload. The card's own state
-                                                // (Last Working Day text, whether Extend Due stays visible,
-                                                // and the data a SUBSEQUENT click of it would show) all come
-                                                // straight from this response, matching
-                                                // `OffboardeeController::index()`'s own fields exactly — and
-                                                // since the Offboarding Status/Timeline modal reads this SAME
-                                                // card's reactive state the next time it's opened (see its own
-                                                // `open-offboardee-modal` dispatch above), both tabs pick up
-                                                // the fresh Last Working Day with no separate wiring needed.
-                                                // `timeline` in particular is what makes each checklist's OWN
-                                                // due date and the new extension activity entries themselves
-                                                // show up reactively — every other field above only ever
-                                                // refreshed the pinned header summary, never the tab content.
-                                                if (data.status !== undefined) status = data.status;
-                                                if (data.lastWorkingDay !== undefined) lastWorkingDay = data.lastWorkingDay;
-                                                if (data.originalLastWorkingDay !== undefined) originalLastWorkingDay = data.originalLastWorkingDay;
-                                                if (data.isLastWorkingDayExtended !== undefined) isLastWorkingDayExtended = data.isLastWorkingDayExtended;
-                                                if (data.canBulkExtendDue !== undefined) canBulkExtendDue = data.canBulkExtendDue;
-                                                if (data.canRetractOffboarding !== undefined) canRetractOffboarding = data.canRetractOffboarding;
-                                                if (data.extendDueChecklists !== undefined) extendDueChecklists = data.extendDueChecklists;
-                                                if (data.extendDueMinSelectableDateIso !== undefined) extendDueMinSelectableDateIso = data.extendDueMinSelectableDateIso;
-                                                if (data.timeline !== undefined) timeline = data.timeline;
-                                                Swal.fire({
-                                                    icon: 'success',
-                                                    title: 'Last Working Day Extended',
-                                                    text: data.message || 'Last Working Day extended and checklist due dates recalculated.',
-                                                    confirmButtonColor: '#145a3a',
-                                                });
-                                            });
-                                        ">
-                                        @csrf
-                                        <button type="submit" :disabled="extending"
-                                            class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-gray-300 px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
-                                            <svg x-show="!extending" width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                <path d="M10 5.83334V10L12.9167 12.9167" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-                                                <path d="M17.5 10C17.5 14.1421 14.1421 17.5 10 17.5C5.85786 17.5 2.5 14.1421 2.5 10C2.5 5.85786 5.85786 2.5 10 2.5C14.1421 2.5 17.5 5.85786 17.5 10Z" stroke="currentColor" stroke-width="1.5" />
-                                            </svg>
-                                            <svg x-show="extending" x-cloak class="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
-                                            </svg>
-                                            <span x-text="extending ? 'Extending...' : 'Extend Last Working Day'"></span>
-                                        </button>
-                                    </form>
-                                </div>
-                            @endif
-                        @endcan
+                        @include('pages.offboardees.partials.final-approval-button', ['offboardee' => $offboardee, 'compact' => false])
+                        </div>
+                    </template>
 
-                        @can('final-approval.send')
-                            {{-- Only ever shown for a request whose real `status` column is
-                                 'completed' — never based on `displayStatus()`, which can read
-                                 differently for unrelated reasons (overdue, etc.). --}}
-                            @if ($offboardee['status'] === 'completed' && $offboardee['finalApprovalUrl'])
-                                <div class="mt-4 border-t border-gray-100 pt-4 dark:border-gray-800" @click.stop="">
-                                    @if ($offboardee['finalApprovalStatus'] === 'approved')
-                                        <div class="flex w-full items-center justify-center gap-1.5 rounded-lg bg-[#145a3a]/10 px-3 py-2 text-xs font-medium text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]">
-                                            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                <path fill-rule="evenodd" clip-rule="evenodd" d="M13.4767 4.10714C13.7788 4.38292 13.8008 4.85162 13.5257 5.15436L6.83817 12.5211C6.69758 12.6759 6.49882 12.7644 6.29008 12.7644C6.08134 12.7644 5.88258 12.6759 5.74199 12.5211L2.47426 8.9211C2.19916 8.61836 2.22119 8.14966 2.52326 7.87388C2.82533 7.5981 3.29283 7.62018 3.56793 7.92292L6.29008 10.9184L12.4321 4.15582C12.7072 3.85308 13.1746 3.83137 13.4767 4.10714Z" fill="currentColor" />
-                                            </svg>
-                                            Approved
-                                        </div>
-                                    @else
-                                        @php
-                                            $finalApprovalConfirmTitle = $offboardee['finalApprovalStatus'] === 'pending'
-                                                ? 'Resend the Final Approval request?'
-                                                : 'Send this offboarding request for Final Approval?';
-                                        @endphp
-                                        <form method="POST" action="{{ $offboardee['finalApprovalUrl'] }}" x-data="{ confirmed: false }"
-                                            @submit="if (!confirmed) {
-                                                $event.preventDefault();
-                                                Swal.fire({
-                                                    title: @js($finalApprovalConfirmTitle),
-                                                    text: 'This will email the currently active Final Signatory' + (@js($offboardee['finalSignatoryName']) ? (' (' + @js($offboardee['finalSignatoryName']) + ')') : '') + ' the completed Clearance Form for ' + @js($offboardee['name']) + ' and a one-click Approve link.',
-                                                    icon: 'question',
-                                                    showCancelButton: true,
-                                                    confirmButtonText: 'Send',
-                                                    cancelButtonText: 'Cancel',
-                                                    confirmButtonColor: '#145a3a',
-                                                    cancelButtonColor: '#6b7280',
-                                                    reverseButtons: true
-                                                }).then((result) => { if (result.isConfirmed) { confirmed = true; $el.requestSubmit(); } });
-                                            }">
-                                            @csrf
-                                            <button type="submit" data-turbo-submits-with="Sending..."
-                                                class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-[#145a3a]/30 px-3 py-2 text-xs font-medium text-[#145a3a] hover:bg-[#145a3a]/5 dark:border-[#3aa876]/30 dark:text-[#3aa876] dark:hover:bg-[#3aa876]/10">
-                                                <svg width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                    <path d="M3.5 5.5L10 10.5L16.5 5.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-                                                    <path d="M3.5 5.5C3.5 4.94772 3.94772 4.5 4.5 4.5H15.5C16.0523 4.5 16.5 4.94772 16.5 5.5V14C16.5 14.5523 16.0523 15 15.5 15H4.5C3.94772 15 3.5 14.5523 3.5 14V5.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
-                                                </svg>
-                                                {{ $offboardee['finalApprovalStatus'] === 'pending' ? 'Resend Final Approval' : 'Final Approval' }}
-                                            </button>
-                                        </form>
-                                    @endif
+                    {{-- ============================= LIST VIEW ============================= --}}
+                    <template x-if="effectiveView() === 'list'">
+                        <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-6">
+                            <div class="flex min-w-0 items-center gap-3 sm:w-64 sm:shrink-0">
+                                <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gray-100 text-sm font-semibold text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                                    {{ collect(explode(' ', $offboardee['name']))->map(fn ($part) => mb_substr($part, 0, 1))->take(2)->implode('') }}
                                 </div>
-                            @endif
-                        @endcan
+                                <div class="min-w-0">
+                                    <p class="truncate text-sm font-semibold text-gray-800 group-hover:text-[#145a3a] dark:text-white/90 dark:group-hover:text-[#3aa876]">{{ $offboardee['name'] }}</p>
+                                    <p class="truncate text-xs text-gray-500 dark:text-gray-400">{{ $offboardee['designation'] }} &middot; {{ $offboardee['employeeCode'] ?? '—' }}</p>
+                                    @include('pages.offboardees.partials.retraction-history', ['compact' => true])
+                                </div>
+                            </div>
+
+                            <div class="sm:w-56 sm:shrink-0">
+                                <p class="text-sm text-gray-500 dark:text-gray-400">Department: <span class="font-medium text-gray-700 dark:text-gray-300">{{ $offboardee['department'] }}</span></p>
+                            </div>
+
+                            <div class="sm:w-52 sm:shrink-0">
+                                <p class="text-sm text-gray-500 dark:text-gray-400">Last Working Day: <span class="font-medium text-gray-700 dark:text-gray-300" x-text="lastWorkingDay"></span></p>
+                            </div>
+
+                            <div class="sm:w-28 sm:shrink-0">
+                                <span class="inline-flex rounded-full px-2.5 py-1 text-xs font-medium"
+                                    :class="statusStyles[status] || statusStyles.pending"
+                                    x-text="statusLabels[status] || (status.charAt(0).toUpperCase() + status.slice(1))">
+                                </span>
+                            </div>
+
+                            <div class="flex flex-1 flex-wrap items-center gap-2 sm:justify-end" @click.stop="">
+                                @include('pages.offboardees.partials.retract-button', ['offboardee' => $offboardee, 'compact' => true])
+                                @include('pages.offboardees.partials.extend-due-button', ['offboardee' => $offboardee, 'compact' => true])
+                                @include('pages.offboardees.partials.final-approval-button', ['offboardee' => $offboardee, 'compact' => true])
+                            </div>
+                        </div>
+                    </template>
                     </div>
                 @endforeach
             </div>

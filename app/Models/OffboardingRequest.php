@@ -317,6 +317,24 @@ class OffboardingRequest extends Model
     }
 
     /**
+     * Whether ANY checklist this request has — Department/Immediate Head,
+     * Final Pay (all just `OffboardingRequestApprover` rows; Final Pay has
+     * no separate status track of its own), or General Signatory — has
+     * already been approved by its Clearance Signatory. Once true,
+     * "Retract Offboarding" must never be offered or accepted again for
+     * this request: `OffboardeeController::index()`, `ApprovalController::
+     * extendAllDue()`'s live patch, and `OffboardingRequestController::
+     * cancel()`'s own backend guard all call this ONE method, so the
+     * button's visibility and the server's actual enforcement can never
+     * disagree.
+     */
+    public function hasAnyApprovedChecklist(): bool
+    {
+        return $this->approvers()->where('status', 'approved')->exists()
+            || $this->generalSignatoryApprovals()->where('status', 'approved')->exists();
+    }
+
+    /**
      * Per-request approval state for each attached General Signatory — the
      * General Signatory equivalent of `approvers()`. Backed by the very same
      * `offboarding_request_general_signatories` row `generalSignatories()`
@@ -836,6 +854,40 @@ class OffboardingRequest extends Model
                 ->values()
                 ->all() ?? [];
 
+            // A "Use Task Assignee as Clearance Signatory" checklist (e.g.
+            // the Final Pay Checklist) has no single owning employee at all
+            // — `$assignment->employee` is always null for it — so falling
+            // back to that alone previously left the Offboarding
+            // Status/Timeline tabs' "Clearance Signatory:" line blank for
+            // every such checklist. Every item still has its own real,
+            // current signatory (`effectiveSignatoryFor()` — the same
+            // per-request-override-aware resolution used throughout this
+            // app), resolved through `Employee::effectiveClearanceSignatory()`
+            // — themselves, unchanged, if already head-level, otherwise
+            // their own Immediate Head/Department Head, the exact same
+            // resolution the Clearance Form already uses for this same
+            // checklist kind (`ClearanceFormController::taskAssigneeSignatoryEntries()`),
+            // so a rank-and-file Task Assignee's own name never appears here
+            // as a formal Clearance Signatory while their actual head's does
+            // on the Clearance Form. This instead shows the distinct set of
+            // THOSE resolved signatories, deduped by employee id and
+            // comma-joined, covering the "more than one signatory" case too.
+            // Only used as a fallback — an ordinary checklist with a real
+            // owning employee keeps showing that employee's own name,
+            // unaffected.
+            $approverName = $assignment->employee?->name;
+
+            if ($approverName === null) {
+                $fallbackSignatoryNames = ($assignment->checklistTemplate?->items ?? collect())
+                    ->map(fn (ChecklistItem $item) => $assignment->effectiveSignatoryFor($item)?->effectiveClearanceSignatory())
+                    ->filter()
+                    ->unique('id')
+                    ->pluck('name')
+                    ->implode(', ');
+
+                $approverName = $fallbackSignatoryNames !== '' ? $fallbackSignatoryNames : null;
+            }
+
             $steps = [[
                 'rich' => true,
                 // Lets the Status tab sort the Final Pay checklist to the
@@ -844,7 +896,7 @@ class OffboardingRequest extends Model
                 // status-timeline-modal.blade.php's own richSteps().
                 'isFinalPayChecklist' => (bool) $assignment->checklistTemplate?->is_final_pay_checklist,
                 'department' => $assignment->checklistTemplate?->title ?? $assignment->department(),
-                'approverName' => $assignment->employee?->name,
+                'approverName' => $approverName,
                 'status' => $assignment->status,
                 // Same "real movement already happened" signal
                 // OffboardingRequestApprover::clearanceStatusLabel() itself
@@ -998,6 +1050,14 @@ class OffboardingRequest extends Model
                     'done' => $event->action !== 'checklist_item_held',
                     'hold' => $event->action === 'checklist_item_held',
                     'comment' => $event->comment,
+                    // Additive only — the live Offboarding Status/Timeline
+                    // tabs never read this key, so exposing it changes
+                    // nothing there. Lets the Clearance Form + Timeline PDF
+                    // (`ClearanceFormController::decorateTimelineStepsForPdf()`)
+                    // filter out this specific, item-level event category
+                    // by its real action name rather than fragile label-text
+                    // matching — see that method's own docblock for why.
+                    'action' => $event->action,
                 ];
             }
 
@@ -1138,6 +1198,23 @@ class OffboardingRequest extends Model
             'department' => $clearanceSignatory?->department ?? 'General Signatory',
             'approverName' => $clearanceSignatory?->name,
             'status' => $generalSignatoryApproval->status,
+            // Drives the Offboarding Status badge's "Ready for Approval"
+            // case (see status-timeline-modal.blade.php's own matching
+            // condition) — a General Signatory with no task list at all has
+            // nothing to work through before approving, so showing "Pending"
+            // the same way a checklist with real items awaiting action
+            // would is misleading; `=== false` (not falsy) in that Blade
+            // check is what keeps this from ever firing for an ordinary
+            // checklist step, which never sets this key at all.
+            'hasTasks' => $generalSignatoryApproval->generalSignatory->tasks->isNotEmpty(),
+            // The General Signatory equivalent of `buildRichStep()`'s own
+            // `hasRecordedProgress` (`$assignment->itemProgress->isNotEmpty()`)
+            // — General Signatory tasks carry no per-item completion state
+            // of their own at all (see `GeneralSignatoryTask`'s own
+            // docblock), so "has this General Signatory actually started
+            // working on it yet" has no finer-grained signal available than
+            // whether they've opened/viewed their assignment at all.
+            'hasRecordedProgress' => (bool) $generalSignatoryApproval->first_viewed_at,
             'assignedAt' => $generalSignatoryApproval->created_at?->format('M d, Y g:i A'),
             'firstViewedAt' => $generalSignatoryApproval->first_viewed_at?->format('M d, Y g:i A'),
             'approvedAt' => $generalSignatoryApproval->approved_at?->format('M d, Y g:i A'),

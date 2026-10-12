@@ -282,7 +282,7 @@
                          no reload needed). Submit/Decline stay disabled until the assigned
                          General Signatory clicks Remove On Hold below. -->
                     <template x-if="selected.isOnHold">
-                        <div class="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm dark:border-amber-500/30 dark:bg-amber-500/10">
+                        <div class="mb-4 mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm dark:border-amber-500/30 dark:bg-amber-500/10">
                             <p class="font-medium text-amber-700 dark:text-amber-400">This is On Hold.</p>
                             <p class="mt-1 text-amber-600 dark:text-amber-400" x-show="selected.declinedAt">
                                 Declined: <span x-text="selected.declinedAt"></span>
@@ -299,7 +299,7 @@
                         </div>
                     </template>
                     <p class="mb-5 text-sm text-gray-500 dark:text-gray-400">
-                        You are assigned as a General Signatory (Clearance Signatory) on this offboarding request.
+                        You are assigned as Signatory (Clearance Signatory) on this offboarding request.
                     </p>
 
                     {{-- Status section: Offboardee details plus the request's
@@ -368,7 +368,7 @@
                     </template>
                     <template x-if="!selected.generalSignatoryTasks || !selected.generalSignatoryTasks.length">
                         <p class="mb-5 rounded-lg bg-gray-50 px-4 py-3 text-sm text-gray-500 dark:bg-white/[0.03] dark:text-gray-400">
-                            No task list is configured for this General Signatory — only your clearance approval is required.
+                            No task list is configured for this Checklist — only your clearance approval is required.
                         </p>
                     </template>
 
@@ -403,7 +403,7 @@
                                 <button type="submit" :disabled="processing" data-turbo-submits-with="Submitting..."
                                     :class="processing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#0f4630]'"
                                     class="flex items-center justify-center gap-1.5 rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white">
-                                    Submit
+                                    Approve
                                 </button>
                             </template>
                         </div>

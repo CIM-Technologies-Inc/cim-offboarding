@@ -30,6 +30,7 @@ use App\Http\Controllers\ReportController;
 use App\Http\Controllers\SeparationTypeController;
 use App\Http\Controllers\LogController;
 use App\Http\Controllers\SmtpSettingController;
+use App\Http\Controllers\ImpersonationController;
 
 // authentication pages
 Route::get('/signin', [AuthController::class, 'create'])->name('login');
@@ -79,7 +80,7 @@ Route::post('/general-signatory-approval/{id}/{token}', [GeneralSignatoryApprova
 Route::get('/final-approval/{id}/{token}', [FinalApprovalController::class, 'showEmailApproval'])->name('final-approval.show');
 Route::post('/final-approval/{id}/{token}', [FinalApprovalController::class, 'confirmEmailApproval'])->name('final-approval.confirm');
 
-Route::middleware(['auth', 'password.changed', 'account.active'])->group(function () {
+Route::middleware(['auth', 'password.changed', 'account.active', 'no-cache'])->group(function () {
 
 // forced first-time password change — reachable even while
 // `must_change_password` is true (EnsurePasswordChanged exempts these two
@@ -441,6 +442,18 @@ Route::middleware('permission:users.manage-roles')->group(function () {
 Route::middleware('permission:users.manage-status')->group(function () {
     Route::patch('/users/{employee}/reactivate', [UserController::class, 'reactivate'])->name('users.reactivate');
 });
+
+// "Login As User" impersonation — see ImpersonationController's own
+// docblock. `start` is permission-gated (Admin only by default, see the
+// `users.login-as` permission migration); `stop` deliberately is NOT —
+// it's the safety valve back to the ORIGINAL admin and must stay reachable
+// regardless of whatever the impersonated account's own permissions are
+// (the controller itself validates there's a real impersonation session to
+// stop, see its own abort_unless()).
+Route::middleware('permission:users.login-as')->group(function () {
+    Route::post('/users/{employee}/login-as', [ImpersonationController::class, 'start'])->name('impersonate.start');
+});
+Route::post('/impersonate/stop', [ImpersonationController::class, 'stop'])->name('impersonate.stop');
 
 // Logs — read-only audit trail, Admin by default; see LogController's own
 // docblock for why there is no edit/delete route here at all.

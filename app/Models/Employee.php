@@ -149,12 +149,55 @@ class Employee extends Model
      * a "Use Task Assignee as Clearance Signatory" item: their Immediate
      * Head (`headEmployee()`) if one is configured, else their Group Head/
      * Department Head (`departmentHead()`) — the same two-step precedence
-     * `ClearanceFormController::effectiveClearanceSignatoryFor()` already
-     * uses for Clearance Form attribution.
+     * `effectiveClearanceSignatory()` below uses for Clearance Form/
+     * Offboarding Status attribution.
      */
     public function approvalHead(): ?Employee
     {
         return $this->headEmployee ?? $this->departmentHead();
+    }
+
+    /**
+     * True when this employee is already head-level for Clearance Form
+     * attribution purposes — broader than `isDepartmentHead()` above
+     * (which only checks the Employee Master group/`department_heads`
+     * registries): also true when someone else's own `head_employee_id`
+     * points here (this employee is at least one person's Immediate Head),
+     * or when this employee is the configured `department_head_id` of at
+     * least one active `ChecklistTemplate`. Kept as its OWN method rather
+     * than widening `isDepartmentHead()`'s existing definition, since that
+     * method already has other callers (monitoring visibility —
+     * `subordinateEmployeeIds()`/`OffboardingRequestApprover::monitoringDepartmentHeads()`)
+     * that must not pick up these two additional checks as a side effect.
+     */
+    public function isHeadLevelForClearance(): bool
+    {
+        return $this->isDepartmentHead()
+            || Employee::where('head_employee_id', $this->id)->exists()
+            || ChecklistTemplate::where('department_head_id', $this->id)->where('is_active', true)->exists();
+    }
+
+    /**
+     * The employee a "Use Task Assignee as Clearance Signatory" checklist's
+     * raw Task Assignee's responsibility should actually be attributed to:
+     * themselves, unchanged, if already head-level
+     * (`isHeadLevelForClearance()`) — otherwise their own Immediate
+     * Head/Department Head (`approvalHead()`), falling back to themselves
+     * if neither resolves to anyone, rather than silently dropping their
+     * responsibility from whatever's displaying it. Shared by the
+     * Clearance Form (`ClearanceFormController`) and the Offboarding
+     * Status/Timeline tabs (`OffboardingRequest::approverActivityTimeline()`)
+     * so both show the SAME resolved signatory for the same person — a
+     * rank-and-file Task Assignee's own name has no business appearing as
+     * a formal Clearance Signatory in either place.
+     */
+    public function effectiveClearanceSignatory(): Employee
+    {
+        if ($this->isHeadLevelForClearance()) {
+            return $this;
+        }
+
+        return $this->approvalHead() ?? $this;
     }
 
     /**

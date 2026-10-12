@@ -176,43 +176,96 @@
                                 @endif
                             </td>
                             <td class="px-5 py-4 sm:px-6">
-                                <form method="POST" action="{{ route('users.role.update', $user['id']) }}"
-                                    class="flex flex-col items-end gap-2" x-data="{ roles: @js($user['roles']), confirmed: false }"
-                                    @submit="if (!confirmed) {
-                                        $event.preventDefault();
-                                        if (roles.length === 0) {
-                                            Swal.fire({ icon: 'warning', title: 'Select at least one role', confirmButtonColor: '#145a3a' });
-                                            return;
-                                        }
-                                        const roleLabel = roles.map((r) => r.charAt(0).toUpperCase() + r.slice(1)).join(' + ');
-                                        Swal.fire({
-                                            title: 'Change role(s)?',
-                                            html: 'Set <b>' + @js($user['name']) + '</b>&rsquo;s role(s) to <b>' + roleLabel + '</b>?',
-                                            icon: 'question',
-                                            showCancelButton: true,
-                                            confirmButtonText: 'Change Role(s)',
-                                            cancelButtonText: 'Cancel',
-                                            confirmButtonColor: '#145a3a',
-                                            cancelButtonColor: '#6b7280',
-                                            reverseButtons: true
-                                        }).then((result) => { if (result.isConfirmed) { confirmed = true; $el.requestSubmit(); } });
-                                    }">
-                                    @csrf
-                                    @method('PUT')
-                                    <div class="flex flex-wrap items-center justify-end gap-3">
-                                        @foreach ($roleOptions as $option)
-                                            <label class="flex cursor-pointer items-center gap-1.5 text-xs text-gray-700 dark:text-gray-300">
-                                                <input type="checkbox" name="roles[]" value="{{ $option }}" x-model="roles"
-                                                    class="h-3.5 w-3.5 accent-brand-500" />
-                                                {{ ucfirst($option) }}
-                                            </label>
-                                        @endforeach
+                                <div class="flex flex-col items-end gap-2">
+                                    {{-- The role-update <form> itself holds only the
+                                         checkboxes now — its Save button lives below,
+                                         pulled out via the HTML5 `form="..."` attribute
+                                         so it can sit directly beside the Login As User
+                                         button in its own row (still submits THIS form;
+                                         a button outside its `<form>` with a matching
+                                         `form` id attribute participates in that form's
+                                         submit exactly as if nested inside it — the only
+                                         way to place two independent <form>s' buttons
+                                         side-by-side, since nested <form> elements
+                                         aren't valid HTML). --}}
+                                    <form id="role-form-{{ $user['id'] }}" method="POST" action="{{ route('users.role.update', $user['id']) }}"
+                                        x-data="{ roles: @js($user['roles']), confirmed: false }"
+                                        @submit="if (!confirmed) {
+                                            $event.preventDefault();
+                                            if (roles.length === 0) {
+                                                Swal.fire({ icon: 'warning', title: 'Select at least one role', confirmButtonColor: '#145a3a' });
+                                                return;
+                                            }
+                                            const roleLabel = roles.map((r) => r.charAt(0).toUpperCase() + r.slice(1)).join(' + ');
+                                            Swal.fire({
+                                                title: 'Change role(s)?',
+                                                html: 'Set <b>' + @js($user['name']) + '</b>&rsquo;s role(s) to <b>' + roleLabel + '</b>?',
+                                                icon: 'question',
+                                                showCancelButton: true,
+                                                confirmButtonText: 'Change Role(s)',
+                                                cancelButtonText: 'Cancel',
+                                                confirmButtonColor: '#145a3a',
+                                                cancelButtonColor: '#6b7280',
+                                                reverseButtons: true
+                                            }).then((result) => { if (result.isConfirmed) { confirmed = true; $el.requestSubmit(); } });
+                                        }">
+                                        @csrf
+                                        @method('PUT')
+                                        <div class="flex flex-wrap items-center justify-end gap-3">
+                                            @foreach ($roleOptions as $option)
+                                                <label class="flex cursor-pointer items-center gap-1.5 text-xs text-gray-700 dark:text-gray-300">
+                                                    <input type="checkbox" name="roles[]" value="{{ $option }}" x-model="roles"
+                                                        class="h-3.5 w-3.5 accent-brand-500" />
+                                                    {{ ucfirst($option) }}
+                                                </label>
+                                            @endforeach
+                                        </div>
+                                    </form>
+
+                                    <div class="flex items-center gap-2">
+                                        @can('users.login-as')
+                                            @if ($user['hasAccount'])
+                                                {{-- Opens in a new tab (target="_blank") so the
+                                                     admin's own current tab is left exactly where
+                                                     it was on this page — see
+                                                     ImpersonationController's own docblock for why
+                                                     this, not a second independently-live session,
+                                                     is what "open in a new browser" actually means
+                                                     for a cookie-based session. --}}
+                                                <form method="POST" action="{{ route('impersonate.start', $user['id']) }}" target="_blank"
+                                                    x-data="{ confirmed: false }"
+                                                    @submit="if (!confirmed) {
+                                                        $event.preventDefault();
+                                                        Swal.fire({
+                                                            title: 'Login as this user?',
+                                                            html: 'Start an impersonation session as <b>' + @js($user['name']) + '</b>? This opens in a new tab and is recorded in the activity log under your name.',
+                                                            icon: 'question',
+                                                            showCancelButton: true,
+                                                            confirmButtonText: 'Login As User',
+                                                            cancelButtonText: 'Cancel',
+                                                            confirmButtonColor: '#145a3a',
+                                                            cancelButtonColor: '#6b7280',
+                                                            reverseButtons: true
+                                                        }).then((result) => { if (result.isConfirmed) { confirmed = true; $el.requestSubmit(); } });
+                                                    }">
+                                                    @csrf
+                                                    <button type="submit" title="Login As User"
+                                                        class="flex items-center justify-center rounded-lg border border-gray-300 p-2 text-gray-600 hover:border-[#145a3a] hover:bg-[#145a3a] hover:text-white dark:border-gray-700 dark:text-gray-300 dark:hover:border-[#3aa876] dark:hover:bg-[#3aa876] dark:hover:text-white">
+                                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                            <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+                                                            <path d="M10 17l5-5-5-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+                                                            <path d="M15 12H3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+                                                        </svg>
+                                                    </button>
+                                                </form>
+                                            @endif
+                                        @endcan
+                                        <button type="submit" form="role-form-{{ $user['id'] }}" data-turbo-submits-with="Saving..."
+                                            class="rounded-lg bg-[#145a3a] px-3 py-1.5 text-theme-xs font-medium text-white hover:bg-[#0f4630]">
+                                            Save
+                                        </button>
                                     </div>
-                                    <button type="submit" data-turbo-submits-with="Saving..."
-                                        class="rounded-lg bg-[#145a3a] px-3 py-1.5 text-theme-xs font-medium text-white hover:bg-[#0f4630]">
-                                        Save
-                                    </button>
-                                </form>
+                                </div>
                             </td>
                         </tr>
                     @empty

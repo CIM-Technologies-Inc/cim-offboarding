@@ -435,6 +435,17 @@ class OffboardingRequestController extends Controller
                 : 'This offboarding request has already been retracted.'
         );
 
+        // Enforced here too, not just by hiding the button — see
+        // `OffboardingRequest::hasAnyApprovedChecklist()`'s own docblock.
+        // A direct POST against this route must be rejected exactly like
+        // the UI already hides the button, regardless of how it's
+        // reached.
+        abort_if(
+            $offboardingRequest->hasAnyApprovedChecklist(),
+            422,
+            'Unable to retract this offboarding request. At least one checklist has already been completed or approved by a Clearance Signatory.'
+        );
+
         // Required BEFORE any destructive action below — a cancellation
         // must never partially proceed (or even start the deletion
         // cascade) without a reason on file.

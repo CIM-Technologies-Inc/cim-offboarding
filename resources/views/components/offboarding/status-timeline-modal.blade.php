@@ -91,7 +91,32 @@
                     <div class="shrink-0 p-6 pb-0 lg:p-8 lg:pb-0">
                         <div class="flex items-start justify-between pr-8">
                             <div>
-                                <h4 class="text-xl font-semibold text-gray-800 dark:text-white/90" x-text="selected.name"></h4>
+                                <div class="flex flex-wrap items-center gap-2">
+                                    <h4 class="text-xl font-semibold text-gray-800 dark:text-white/90" x-text="selected.name"></h4>
+                                    {{-- Offboarding Status badge, immediately beside the name —
+                                         same status values/color-coding as the Offboardee page's
+                                         own card/list badge (pending/in_progress/overdue/completed/
+                                         cancelled), just rendered here too since this modal's own
+                                         `selected.status` already carries it (see the
+                                         `open-offboardee-modal` dispatch payload). `flex-wrap` on
+                                         the parent lets this drop to its own line on narrow screens
+                                         instead of overlapping/overflowing the name. --}}
+                                    <span class="shrink-0 rounded-full px-2.5 py-1 text-xs font-medium"
+                                        :class="{
+                                            'bg-yellow-50 text-yellow-700 dark:bg-yellow-500/15 dark:text-yellow-400': selected.status === 'pending',
+                                            'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400': selected.status === 'in_progress',
+                                            'bg-orange-50 text-orange-700 dark:bg-orange-500/15 dark:text-orange-400': selected.status === 'overdue',
+                                            'bg-success-50 text-success-700 dark:bg-success-500/15 dark:text-success-400': selected.status === 'completed',
+                                            'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300': selected.status === 'cancelled',
+                                        }"
+                                        x-text="({
+                                            pending: 'Pending',
+                                            in_progress: 'In Progress',
+                                            overdue: 'Overdue',
+                                            completed: 'Completed',
+                                            cancelled: 'Retracted',
+                                        })[selected.status] || (selected.status ? (selected.status.charAt(0).toUpperCase() + selected.status.slice(1)) : '')"></span>
+                                </div>
                                 <p class="text-sm text-gray-500 dark:text-gray-400">
                                     <span x-text="selected.designation"></span> &middot; <span x-text="selected.department"></span>
                                 </p>
@@ -223,13 +248,17 @@
                              tab is active, never scrolled out of view. Every chip reuses the
                              EXACT same classes as the real badges it explains, so it's
                              guaranteed to match what's actually shown: green/red come from
-                             the "Cleared"/"Completed" checklist badge and the per-item
-                             "Completed" dot (see the `step.wasCompletedLate`-keyed `:class`
-                             bindings below and in checklist-item-status-list.blade.php), blue
-                             from the "In Progress"/"viewed" badge, and orange from the
-                             existing "Overdue" chip's own color scale — the closest already-
-                             established "orange" in this tab, since a checklist item's own
-                             Hold indicator uses a very similar amber shade. --}}
+                             the checklist-level "Completed" badge (approved by the Clearance
+                             Signatory/Immediate Head/General Signatory — always reads
+                             "Completed" now, on-time vs late conveyed only by color/the
+                             "Completed Beyond Deadline" suffix, see the
+                             `step.wasCompletedLate`-keyed `:class` bindings below) and the
+                             per-item "Cleared" dot (checked off by the Task Assignee — see
+                             checklist-item-status-list.blade.php), blue from the "In
+                             Progress"/"viewed" badge, and orange from the existing "Overdue"
+                             chip's own color scale — the closest already-established "orange"
+                             in this tab, since a checklist item's own Hold indicator uses a
+                             very similar amber shade. --}}
                         
                     </div>
 
@@ -256,20 +285,20 @@
                                         <div class="min-w-0">
                                             <p class="text-sm font-semibold text-gray-800 group-hover:text-[#145a3a] dark:text-white/90 dark:group-hover:text-[#3aa876]" x-text="step.department || 'Department'"></p>
                                             <p class="text-xs text-gray-500 group-hover:text-[#145a3a] dark:text-gray-400 dark:group-hover:text-[#3aa876]">
-                                                <span x-text="step.isGeneralSignatory ? 'General Signatory' : 'Clearance Signatory'"></span>: <span x-text="step.approverName"></span>
+                                                <span x-text="step.isGeneralSignatory ? 'Signatory' : 'Clearance Signatory'"></span>: <span x-text="step.approverName"></span>
                                             </p>
                                         </div>
                                         <div class="flex shrink-0 items-center gap-3">
                                             <span class="rounded-full px-2.5 py-1 text-xs font-medium group-hover:text-[#145a3a] dark:group-hover:text-[#3aa876]"
                                                 :class="{
-                                                    'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300': step.status === 'pending' && !step.hasRecordedProgress && !step.isOverdue,
-                                                    'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400': (step.status === 'viewed' || (step.status === 'pending' && step.hasRecordedProgress)) && !step.isOverdue,
-                                                    'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]': step.status === 'approved' && !step.wasCompletedLate,
+                                                    'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300': step.status === 'pending' && !step.hasRecordedProgress && !step.isOverdue && !(step.isGeneralSignatory && step.hasTasks === false),
+                                                    'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400': (step.status === 'viewed' || (step.status === 'pending' && step.hasRecordedProgress)) && !step.isOverdue && !(step.isGeneralSignatory && step.hasTasks === false),
+                                                    'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]': (step.status === 'approved' && !step.wasCompletedLate) || (step.isGeneralSignatory && step.hasTasks === false && step.status === 'pending'),
                                                     'bg-error-50 text-error-700 dark:bg-error-500/15 dark:text-error-400': (step.status === 'approved' && step.wasCompletedLate) || step.status === 'declined',
                                                     'bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400': step.status === 'on_hold' && !step.isOverdue,
                                                     'bg-orange-50 text-orange-700 dark:bg-orange-500/15 dark:text-orange-400': step.isOverdue
                                                 }"
-                                                x-text="step.isOverdue ? 'Overdue' : (step.status === 'approved' ? (step.wasCompletedLate ? 'Completed' : 'Cleared') : ((step.status === 'viewed' || (step.status === 'pending' && step.hasRecordedProgress)) ? 'In Progress' : (step.status === 'on_hold' ? 'On Hold' : (step.status.charAt(0).toUpperCase() + step.status.slice(1)))))"></span>
+                                                x-text="step.isOverdue ? 'Overdue' : ((step.isGeneralSignatory && step.hasTasks === false && step.status === 'pending') ? 'Ready for Approval' : (step.status === 'approved' ? 'Completed' : ((step.status === 'viewed' || (step.status === 'pending' && step.hasRecordedProgress)) ? 'In Progress' : (step.status === 'on_hold' ? 'On Hold' : (step.status.charAt(0).toUpperCase() + step.status.slice(1))))))"></span>
                                             <svg class="h-4 w-4 shrink-0 text-gray-400 transition-transform duration-200 dark:text-gray-500"
                                                 :class="open ? 'rotate-180' : ''"
                                                 fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -346,7 +375,7 @@
                                              entry here regardless of how many On Hold cycles preceded it. -->
                                         <template x-if="step.status === 'approved'">
                                             <p :class="step.wasCompletedLate ? 'font-medium text-error-600 dark:text-error-400' : ''">
-                                                Cleared: <span x-text="step.approvedAt"></span>
+                                                Completed: <span x-text="step.approvedAt"></span>
                                                 <span x-show="step.wasCompletedLate"> — Completed Beyond Deadline</span>
                                             </p>
                                         </template>
@@ -551,14 +580,14 @@
                                             </div>
                                             <span class="shrink-0 rounded-full px-2.5 py-1 text-xs font-medium"
                                                 :class="{
-                                                    'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300': step.status === 'pending' && !step.hasRecordedProgress && !step.isOverdue,
-                                                    'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400': (step.status === 'viewed' || (step.status === 'pending' && step.hasRecordedProgress)) && !step.isOverdue,
-                                                    'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]': step.status === 'approved' && !step.wasCompletedLate,
+                                                    'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300': step.status === 'pending' && !step.hasRecordedProgress && !step.isOverdue && !(step.isGeneralSignatory && step.hasTasks === false),
+                                                    'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400': (step.status === 'viewed' || (step.status === 'pending' && step.hasRecordedProgress)) && !step.isOverdue && !(step.isGeneralSignatory && step.hasTasks === false),
+                                                    'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]': (step.status === 'approved' && !step.wasCompletedLate) || (step.isGeneralSignatory && step.hasTasks === false && step.status === 'pending'),
                                                     'bg-error-50 text-error-700 dark:bg-error-500/15 dark:text-error-400': (step.status === 'approved' && step.wasCompletedLate) || step.status === 'declined',
                                                     'bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400': step.status === 'on_hold' && !step.isOverdue,
                                                     'bg-orange-50 text-orange-700 dark:bg-orange-500/15 dark:text-orange-400': step.isOverdue
                                                 }"
-                                                x-text="step.isOverdue ? 'Overdue' : (step.status === 'approved' ? (step.wasCompletedLate ? 'Completed' : 'Cleared') : ((step.status === 'viewed' || (step.status === 'pending' && step.hasRecordedProgress)) ? 'In Progress' : (step.status === 'on_hold' ? 'On Hold' : (step.status.charAt(0).toUpperCase() + step.status.slice(1)))))"></span>
+                                                x-text="step.isOverdue ? 'Overdue' : ((step.isGeneralSignatory && step.hasTasks === false && step.status === 'pending') ? 'Ready for Approval' : (step.status === 'approved' ? 'Completed' : ((step.status === 'viewed' || (step.status === 'pending' && step.hasRecordedProgress)) ? 'In Progress' : (step.status === 'on_hold' ? 'On Hold' : (step.status.charAt(0).toUpperCase() + step.status.slice(1))))))"></span>
                                         </div>
 
                                         <div class="mt-2 space-y-1 text-xs text-gray-500 dark:text-gray-400">
@@ -608,7 +637,7 @@
                                                  Status tab's identical treatment. -->
                                             <template x-if="step.status === 'approved'">
                                                 <p :class="step.wasCompletedLate ? 'font-medium text-error-600 dark:text-error-400' : ''">
-                                                    Cleared: <span x-text="step.approvedAt"></span>
+                                                    Completed: <span x-text="step.approvedAt"></span>
                                                     <span x-show="step.wasCompletedLate"> — Completed Beyond Deadline</span>
                                                 </p>
                                             </template>

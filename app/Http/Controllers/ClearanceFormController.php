@@ -5,14 +5,14 @@ namespace App\Http\Controllers;
 use App\Models\ChecklistItem;
 use App\Models\ChecklistItemProgress;
 use App\Models\ChecklistTemplate;
-use App\Models\DepartmentHead;
 use App\Models\Employee;
-use App\Models\EmployeeGroup;
 use App\Models\FinalApprover;
 use App\Models\GeneralSignatory;
 use App\Models\OffboardingRequest;
 use App\Models\OffboardingRequestApprover;
+use App\Support\OffboardingTimelineStepPresenter;
 use Barryvdh\DomPDF\Facade\Pdf;
+use Carbon\Carbon;
 use Illuminate\Http\Response;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Storage;
@@ -76,6 +76,135 @@ class ClearanceFormController extends Controller
         } finally {
             @unlink($tmpFile);
         }
+    }
+
+    /**
+     * Raw PDF bytes for the COMBINED Clearance Form + Offboarding Timeline
+     * document — used exclusively by `ChecklistCompletionService` to attach
+     * to the "Final Pay Checklist Completed" notification email once a
+     * request reaches `status === 'completed'`. Reuses `buildPdfData()`
+     * (unchanged) for the Clearance Form section and
+     * `OffboardingRequest::approverActivityTimeline()` (unchanged — the
+     * exact same data source bound to the admin-facing Offboarding
+     * Status/Timeline modal's own "Timeline" tab) for the new timeline
+     * section, rendered as one dompdf document via
+     * `clearance-form.pdf-with-timeline` (a `page-break-before` separates
+     * the two sections within that one view — see its own comments).
+     *
+     * Deliberately distinct from `generatePdfBytes()` above, which must keep
+     * producing ONLY the Clearance Form — that method backs the Final
+     * Approval email's own attachment and the Offboardee page's "Generate
+     * Clearance Form" button, neither of which should ever grow a second,
+     * unexpected page of timeline content.
+     */
+    public function generateCompletionPdfBytes(OffboardingRequest $offboardingRequest): string
+    {
+        $data = $this->buildPdfData($offboardingRequest) + [
+            'timelineSteps' => $this->decorateTimelineStepsForPdf($offboardingRequest->approverActivityTimeline()),
+        ];
+
+        return Pdf::loadView('clearance-form.pdf-with-timeline', $data)
+            ->setPaper('letter')
+            ->output();
+    }
+
+    /**
+     * Item-level `action`s folded into `approverActivityTimeline()`'s plain
+     * "delegation event" sub-steps (see that method's own
+     * `$delegationEventsByAssignment` grouping) — dropped from the PDF
+     * entirely, same as the per-item `checklistItems` breakdown below.
+     * Both were too granular for a printed record: a checklist with a
+     * handful of items can already produce one of these per item PLUS the
+     * same information again in the per-item breakdown, which read as
+     * repetitive clutter rather than a readable summary. The checklist's
+     * own rich-step card (department/signatory, assigned/due/cleared
+     * dates, hold history, due-date extensions) already covers the same
+     * ground at the right level of detail for this document. The live
+     * Offboarding Status/Timeline tabs are UNCHANGED — they still show
+     * every one of these events and the full per-item breakdown; this
+     * filtering only ever applies to this static PDF rendering.
+     */
+    private const PDF_TIMELINE_EXCLUDED_ACTIONS = [
+        'checklist_assigned',
+        'checklist_delegate_completed',
+        'checklist_item_cleared_by_other',
+        'checklist_item_held',
+        'checklist_ready_for_approval',
+    ];
+
+    /**
+     * Attaches the PDF-only presentation fields (`badgeLabel`/`badgeClass`
+     * per rich step) that `approverActivityTimeline()` itself has no reason
+     * to know about — that method stays the single, display-agnostic source
+     * of truth both the live Alpine Timeline tab and this static PDF
+     * rendering consume. Also drops the per-item-level noise described in
+     * `PDF_TIMELINE_EXCLUDED_ACTIONS`'s own docblock above — a plain step
+     * is dropped by its real `action` name (not fragile label-text
+     * matching), and every rich step's own `checklistItems` breakdown is
+     * cleared entirely (the Blade view no longer renders it either; this
+     * just keeps the data consistent with that).
+     *
+     * Finally re-sorted into chronological Completed order (earliest
+     * first), by `timelineStepCompletedAt()` below — `approverActivityTimeline()`
+     * itself returns steps in workflow-STAGE order (every checklist's own
+     * card, then milestones, then General Signatories, then Final
+     * Approval), not by when each one was actually completed, which read
+     * oddly for a document literally titled "Offboarding Timeline". The
+     * live Offboarding Status/Timeline tabs keep their own original
+     * workflow-stage order unchanged — this re-sort only ever applies here.
+     */
+    private function decorateTimelineStepsForPdf(array $rawSteps): array
+    {
+        $steps = array_values(array_filter(array_map(function (array $step) {
+            if (empty($step['rich'])) {
+                if (in_array($step['action'] ?? null, self::PDF_TIMELINE_EXCLUDED_ACTIONS, true)) {
+                    return null;
+                }
+
+                return $step;
+            }
+
+            $step['badgeLabel'] = OffboardingTimelineStepPresenter::badgeLabel($step);
+            $step['badgeClass'] = OffboardingTimelineStepPresenter::badgeClass($step);
+            $step['checklistItems'] = [];
+
+            return $step;
+        }, $rawSteps)));
+
+        usort($steps, fn (array $a, array $b) => $this->timelineStepCompletedAt($a) <=> $this->timelineStepCompletedAt($b));
+
+        return $steps;
+    }
+
+    /**
+     * The moment a timeline step was actually completed, for
+     * `decorateTimelineStepsForPdf()`'s own chronological re-sort — a rich
+     * step's `approvedAt` (its checklist/General Signatory/Final Approval
+     * being approved), or a plain step's own `date` (already its own
+     * "when this happened" timestamp, see `approverActivityTimeline()`).
+     * Both are already formatted strings ('M d, Y g:i A'), not raw `Carbon`
+     * instances, by the time they reach this decorator — re-parsed here
+     * rather than threading a second, raw-timestamp field through the
+     * shared method for a need that's specific to this one PDF sort.
+     * Returns a far-future sentinel (sorts LAST, never first) for a step
+     * with no parseable date — e.g. a still-pending checklist's rich step,
+     * which has no `approvedAt` at all; never expected to actually occur
+     * for a request whose Final Pay Checklist has already completed (every
+     * other checklist is already done by then), but defensive regardless.
+     */
+    private function timelineStepCompletedAt(array $step): Carbon
+    {
+        $dateString = ! empty($step['rich']) ? ($step['approvedAt'] ?? null) : ($step['date'] ?? null);
+
+        if ($dateString) {
+            try {
+                return Carbon::createFromFormat('M d, Y g:i A', $dateString);
+            } catch (\Throwable) {
+                // Falls through to the sentinel below.
+            }
+        }
+
+        return Carbon::create(9999, 12, 31, 23, 59, 59);
     }
 
     /**
@@ -280,10 +409,22 @@ class ClearanceFormController extends Controller
             })
             ->values();
 
-        $rows = $this->dedupeSignatoryEntries($signatoryEntries, $employeeClearanceStatuses);
-
-        // A General Signatory IS a Checklist Clearance Signatory — its
-        // signature/date/remarks are sourced from the same
+        // A General Signatory IS a Checklist Clearance Signatory — its raw
+        // entry is built in the EXACT SAME shape as a department checklist's
+        // entry above (`employeeId`/`department`/`signatory`/`signatureUser`/
+        // `isApproved`/`approvedAt`/`remarksLabel`) and merged into
+        // `$signatoryEntries` BEFORE deduping, not appended as a second,
+        // separate table section afterward. Appending it afterward used to
+        // produce a genuine duplicate row: an employee who is both an
+        // ordinary checklist's Clearance Signatory AND a General Signatory
+        // (e.g. Rodelio Cabanlong San Juan — IT Checklist + General
+        // Signatory) got one row from `dedupeSignatoryEntries()` for the
+        // checklist and a SECOND, un-deduped row here for the General
+        // Signatory role, both showing the same department/name. Merging
+        // first lets `dedupeSignatoryEntries()`'s existing `groupBy(employeeId)`
+        // fold them into the single row they actually are.
+        //
+        // Its signature/date/remarks are sourced from the same
         // `OffboardingRequestGeneralSignatory` approval record the
         // Approvals page's Submit action and the Offboarding
         // Status/Timeline both read/write (`generalSignatoryApprovals`,
@@ -305,37 +446,34 @@ class ClearanceFormController extends Controller
         // itself) already relies on.
         $generalSignatoryApprovalsById = $offboardingRequest->generalSignatoryApprovals->keyBy('general_signatory_id');
 
-        $generalSignatoryRows = $offboardingRequest->generalSignatories
-            ->map(function (GeneralSignatory $generalSignatory) use ($generalSignatoryApprovalsById, $employeeClearanceStatuses) {
+        $generalSignatoryEntries = $offboardingRequest->generalSignatories
+            ->map(function (GeneralSignatory $generalSignatory) use ($generalSignatoryApprovalsById) {
                 $clearanceSignatory = $generalSignatory->clearanceSignatory;
                 $approval = $generalSignatoryApprovalsById->get($generalSignatory->id);
-
-                // A General Signatory's own GS approval is only ONE of
-                // potentially several responsibilities this same employee
-                // holds on this request — see `buildEmployeeClearanceStatuses()`.
-                // Falls back to this row's own GS status alone only if the
-                // employee is somehow absent from that map entirely (should
-                // never happen, since this very approval is one of its
-                // inputs — defensive only).
-                $status = $clearanceSignatory ? ($employeeClearanceStatuses[$clearanceSignatory->id] ?? null) : null;
                 // A declined General Signatory approval is now On Hold, not
                 // completed — same reasoning as the checklist rows above;
-                // see `buildEmployeeClearanceStatuses()`'s own gate.
-                $isApproved = $status !== null ? $status['allCleared'] : $approval?->status === 'approved';
+                // see `buildEmployeeClearanceStatuses()`'s own gate. This raw
+                // `isApproved`/`approvedAt`/`remarksLabel` is only the
+                // defensive single-entry-group fallback inside
+                // `dedupeSignatoryEntries()` — the merged row's actual
+                // displayed status always comes from `$employeeClearanceStatuses`
+                // once a real employee is resolved, exactly like every other
+                // raw entry.
+                $isApproved = $approval?->status === 'approved';
 
                 return [
+                    'employeeId' => $clearanceSignatory?->id,
                     'department' => $clearanceSignatory?->department ?? '—',
                     'signatory' => $clearanceSignatory?->name ?? '—',
-                    'signatureDataUri' => $isApproved ? $this->signatureDataUri($clearanceSignatory?->user?->signature_path) : null,
-                    'date' => $isApproved
-                        ? ($status['clearedAt'] ?? $approval?->approved_at)?->format('M d, Y')
-                        : null,
-                    'remarks' => $status['label'] ?? ($approval?->clearanceStatusLabel() ?? 'Pending'),
+                    'signatureUser' => $clearanceSignatory?->user,
+                    'isApproved' => $isApproved,
+                    'approvedAt' => $isApproved ? $approval?->approved_at : null,
+                    'remarksLabel' => $approval?->clearanceStatusLabel() ?? 'Pending',
                 ];
             })
             ->values();
 
-        $rows = $rows->concat($generalSignatoryRows);
+        $rows = $this->dedupeSignatoryEntries($signatoryEntries->concat($generalSignatoryEntries), $employeeClearanceStatuses);
 
         // This request's own Final Approval process (see
         // `OffboardingRequestFinalApproval`), if one has ever been
@@ -395,24 +533,23 @@ class ClearanceFormController extends Controller
 
     /**
      * The Immediate Head's signature on the Clearance Form — unconditional
-     * (if uploaded) when they hold NO responsibility at all elsewhere on
-     * this request (`$status === null`), otherwise gated on EVERY
-     * responsibility they hold anywhere on it — every checklist they own,
-     * every checklist they're merely a Task Assignee on, and any General
-     * Signatory role — via `buildEmployeeClearanceStatuses()`'s unified
-     * `allCleared` flag. Requiring every single one (not just their
-     * Immediate Head checklist itself) matters whenever this person is ALSO
-     * a department Clearance Signatory, a Task Assignee elsewhere
-     * (including the Final Pay Checklist), or a General Signatory — showing
-     * a "cleared" signature while any one of those is still outstanding
-     * would be exactly the misleading record this unification exists to
-     * prevent.
+     * (if uploaded) when they hold NO responsibility at all anywhere on this
+     * request, including no Immediate Head checklist row of their own
+     * (`$status === null`); otherwise gated SOLELY on their own Immediate
+     * Head checklist's own approval (`$status['immediateHeadDone']`) — never
+     * on an unrelated department checklist (e.g. "IT Checklist") or a
+     * General Signatory role this same person also happens to hold. Those
+     * other responsibilities are gated completely independently (see
+     * `buildEmployeeClearanceStatuses()`'s own `allCleared` computation) —
+     * approving any of them must never make this row show (or vice versa
+     * make it withhold) a signature it hasn't actually earned, and
+     * approving the Immediate Head checklist must never do the reverse.
      *
-     * @param  ?array{allCleared: bool, label: string, clearedAt: ?\Illuminate\Support\Carbon}  $status
+     * @param  ?array{allCleared: bool, label: string, clearedAt: ?\Illuminate\Support\Carbon, immediateHeadDone: bool, immediateHeadLabel: string, immediateHeadClearedAt: ?\Illuminate\Support\Carbon}  $status
      */
     private function immediateHeadSignatureDataUri(Employee $immediateHead, ?array $status): ?string
     {
-        if ($status === null || $status['allCleared']) {
+        if ($status === null || $status['immediateHeadDone']) {
             return $this->signatureDataUri($immediateHead->user?->signature_path);
         }
 
@@ -420,36 +557,32 @@ class ClearanceFormController extends Controller
     }
 
     /**
-     * @param  ?array{allCleared: bool, label: string, clearedAt: ?\Illuminate\Support\Carbon}  $status
+     * @param  ?array{allCleared: bool, label: string, clearedAt: ?\Illuminate\Support\Carbon, immediateHeadDone: bool, immediateHeadLabel: string, immediateHeadClearedAt: ?\Illuminate\Support\Carbon}  $status
      */
     private function immediateHeadApprovedDate(?array $status): ?string
     {
-        if ($status === null || ! $status['allCleared']) {
+        if ($status === null || ! $status['immediateHeadDone']) {
             return null;
         }
 
-        return $status['clearedAt']?->format('M d, Y');
+        return $status['immediateHeadClearedAt']?->format('M d, Y');
     }
 
     /**
-     * With no responsibility at all elsewhere on this request, the
-     * Immediate Head row has no checklist status of its own to report
-     * (matching today's original, always-blank remarks). With one or more,
-     * its remarks mirror `buildEmployeeClearanceStatuses()`'s own combined
-     * label for this employee — the same label every other row of theirs on
-     * this form shows too, so no two entries for the same person can ever
-     * disagree in wording. "Cleared" is only ever shown once EVERY one of
-     * their responsibilities genuinely is, so an outstanding checklist's own
-     * real status (Pending, Hold, Declined, In Progress — never "Overdue"
-     * on this form specifically, see `clearanceStatusLabel()`'s own
-     * docblock) is never masked by a sibling responsibility that happens to
-     * already be cleared.
+     * With no Immediate Head checklist row of their own at all, the
+     * Immediate Head row has no status to report (matching today's
+     * original, always-blank remarks). Otherwise reflects that ONE
+     * checklist's own real status (Pending, Hold, Declined, In Progress,
+     * Cleared) — never a sibling department checklist's or General
+     * Signatory role's own state, which could otherwise mask or
+     * misrepresent whether the Immediate Head checklist itself has actually
+     * been acted on.
      *
-     * @param  ?array{allCleared: bool, label: string, clearedAt: ?\Illuminate\Support\Carbon}  $status
+     * @param  ?array{allCleared: bool, label: string, clearedAt: ?\Illuminate\Support\Carbon, immediateHeadDone: bool, immediateHeadLabel: string, immediateHeadClearedAt: ?\Illuminate\Support\Carbon}  $status
      */
     private function immediateHeadRemarks(?array $status): string
     {
-        return $status['label'] ?? '';
+        return $status['immediateHeadLabel'] ?? '';
     }
 
     /**
@@ -475,7 +608,7 @@ class ClearanceFormController extends Controller
      * responsible for their own work.
      *
      * The row actually DISPLAYED for each raw Task Assignee is resolved via
-     * `effectiveClearanceSignatoryFor()` — themselves, unchanged, if
+     * `Employee::effectiveClearanceSignatory()` — themselves, unchanged, if
      * already head-level, otherwise their own Immediate Head/Department
      * Head, since a rank-and-file Task Assignee's own name has no business
      * appearing as a formal Clearance Signatory. `isApproved`/`approvedAt`
@@ -513,7 +646,7 @@ class ClearanceFormController extends Controller
 
         return $itemsByEmployeeId->map(function ($items, $employeeId) use ($approver, $fullyApprovedItemIds, $fullyApprovedProgress, $offboardingRequest) {
             $assignee = Employee::find($employeeId);
-            $employee = $assignee ? $this->effectiveClearanceSignatoryFor($assignee) : null;
+            $employee = $assignee?->effectiveClearanceSignatory();
 
             if ($employee && $employee->id === $offboardingRequest->immediate_head_id) {
                 return null;
@@ -542,51 +675,8 @@ class ClearanceFormController extends Controller
     }
 
     /**
-     * Whether `$employee` already holds a head-level role somewhere in the
-     * system, independent of this specific offboarding request — someone
-     * else's Immediate Head (`head_employee_id`), an EmployeeGroup's
-     * registered Group Head, registered in the standalone `DepartmentHead`
-     * registry, or the Clearance Signatory (`department_head_id`) of any
-     * active checklist template. A "Use Task Assignee as Clearance
-     * Signatory" checklist's Task Assignee who already holds one of these
-     * roles is left exactly as today (their own name/signature) — only a
-     * genuine rank-and-file Task Assignee with none of them gets escalated
-     * to their own reporting head by `effectiveClearanceSignatoryFor()`.
-     */
-    private function isHeadLevelEmployee(Employee $employee): bool
-    {
-        return Employee::where('head_employee_id', $employee->id)->exists()
-            || EmployeeGroup::where('group_head_employee_id', $employee->id)->exists()
-            || DepartmentHead::where('employee_id', $employee->id)->exists()
-            || ChecklistTemplate::where('department_head_id', $employee->id)->where('is_active', true)->exists();
-    }
-
-    /**
-     * The employee a "Use Task Assignee as Clearance Signatory" checklist's
-     * raw Task Assignee's responsibility should actually be attributed to
-     * on the Clearance Form: themselves, unchanged, if already head-level
-     * (`isHeadLevelEmployee()`) — otherwise their own Immediate Head
-     * (`Employee::headEmployee()`, resolved from the Employee Master
-     * import's `headID`/`head_employee_id`), falling back to their
-     * Department/Group Head (`Employee::departmentHead()`) when no
-     * Immediate Head is set — the exact same two-step lookup the rest of
-     * the app already uses for this hierarchy. Falls back to the assignee
-     * themselves if NEITHER resolves to anyone, rather than silently
-     * dropping their responsibility from the form; never creates a new
-     * head assignment, only reads the employee's existing configured one.
-     */
-    private function effectiveClearanceSignatoryFor(Employee $assignee): Employee
-    {
-        if ($this->isHeadLevelEmployee($assignee)) {
-            return $assignee;
-        }
-
-        return $assignee->headEmployee ?? $assignee->departmentHead() ?? $assignee;
-    }
-
-    /**
-     * `effectiveClearanceSignatoryFor()` by raw employee id instead of a
-     * loaded `Employee` — the shape `buildEmployeeClearanceStatuses()`
+     * `Employee::effectiveClearanceSignatory()` by raw employee id instead
+     * of a loaded `Employee` — the shape `buildEmployeeClearanceStatuses()`
      * needs when attributing a headless checklist's item-level gating unit
      * (both for an already-attached approver's items and for unit type 4's
      * not-yet-attached Final Pay/Secondary item defaults). Null only when
@@ -601,7 +691,7 @@ class ClearanceFormController extends Controller
 
         $employee = Employee::find($employeeId);
 
-        return $employee ? $this->effectiveClearanceSignatoryFor($employee)->id : null;
+        return $employee?->effectiveClearanceSignatory()->id;
     }
 
     /**
@@ -691,9 +781,23 @@ class ClearanceFormController extends Controller
     /**
      * The single source of truth every signature-display decision on this
      * form consults — one entry per employee who holds ANY responsibility
-     * anywhere on this request, requiring ALL of them complete before that
-     * employee's signature may show ANYWHERE it appears (their own
-     * checklist row(s), an Immediate Head row, a General Signatory row).
+     * anywhere on this request.
+     *
+     * The employee's OWN Immediate Head checklist (if they have one) is
+     * tracked completely separately from everything else (`immediateHeadDone`/
+     * `immediateHeadLabel`/`immediateHeadClearedAt` below) and gates ONLY
+     * the dedicated Immediate Head row — never merged with their other
+     * responsibilities in either direction. Approving the Immediate Head
+     * checklist never satisfies an unrelated department checklist or
+     * General Signatory role the same employee also holds, and approving
+     * any of THOSE never satisfies the Immediate Head checklist either —
+     * each role independently requires its own approval.
+     *
+     * Every OTHER responsibility (checklist ownership other than the
+     * Immediate Head checklist, item-level Task Assignee work, General
+     * Signatory approval) requires ALL of them complete before `allCleared`
+     * is true — consulted identically by `dedupeSignatoryEntries()` and the
+     * General Signatory row in `buildData()`.
      *
      * Collects one "unit" per distinct responsibility:
      *
@@ -758,6 +862,34 @@ class ClearanceFormController extends Controller
         /** @var array<int, Collection<int, array{done: bool, label: string, completedAt: mixed}>> $unitsByEmployee */
         $unitsByEmployee = [];
 
+        // The employee's OWN Immediate Head checklist unit, kept entirely
+        // SEPARATE from `$unitsByEmployee` — at most one per employee per
+        // request, so a plain keyed array (not a collection) is enough. The
+        // dedicated Immediate Head row (see `immediateHeadSignatureDataUri()`
+        // etc.) consults ONLY this, and `$unitsByEmployee` below never
+        // consults it either — approving the Immediate Head checklist must
+        // NEVER satisfy (or block) an unrelated IT Checklist/General
+        // Signatory responsibility the same employee also holds, and vice
+        // versa. Each role independently satisfies only its own required
+        // condition(s); no role's approval is ever borrowed to unlock
+        // another. (An earlier revision of this method let approving the
+        // Immediate Head checklist early-unlock every other responsibility
+        // the same employee held — confirmed wrong against real data: Rodelio
+        // Cabanlong San Juan's IT Checklist + General Signatory row showed as
+        // cleared the moment his separate Immediate Head checklist was
+        // approved, despite the IT Checklist itself still being pending.)
+        //
+        // An earlier version of this method tried to express "Immediate Head
+        // or Core/Primary checklist" as the unlock trigger, using
+        // `ChecklistTemplate.sequence_type === SEQUENCE_TYPE_PRIMARY` as the
+        // "Core/Primary" half — but that flag is an unrelated Sync-workflow
+        // ordering tier that an ORDINARY department checklist (e.g. "IT
+        // Checklist") can also carry, which incorrectly let approving THAT
+        // checklist alone unlock a still-unapproved Immediate Head row too.
+        // `is_immediate_head_checklist` alone is the only correct signal.
+        /** @var array<int, array{done: bool, label: string, completedAt: mixed}> $immediateHeadUnitByEmployee */
+        $immediateHeadUnitByEmployee = [];
+
         $addUnit = function (?int $employeeId, bool $done, string $label, $completedAt) use (&$unitsByEmployee) {
             if ($employeeId === null) {
                 return;
@@ -774,12 +906,18 @@ class ClearanceFormController extends Controller
                 // gates. `clearanceStatusLabel()` still surfaces "Declined"/
                 // "On Hold" distinctly for the Remarks column even though
                 // this unit isn't counted as cleared.
-                $addUnit(
-                    $approver->employee_id,
-                    $approver->status === 'approved',
-                    $approver->clearanceStatusLabel(includeOverdue: false),
-                    $approver->approved_at,
-                );
+                $done = $approver->status === 'approved';
+                $label = $approver->clearanceStatusLabel(includeOverdue: false);
+
+                if ($approver->checklistTemplate?->is_immediate_head_checklist) {
+                    $immediateHeadUnitByEmployee[$approver->employee_id] = [
+                        'done' => $done,
+                        'label' => $label,
+                        'completedAt' => $approver->approved_at,
+                    ];
+                } else {
+                    $addUnit($approver->employee_id, $done, $label, $approver->approved_at);
+                }
             }
 
             $itemsByEmployeeId = ($approver->checklistTemplate?->items ?? collect())
@@ -877,7 +1015,29 @@ class ClearanceFormController extends Controller
             ->get()
             ->each(fn (GeneralSignatory $generalSignatory) => $addUnit($generalSignatory->clearance_signatory_id, false, 'Pending', null));
 
-        return collect($unitsByEmployee)->map(function (Collection $units) {
+        // Union of employee ids from BOTH accumulators — an employee who is
+        // PURELY an Immediate Head with no other responsibility at all on
+        // this request would otherwise be entirely absent from this map
+        // (they'd have no entry in `$unitsByEmployee`), which would wrongly
+        // fall back to the "no responsibility anywhere" unconditional-
+        // signature path in `immediateHeadSignatureDataUri()` instead of
+        // actually gating on their own checklist's real status.
+        $employeeIds = collect(array_keys($unitsByEmployee))
+            ->merge(array_keys($immediateHeadUnitByEmployee))
+            ->unique()
+            ->values();
+
+        return $employeeIds->mapWithKeys(function (int $employeeId) use ($unitsByEmployee, $immediateHeadUnitByEmployee) {
+            $units = $unitsByEmployee[$employeeId] ?? collect();
+            $immediateHeadUnit = $immediateHeadUnitByEmployee[$employeeId] ?? null;
+            $immediateHeadDone = $immediateHeadUnit['done'] ?? false;
+
+            // Every OTHER responsibility (a department checklist, a General
+            // Signatory role) requires ALL of its own units done, completely
+            // independent of the employee's separately-tracked Immediate
+            // Head checklist (`$immediateHeadDone`, read only by the
+            // dedicated Immediate Head row above) — approving one role must
+            // never satisfy another.
             $allCleared = $units->every(fn (array $unit) => $unit['done']);
             $anyCleared = $units->contains(fn (array $unit) => $unit['done']);
 
@@ -898,13 +1058,22 @@ class ClearanceFormController extends Controller
                 default => 'Pending',
             };
 
-            return [
+            $clearedAt = $allCleared
+                ? $units->pluck('completedAt')->filter()->sortByDesc(fn ($completedAt) => $completedAt->timestamp)->first()
+                : null;
+
+            return [$employeeId => [
                 'allCleared' => $allCleared,
                 'label' => $label,
-                'clearedAt' => $allCleared
-                    ? $units->pluck('completedAt')->filter()->sortByDesc(fn ($completedAt) => $completedAt->timestamp)->first()
-                    : null,
-            ];
+                'clearedAt' => $clearedAt,
+                // Consulted ONLY by the dedicated Immediate Head row's own
+                // helpers below — never by `dedupeSignatoryEntries()` or the
+                // General Signatory row, which keep reading the three keys
+                // above exactly as they always have.
+                'immediateHeadDone' => $immediateHeadDone,
+                'immediateHeadLabel' => $immediateHeadUnit['label'] ?? 'Pending',
+                'immediateHeadClearedAt' => $immediateHeadDone ? ($immediateHeadUnit['completedAt'] ?? null) : null,
+            ]];
         })->all();
     }
 

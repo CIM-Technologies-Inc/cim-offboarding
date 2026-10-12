@@ -8,7 +8,7 @@
                     <div>
                         <div class="mb-5 sm:mb-8">
                             <h1 class="text-title-sm sm:text-title-md mb-2 font-semibold text-gray-800 dark:text-white/90">
-                                General Signatory Approval
+                                Signatory Approval
                             </h1>
                             <p id="statusText" class="text-sm text-gray-500 dark:text-gray-400">{{ $message }}</p>
                         </div>
@@ -20,7 +20,7 @@
                                     <span class="font-medium text-gray-700 dark:text-gray-300">{{ $offboardeeName }} ({{ $offboardeeEmployeeCode }})</span>
                                 </p>
                                 <p class="{{ empty($tasks) ? '' : 'mb-1.5' }} flex items-center justify-between gap-4">
-                                    <span class="shrink-0 text-gray-400">General Signatory</span>
+                                    <span class="shrink-0 text-gray-400">Signatory</span>
                                     <span class="font-medium text-gray-700 dark:text-gray-300">{{ $generalSignatoryName }}</span>
                                 </p>
                                 @if (!empty($tasks))
@@ -117,7 +117,7 @@
             if (state === 'confirm') {
                 Swal.fire({
                     title: 'Approve this offboarding request?',
-                    html: 'You are about to provide General Signatory clearance for <b>' + escapeHtml(offboardeeName) + ' (' + escapeHtml(offboardeeEmployeeCode) + ')</b> '
+                    html: 'You are about to provide Signatory clearance for <b>' + escapeHtml(offboardeeName) + ' (' + escapeHtml(offboardeeEmployeeCode) + ')</b> '
                         + 'as <b>' + escapeHtml(generalSignatoryName) + '</b>.',
                     icon: 'question',
                     showCancelButton: true,

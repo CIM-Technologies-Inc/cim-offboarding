@@ -98,7 +98,7 @@
                 <table class="w-full min-w-[960px]">
                     <thead>
                         <tr class="border-b border-gray-100 dark:border-gray-800">
-                            <th class="px-5 py-3 text-left sm:px-6"><p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Date &amp; Time</p></th>
+                            <th class="px-5 py-3 text-left sm:px-6 whitespace-nowrap"><p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Date &amp; Time</p></th>
                             <th class="px-5 py-3 text-left sm:px-6"><p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">User</p></th>
                             <th class="px-5 py-3 text-left sm:px-6"><p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Employee No.</p></th>
                             <th class="px-5 py-3 text-left sm:px-6"><p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Action</p></th>
@@ -113,11 +113,8 @@
                     <tbody>
                         @forelse ($logs as $log)
                             <tr class="border-b border-gray-100 dark:border-gray-800">
-                                <td class="px-5 py-4 sm:px-6"><p class="text-gray-500 text-theme-sm dark:text-gray-400">{{ $log->created_at->format('M d, Y g:i A') }}</p></td>
-                                <td class="px-5 py-4 sm:px-6">
-                                    <span class="block font-medium text-gray-800 text-theme-sm dark:text-white/90">{{ $log->employee_name ?? $log->username ?? '—' }}</span>
-                                    <span class="block text-theme-xs text-gray-400">{{ $log->username }}</span>
-                                </td>
+                                <td class="px-5 py-4 whitespace-nowrap sm:px-6"><p class="text-gray-500 text-theme-sm dark:text-gray-400">{{ $log->created_at->format('M d, Y g:i A') }}</p></td>
+                                <td class="px-5 py-4 sm:px-6"><p class="text-gray-500 text-theme-sm dark:text-gray-400">{{ $log->username ?? '—' }}</p></td>
                                 <td class="px-5 py-4 sm:px-6"><p class="text-gray-500 text-theme-sm dark:text-gray-400">{{ $log->employee_number ?? '—' }}</p></td>
                                 <td class="px-5 py-4 sm:px-6"><p class="text-gray-500 text-theme-sm dark:text-gray-400">{{ ucfirst(str_replace('_', ' ', $log->action)) }}</p></td>
                                 <td class="px-5 py-4 sm:px-6"><p class="text-gray-500 text-theme-sm dark:text-gray-400">{{ $log->module }}</p></td>
@@ -162,7 +159,6 @@
                         <div class="space-y-1.5 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-xs dark:border-gray-800 dark:bg-white/[0.03]">
                             <div class="flex items-center justify-between"><span class="text-gray-400">Log ID</span><span class="font-medium text-gray-700 dark:text-gray-300" x-text="detail.log.id"></span></div>
                             <div class="flex items-center justify-between"><span class="text-gray-400">Date &amp; Time</span><span class="font-medium text-gray-700 dark:text-gray-300" x-text="detail.log.created_at"></span></div>
-                            <div class="flex items-center justify-between"><span class="text-gray-400">User</span><span class="font-medium text-gray-700 dark:text-gray-300" x-text="detail.log.employee_name || detail.log.username || '—'"></span></div>
                             <div class="flex items-center justify-between"><span class="text-gray-400">Username</span><span class="font-medium text-gray-700 dark:text-gray-300" x-text="detail.log.username || '—'"></span></div>
                             <div class="flex items-center justify-between"><span class="text-gray-400">Employee No.</span><span class="font-medium text-gray-700 dark:text-gray-300" x-text="detail.log.employee_number || '—'"></span></div>
                             <div class="flex items-center justify-between"><span class="text-gray-400">Role(s)</span><span class="font-medium text-gray-700 dark:text-gray-300" x-text="detail.log.roles || '—'"></span></div>

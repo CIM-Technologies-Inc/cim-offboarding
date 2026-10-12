@@ -194,7 +194,7 @@
             <svg class="fill-current" width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <path d="M9 3.75V14.25M3.75 9H14.25" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
             </svg>
-            Add General Signatory
+            Add Signatory
         </button>
     </div>
 
@@ -326,7 +326,7 @@
                                         @submit="if (!confirmed) {
                                             $event.preventDefault();
                                             Swal.fire({
-                                                title: 'Delete this General Signatory?',
+                                                title: 'Delete this Signatory?',
                                                 text: 'You are about to delete this record. This cannot be undone.',
                                                 icon: 'warning',
                                                 showCancelButton: true,
@@ -359,7 +359,7 @@
                     @empty
                         <tr>
                             <td colspan="6" class="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
-                                No General Signatory records yet. Click "Add General Signatory" to create one.
+                                No Signatory records yet. Click "Add Signatory" to create one.
                             </td>
                         </tr>
                     @endforelse

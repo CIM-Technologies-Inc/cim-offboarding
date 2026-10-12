@@ -3,6 +3,7 @@
 use App\Http\Middleware\EnsureAccountNotBlocked;
 use App\Http\Middleware\EnsurePasswordChanged;
 use App\Http\Middleware\EnsureUserHasRole;
+use App\Http\Middleware\PreventPageCaching;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -40,6 +41,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'role' => EnsureUserHasRole::class,
             'password.changed' => EnsurePasswordChanged::class,
             'account.active' => EnsureAccountNotBlocked::class,
+            'no-cache' => PreventPageCaching::class,
             // Spatie's own permission middleware — new, only used by the
             // Roles & Permissions and Users pages.
             'permission' => PermissionMiddleware::class,
