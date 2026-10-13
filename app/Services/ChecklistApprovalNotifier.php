@@ -20,10 +20,12 @@ use App\Models\OffboardingRequest;
 use App\Models\OffboardingRequestApprover;
 use App\Models\OffboardingRequestGeneralSignatory;
 use App\Models\User;
+use App\Notifications\ChecklistReadyForApprovalNotification;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Str;
 
 class ChecklistApprovalNotifier
@@ -972,13 +974,16 @@ class ChecklistApprovalNotifier
     private const APPROVAL_TOKEN_LIFETIME_DAYS = 30;
 
     /**
-     * Emails this employee's Department Head once every checklist item
-     * across EVERY checklist they're the assigned approver for on this
-     * request has been checked — one "ready for your final review and
-     * approval" notice covering the whole combined group, instead of one
-     * per checklist. Called only from
+     * Notifies this employee's Department Head/Clearance Signatory (email
+     * AND the in-app bell — see `ChecklistReadyForApprovalNotification`)
+     * once every checklist item across EVERY checklist they're the assigned
+     * approver for on this request has been checked — including every item
+     * they delegated out to their own Task Assignees — one "ready for your
+     * final review and approval" notice covering the whole combined group,
+     * instead of one per checklist. Called only from
      * `ChecklistCompletionService::checkGroupReadyForApproval()`, which
-     * already guards this to fire exactly once per group. The single
+     * already guards this to fire exactly once per group, so neither
+     * channel here needs its own separate duplicate-prevention. The single
      * approval token is tied to the group's first member row — clicking
      * "Approve" re-expands to whatever this employee's current full group
      * is at click time (see `ApprovalController::resolveEmailApprovalState()`),
@@ -992,11 +997,31 @@ class ChecklistApprovalNotifier
 
         $departmentHead = $members->first()->employee ?? Employee::find($employeeId);
 
-        if (! $departmentHead || ! $departmentHead->email || ! filter_var($departmentHead->email, FILTER_VALIDATE_EMAIL)) {
+        if (! $departmentHead) {
             return;
         }
 
         $offboardee = $offboardingRequest->employee;
+
+        // The in-app bell notification — deliberately independent of the
+        // department head having a usable email (unlike the one below),
+        // since an admin who reaches this page at all already has a
+        // working User account regardless of whether their Employee record
+        // has a valid address on file.
+        if ($departmentHead->user) {
+            Notification::send($departmentHead->user, new ChecklistReadyForApprovalNotification(
+                offboardingRequestId: $offboardingRequest->id,
+                offboardingRequestApproverId: $members->first()->id,
+                offboardeeName: $offboardee->name,
+                offboardeeEmployeeCode: $offboardee->employee_code,
+                checklistTitle: $members->pluck('checklistTemplate.title')->filter()->implode(', '),
+            ));
+        }
+
+        if (! $departmentHead->email || ! filter_var($departmentHead->email, FILTER_VALIDATE_EMAIL)) {
+            return;
+        }
+
         $checklists = $this->buildChecklistsPayload($members);
 
         $rawApprovalToken = Str::random(64);
