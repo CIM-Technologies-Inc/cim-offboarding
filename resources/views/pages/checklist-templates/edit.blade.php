@@ -21,7 +21,11 @@
 
     <x-common.page-breadcrumb pageTitle="Edit Checklist Template" />
 
-    <div x-data="checklistBuilder(@js(old('title', $template->title)), @js(old('employee_group_id', (string) ($template->employee_group_id ?? ''))), @js((bool) old('is_immediate_head_checklist', $template->is_immediate_head_checklist)), @js((bool) old('use_task_assignee_as_signatory', $template->use_task_assignee_as_signatory)), @js(old('department', $template->department ?? '')), @js(old('due_in_days', (string) ($template->due_in_days ?? ''))), @js(old('clearance_signing_deadline_days', (string) ($template->clearance_signing_deadline_days ?? ''))), @js(old('items', $template->items->map(fn ($item) => ['id' => $item->id, 'title' => $item->title, 'signatory_id' => (string) $item->signatory_id, 'notify_enabled' => $item->notify_enabled, 'email_template_id' => (string) ($item->email_template_id ?? ''), 'notify_timing' => $item->notify_timing, 'notify_days' => (string) ($item->notify_days ?? '')])->values())), @js($employees->map(fn ($employee) => ['id' => (string) $employee->id, 'name' => $employee->name, 'department' => $employee->department])), @js($employeeGroups), @js($errors->any() ? $errors->first() : null))"
+    @php
+        $currentClassification = $template->is_final_pay_checklist ? 'final_pay' : ($template->sequence_type ?? 'primary');
+    @endphp
+
+    <div x-data="checklistBuilder(@js(old('title', $template->title)), @js(old('employee_group_id', (string) ($template->employee_group_id ?? ''))), @js((bool) old('is_immediate_head_checklist', $template->is_immediate_head_checklist)), @js(old('checklist_classification', $currentClassification)), @js(old('department', $template->department ?? '')), @js(old('due_in_days', (string) ($template->due_in_days ?? ''))), @js(old('clearance_signing_deadline_days', (string) ($template->clearance_signing_deadline_days ?? ''))), @js(old('items', $template->items->map(fn ($item) => ['id' => $item->id, 'title' => $item->title, 'signatory_id' => (string) $item->signatory_id, 'notify_enabled' => $item->notify_enabled, 'email_template_id' => (string) ($item->email_template_id ?? ''), 'notify_timing' => $item->notify_timing, 'notify_days' => (string) ($item->notify_days ?? '')])->values())), @js($employees->map(fn ($employee) => ['id' => (string) $employee->id, 'name' => $employee->name, 'department' => $employee->department])), @js($employeeGroups), @js($errors->any() ? $errors->first() : null))"
         class="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-white/[0.03] lg:p-6">
         <form method="POST" action="{{ route('checklist-templates.update', $template) }}" class="flex flex-col">
             @csrf
@@ -39,7 +43,7 @@
                 <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-400" :class="useTaskAssigneeAsSignatory ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'">
                     <input type="checkbox" name="is_immediate_head_checklist" value="1" x-model="isImmediateHead"
                         :disabled="useTaskAssigneeAsSignatory"
-                        @change="if (isImmediateHead) { employeeGroupId = ''; useTaskAssigneeAsSignatory = false }"
+                        @change="if (isImmediateHead) { employeeGroupId = '' }"
                         class="h-4 w-4 accent-brand-500" />
                     Immediate Head
                 </label>
@@ -49,14 +53,35 @@
             </div>
 
             <div class="mt-5">
-                <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
-                    <input type="checkbox" name="use_task_assignee_as_signatory" value="1" x-model="useTaskAssigneeAsSignatory"
-                        @change="if (useTaskAssigneeAsSignatory) { employeeGroupId = ''; department = ''; isImmediateHead = false; onGroupChange() }"
-                        class="h-4 w-4 accent-brand-500" />
-                    Use Task Assignee as Clearance Signatory
+                <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                    Checklist Priority <span class="text-error-500">*</span>
                 </label>
-                <p class="mt-1.5 text-xs text-gray-400">
-                    No Clearance Signatory is needed — whichever employee is assigned as Task Assignee on each item below becomes that item's own clearance signatory.
+                <div class="flex flex-wrap items-center gap-x-6 gap-y-2">
+                    <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
+                        <input type="radio" name="checklist_classification" value="primary" required
+                            x-model="checklistClassification"
+                            @change="if (checklistClassification === 'final_pay') { employeeGroupId = ''; department = ''; isImmediateHead = false; onGroupChange() }"
+                            class="h-4 w-4 accent-brand-500" />
+                        <!-- Primary/Core Department -->
+                        Support Group
+                    </label>
+                    <!-- <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
+                        <input type="radio" name="checklist_classification" value="secondary"
+                            x-model="checklistClassification"
+                            @change="if (checklistClassification === 'final_pay') { employeeGroupId = ''; department = ''; isImmediateHead = false; onGroupChange() }"
+                            class="h-4 w-4 accent-brand-500" />
+                        Secondary
+                    </label> -->
+                    <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
+                        <input type="radio" name="checklist_classification" value="final_pay"
+                            x-model="checklistClassification"
+                            @change="if (checklistClassification === 'final_pay') { employeeGroupId = ''; department = ''; isImmediateHead = false; onGroupChange() }"
+                            class="h-4 w-4 accent-brand-500" />
+                        For Final Pay Checklist
+                    </label>
+                </div>
+                <p class="mt-1.5 text-xs text-gray-400" x-show="checklistClassification === 'final_pay'">
+                    A Final Pay checklist is automatically treated as a Multiple Signatory Checklist — individual Task Assignees are the signatories for their own items, with no single Clearance Signatory group.
                 </p>
             </div>
 
@@ -214,38 +239,6 @@
                 </div>
             </div>
 
-            @php
-                $currentClassification = $template->is_final_pay_checklist ? 'final_pay' : ($template->sequence_type ?? 'primary');
-            @endphp
-            <div class="mt-5">
-                <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
-                    Checklist Priority <span class="text-error-500">*</span>
-                </label>
-                <div class="flex flex-wrap items-center gap-x-6 gap-y-2">
-                    <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
-                        <input type="radio" name="checklist_classification" value="primary" required
-                            @checked(old('checklist_classification', $currentClassification) === 'primary')
-                            class="h-4 w-4 accent-brand-500" />
-                        Primary/Core Department
-                    </label>
-                    <!-- <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
-                        <input type="radio" name="checklist_classification" value="secondary"
-                            @checked(old('checklist_classification', $currentClassification) === 'secondary')
-                            class="h-4 w-4 accent-brand-500" />
-                        Secondary
-                    </label> -->
-                    <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-400">
-                        <input type="radio" name="checklist_classification" value="final_pay"
-                            @checked(old('checklist_classification', $currentClassification) === 'final_pay')
-                            class="h-4 w-4 accent-brand-500" />
-                        For Final Pay Checklist
-                    </label>
-                </div>
-                <!-- <p class="mt-1.5 text-xs text-gray-400">
-                    In a Sync-mode offboarding request, Primary checklists must all be approved before Secondary checklists are sent, and both before the Final Pay Checklist. In Async mode, Primary and Secondary are sent together, but the Final Pay Checklist still only follows once both are approved.
-                </p> -->
-            </div>
-
             <div class="mt-7">
                 <div class="mb-4 flex items-center justify-between">
                     <h5 class="text-lg font-medium text-gray-800 dark:text-white/90">
@@ -380,12 +373,19 @@
     </div>
 
     <script>
-        function checklistBuilder(initialTitle, initialEmployeeGroupId, initialIsImmediateHead, initialUseTaskAssigneeAsSignatory, initialDepartment, initialDueInDays, initialClearanceSigningDeadlineDays, initialItems, employees, employeeGroups, flashError = null) {
+        function checklistBuilder(initialTitle, initialEmployeeGroupId, initialIsImmediateHead, initialChecklistClassification, initialDepartment, initialDueInDays, initialClearanceSigningDeadlineDays, initialItems, employees, employeeGroups, flashError = null) {
             return {
                 title: initialTitle,
                 employeeGroupId: initialEmployeeGroupId,
                 isImmediateHead: initialIsImmediateHead,
-                useTaskAssigneeAsSignatory: initialUseTaskAssigneeAsSignatory,
+                checklistClassification: initialChecklistClassification,
+                // "Multiple Signatory Checklist" is no longer an independent
+                // field — it's a Final Pay checklist, always, and nothing
+                // else ever is. Computed so every existing binding that
+                // reads this property keeps working unchanged.
+                get useTaskAssigneeAsSignatory() {
+                    return this.checklistClassification === 'final_pay';
+                },
                 department: initialDepartment,
                 dueInDays: initialDueInDays,
                 clearanceSigningDeadlineDays: initialClearanceSigningDeadlineDays,

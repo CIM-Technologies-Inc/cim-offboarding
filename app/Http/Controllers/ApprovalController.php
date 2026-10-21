@@ -1517,7 +1517,22 @@ class ApprovalController extends Controller
             abort(422, 'All checklist items must be checked before this checklist can be approved.');
         }
 
-        $this->finalizeGroupApproval(collect([$offboardingRequestApprover]), auth()->user(), $validated['remarks'] ?? null);
+        // Re-checked under a row lock, same pattern `approveGroup()` already
+        // uses — without this, two near-simultaneous submits (a double-click,
+        // or two open tabs) could both pass the plain `abort_unless` status
+        // check above before either had written, then both proceed into
+        // `finalizeGroupApproval()` and each fire their own activity log
+        // entry and "approved" email to the request creator.
+        DB::transaction(function () use ($offboardingRequestApprover, $validated) {
+            $locked = OffboardingRequestApprover::whereKey($offboardingRequestApprover->id)
+                ->whereIn('status', ['pending', 'viewed'])
+                ->lockForUpdate()
+                ->first();
+
+            abort_if(! $locked, 422, 'This has already been actioned.');
+
+            $this->finalizeGroupApproval(collect([$locked]), auth()->user(), $validated['remarks'] ?? null);
+        });
 
         return back()->with('success', $offboardingRequestApprover->offboardingRequest->employee->name . '\'s offboarding request was approved.');
     }
@@ -1538,6 +1553,17 @@ class ApprovalController extends Controller
     public function approveGroup(Request $request, OffboardingRequest $offboardingRequest, Employee $employee): RedirectResponse
     {
         $this->authorizeGroupPrimary($employee);
+
+        // Same guard `approve()` already applies to a single checklist —
+        // missing here let a stale browser tab still approve a whole
+        // combined card (potentially advancing the request toward Final
+        // Pay attachment/completion) on a request an admin had already
+        // retracted in the meantime.
+        abort_if(
+            $offboardingRequest->isReadOnly(),
+            422,
+            'This offboarding request has been retracted and can no longer be actioned.'
+        );
 
         if (! auth()->user()->hasUsableSignature()) {
             return $this->redirectToUploadSignature();
@@ -1785,6 +1811,15 @@ class ApprovalController extends Controller
             return ['invalid', collect()];
         }
 
+        // Same guard the in-app `approve()`/`approveGroup()` already apply —
+        // missing here let a still-valid emailed link keep approving
+        // checklists on a request an admin had already retracted, since
+        // this method (unlike those two) never otherwise re-checks the
+        // request's own status, only each member row's.
+        if ($originRow->offboardingRequest?->isReadOnly()) {
+            return ['not_actionable', collect()];
+        }
+
         $members = OffboardingRequestApprover::where('offboarding_request_id', $originRow->offboarding_request_id)
             ->where('employee_id', $originRow->employee_id)
             ->with(['checklistTemplate.items', 'itemProgress', 'offboardingRequest.employee', 'employee'])
@@ -1942,11 +1977,27 @@ class ApprovalController extends Controller
         $comment = $validated['comment'];
         $actor = auth()->user();
 
-        $offboardingRequestApprover->update([
-            'status' => 'on_hold',
-            'declined_at' => now(),
-            'decline_reason' => $comment,
-        ]);
+        // Re-checked under a row lock — same reasoning as the matching fix
+        // in `approve()` just above: without this, two near-simultaneous
+        // declines could both pass the plain `abort_unless` status check
+        // above before either had written, then both go on to send their
+        // own decline notification/activity log entry below.
+        DB::transaction(function () use (&$offboardingRequestApprover, $comment) {
+            $locked = OffboardingRequestApprover::whereKey($offboardingRequestApprover->id)
+                ->whereIn('status', ['pending', 'viewed'])
+                ->lockForUpdate()
+                ->first();
+
+            abort_if(! $locked, 422, 'This has already been actioned.');
+
+            $locked->update([
+                'status' => 'on_hold',
+                'declined_at' => now(),
+                'decline_reason' => $comment,
+            ]);
+
+            $offboardingRequestApprover = $locked;
+        });
 
         // Per-row only — every OTHER still-outstanding assignment on this
         // request is entirely unaffected by this hold, so their own overdue
@@ -1991,6 +2042,15 @@ class ApprovalController extends Controller
     public function removeHold(Request $request, OffboardingRequestApprover $offboardingRequestApprover): RedirectResponse|JsonResponse
     {
         $this->authorizeAssignment($offboardingRequestApprover);
+
+        // Same guard `approve()`/`decline()` already apply — a retracted
+        // request's checklists must stay frozen, including one still
+        // sitting On Hold.
+        abort_if(
+            $offboardingRequestApprover->offboardingRequest->isReadOnly(),
+            422,
+            'This offboarding request has been retracted and can no longer be actioned.'
+        );
 
         abort_unless(
             $offboardingRequestApprover->status === 'on_hold',
@@ -2102,7 +2162,7 @@ class ApprovalController extends Controller
                     signatoryType: $signatoryType,
                 );
 
-                Mail::to($recipient->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+                Mail::to($recipient->email)->cc($emailTemplate->ccRecipientEmails($recipient->email))->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
             } catch (\Throwable $e) {
                 Log::error('Failed to send checklist decline notification.', [
                     'offboarding_request_approver_id' => $offboardingRequestApprover->id,
@@ -2212,7 +2272,7 @@ class ApprovalController extends Controller
         );
 
         try {
-            Mail::to($approverEmployee->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+            Mail::to($approverEmployee->email)->cc($emailTemplate->ccRecipientEmails($approverEmployee->email))->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
             $offboardingRequestApprover->update(['reminder_sent_at' => now()]);
 
             $offboardingRequest->activities()->create([
@@ -2307,7 +2367,7 @@ class ApprovalController extends Controller
             );
 
             try {
-                Mail::to($approverEmployee->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+                Mail::to($approverEmployee->email)->cc($emailTemplate->ccRecipientEmails($approverEmployee->email))->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
                 $sentNames[] = $approverEmployee->name;
             } catch (\Throwable $e) {
                 Log::error('Failed to send offboarding reminder email.', [
@@ -2680,7 +2740,7 @@ class ApprovalController extends Controller
                 clearanceSignatoryName: $recipient->name,
             );
 
-            Mail::to($recipient->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+            Mail::to($recipient->email)->cc($emailTemplate->ccRecipientEmails($recipient->email))->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
 
             $alreadyNotifiedEmployeeIds[] = $recipient->id;
         }

@@ -110,7 +110,7 @@ class SendScheduledChecklistItemNotifications extends Command
             );
 
             try {
-                Mail::to($recipient->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+                Mail::to($recipient->email)->cc($item->emailTemplate->ccRecipientEmails($recipient->email))->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
             } catch (\Throwable $e) {
                 Log::error('Failed to send scheduled checklist item notification.', [
                     'checklist_item_id' => $item->id,

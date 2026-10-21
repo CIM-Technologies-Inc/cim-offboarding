@@ -9,9 +9,12 @@ use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Illuminate\View\View;
 use PhpOffice\PhpSpreadsheet\IOFactory;
 
@@ -28,7 +31,66 @@ class EmployeeGroupController extends Controller
             'employees' => Employee::with('employeeGroup.groupHead')
                 ->orderBy('name')
                 ->get(['id', 'name', 'firstName', 'lastName', 'middleName', 'email', 'employee_code', 'department', 'designation', 'position', 'employee_group_id', 'is_task_assignee', 'status']),
+            // Feeds the Add New Employee modal's Department dropdown/Position
+            // datalist — see `storeEmployee()`'s own docblock for why
+            // Department is a closed dropdown (existing values only) while
+            // Position stays free text with suggestions.
+            'departmentOptions' => $this->departmentOptions(),
+            'positionOptions' => $this->positionOptions(),
+            // The "Last Employee Master File Upload" card — see
+            // `latestRosterUpload()`'s own docblock for why this reuses
+            // `ActivityLog` instead of a new table.
+            'latestRosterUpload' => $this->latestRosterUpload(),
         ]);
+    }
+
+    /**
+     * The Employee Master page's "Last Upload" card reuses `ActivityLog`
+     * (`import()`'s own `employee_roster_imported`/`employee_roster_import_failed`
+     * entries — see `logFailedImport()`'s docblock for why those are two
+     * distinct action keys) rather than a new dedicated upload-history
+     * table: every piece of information the card needs — who, when, what
+     * file, what outcome, how many records in each bucket — is already
+     * captured there on every `import()` call, success or failure, and nothing
+     * else in this app writes either of those two action keys (in
+     * particular, `storeEmployee()`'s manual single-add logs its own
+     * `employee_created` key instead, so it can never be mistaken for a
+     * file upload here).
+     *
+     * Returns null when no Employee Master file has EVER been uploaded on
+     * this installation — the view shows its own "not uploaded yet" message
+     * for that case instead of a card with placeholder/zeroed-out values.
+     */
+    private function latestRosterUpload(): ?array
+    {
+        $log = ActivityLog::where('module', 'Employees')
+            ->whereIn('action', ['employee_roster_imported', 'employee_roster_import_failed'])
+            ->latest('id')
+            ->first();
+
+        if (! $log) {
+            return null;
+        }
+
+        $values = $log->new_values ?? [];
+
+        return [
+            'fileName' => $values['file_name'] ?? null,
+            // `created_at` IS the upload's own completion timestamp, not an
+            // approximation of it — `import()` runs entirely synchronously
+            // within the request (no queue in between), so this is the
+            // exact moment the import finished, logged in whatever timezone
+            // `config('app.timezone')` is set to app-wide (same as every
+            // other timestamp this app already displays).
+            'uploadedAt' => $log->created_at,
+            'uploadedByName' => $log->employee_name ?: $log->username,
+            'status' => $log->status,
+            'totalRecords' => (int) ($values['total_records'] ?? 0),
+            'successfullyImported' => (int) ($values['successfully_imported'] ?? 0),
+            'skippedDuplicateRecords' => (int) ($values['skipped_duplicate_records'] ?? 0),
+            'failedRecords' => (int) ($values['failed_records'] ?? 0),
+            'failureReason' => $log->failure_reason,
+        ];
     }
 
     public function store(Request $request): RedirectResponse
@@ -283,6 +345,169 @@ class EmployeeGroupController extends Controller
     }
 
     /**
+     * Manually creates a single `employees` row from scratch — the
+     * one-at-a-time counterpart to `import()`'s whole-roster Excel upload,
+     * for an Admin/HR user adding one new hire without building a
+     * spreadsheet. Deliberately mirrors `import()`'s own conventions for a
+     * brand-new row (see its Pass 1 above) so a manually added employee is
+     * indistinguishable from one added via the spreadsheet afterward: same
+     * title-cased name parts, same combined `name`, same
+     * `designation`/`position` dual-write (kept identical — there's no
+     * separate "Position" source anywhere in this app, see
+     * `positionOptions()` below), same `status = 'active'` and
+     * `date_of_joining = now()` for a genuinely new hire.
+     *
+     * `employee_group_id` is deliberately left unset, same as a fresh
+     * `import()` row — so a manually added employee starts out in the
+     * "Unassigned" bucket of the Employee Directory, exactly like the
+     * import's own new rows do until a group's Head's department later
+     * picks them up (see `syncDepartmentMembership()`).
+     *
+     * JSON-aware (same convention as `addEmployee()`/`removeEmployee()`):
+     * the Add New Employee modal's fetch()-based submit uses this to update
+     * the Employee Directory in place without a page reload.
+     */
+    public function storeEmployee(Request $request): RedirectResponse|JsonResponse
+    {
+        $validated = $request->validate([
+            'employee_code' => ['required', 'string', 'max:255', 'unique:employees,employee_code'],
+            'firstName' => ['required', 'string', 'max:255'],
+            'lastName' => ['required', 'string', 'max:255'],
+            'middleName' => ['required', 'string', 'max:255'],
+            'email' => ['required', 'email', 'max:255'],
+            'personal_email' => ['nullable', 'email', 'max:255'],
+            // A closed dropdown on the form (only departments that already
+            // have at least one employee in them), so it's re-validated
+            // server-side against that same list rather than against any
+            // free-text value a direct request could otherwise smuggle in.
+            'department' => ['required', 'string', Rule::in($this->departmentOptions())],
+            // Unlike Department above, Position/`designation` has no
+            // existing lookup table or enum ANYWHERE in this app (see
+            // `positionOptions()`) — the form offers existing values as
+            // suggestions, but a genuinely new position title (the first
+            // hire into a brand-new role) must still be allowed through.
+            'position' => ['required', 'string', 'max:255'],
+        ], [
+            'employee_code.unique' => 'This Employee No. is already registered in the system.',
+        ]);
+
+        $firstName = Str::title(strtolower(trim($validated['firstName'])));
+        $middleName = Str::title(strtolower(trim($validated['middleName'])));
+        $lastName = Str::title(strtolower(trim($validated['lastName'])));
+
+        $employee = $this->createEmployeeGuardingAgainstNameDuplicate($validated, $firstName, $middleName, $lastName);
+
+        ActivityLog::record('employee_created', 'Employees', "{$employee->name} added to the Employee Master roster.", [
+            'subject_type' => 'Employee',
+            'subject_id' => $employee->id,
+        ]);
+
+        $message = "{$employee->name} added.";
+
+        if ($request->wantsJson()) {
+            return response()->json([
+                'employee' => $employee->fresh(['employeeGroup.groupHead']),
+                'message' => $message,
+            ]);
+        }
+
+        return back()->with('success', $message);
+    }
+
+    /**
+     * Re-checks for a same-name duplicate immediately before the actual
+     * insert, serialized by a MySQL named lock keyed on the normalized full
+     * name — closes the race window an unguarded "check, then separately
+     * insert" would otherwise have between two concurrent submissions for
+     * the SAME name (neither sees the other's row yet when each runs its
+     * own `isDuplicateEmployeeName()` check). `employee_code` already gets
+     * this same guarantee for free from its own DB-level unique index; this
+     * is the equivalent for the name-based check below, which has no
+     * underlying unique index to rely on (see that method's own docblock
+     * for why one isn't practical here). Named locks are MySQL-specific and
+     * session-scoped (never left stuck "on" — the connection's own session
+     * ending releases it automatically even on a crashed/killed request),
+     * so this only runs on a `mysql` connection; a non-MySQL connection
+     * (never used by this app in practice) just falls back to the
+     * unguarded check.
+     */
+    private function createEmployeeGuardingAgainstNameDuplicate(array $validated, string $firstName, string $middleName, string $lastName): Employee
+    {
+        $usingMysql = DB::connection()->getDriverName() === 'mysql';
+        $lockName = 'employee-name:' . sha1(Str::lower($firstName . '|' . $middleName . '|' . $lastName));
+
+        if ($usingMysql) {
+            DB::select('SELECT GET_LOCK(?, 5)', [$lockName]);
+        }
+
+        try {
+            if ($this->isDuplicateEmployeeName($firstName, $middleName, $lastName)) {
+                // A single dedicated key (not attached to firstName/middleName/
+                // lastName individually) — one clear banner at the top of the
+                // modal rather than the same sentence repeated under three
+                // separate fields.
+                throw ValidationException::withMessages([
+                    'duplicate_name' => self::DUPLICATE_NAME_MESSAGE,
+                ]);
+            }
+
+            return Employee::create([
+                'employee_code' => $validated['employee_code'],
+                'name' => implode(' ', array_filter([$firstName, $middleName, $lastName])),
+                'firstName' => $firstName,
+                'lastName' => $lastName,
+                'middleName' => $middleName,
+                'email' => $validated['email'],
+                'personal_email' => ($validated['personal_email'] ?? null) ?: null,
+                'department' => $validated['department'],
+                'designation' => $validated['position'],
+                'position' => $validated['position'],
+                'status' => 'active',
+                'date_of_joining' => now(),
+            ]);
+        } finally {
+            if ($usingMysql) {
+                DB::select('SELECT RELEASE_LOCK(?)', [$lockName]);
+            }
+        }
+    }
+
+    private const DUPLICATE_NAME_MESSAGE = 'An employee with the same name already exists in the system. Please verify the employee details before proceeding.';
+
+    /**
+     * "Already registered anywhere in the application" per this feature's
+     * own spec, deliberately NOT keyed on `employee_code` — the whole point
+     * is to catch someone re-entered under a DIFFERENT code, which an
+     * `employee_code`-only check (already covered separately by the
+     * column's own unique index) can never catch. Matches on First + Last
+     * Name always; Middle Name only when BOTH this submission and the
+     * existing record actually have one — an existing record with no
+     * middle name on file (common for older/imported rows) can't be
+     * compared on a field it doesn't have, so First + Last alone is treated
+     * as enough in that specific case, per this feature's own spec ("Handle
+     * optional or missing middle names correctly"). Every comparison is
+     * case- and surrounding-whitespace-insensitive (`LOWER(TRIM(...))` on
+     * both sides) so "JUAN DELA CRUZ " and "Juan Dela Cruz" are correctly
+     * treated as the same name. Deliberately does NOT fuzzy-match beyond
+     * that (no partial/sounds-like matching) — this app's own spec
+     * explicitly warns against "overly broad matching that incorrectly
+     * prevents different employees with similar names from being
+     * registered".
+     */
+    private function isDuplicateEmployeeName(string $firstName, string $middleName, string $lastName): bool
+    {
+        return Employee::query()
+            ->whereRaw('LOWER(TRIM(firstName)) = ?', [Str::lower(trim($firstName))])
+            ->whereRaw('LOWER(TRIM(lastName)) = ?', [Str::lower(trim($lastName))])
+            ->where(function ($query) use ($middleName) {
+                $query->whereRaw("LOWER(TRIM(IFNULL(middleName, ''))) = ?", [Str::lower(trim($middleName))])
+                    ->orWhereNull('middleName')
+                    ->orWhere('middleName', '');
+            })
+            ->exists();
+    }
+
+    /**
      * Removes an employee from this group — clears their group assignment
      * only, never deletes the employee record itself. JSON-aware for the
      * same reactive "Remove" action in the Members table — see
@@ -350,6 +575,37 @@ class EmployeeGroupController extends Controller
     }
 
     /**
+     * Same "no made-up department the roster doesn't actually have"
+     * convention already used by `ChecklistTemplateController::departmentOptions()`
+     * — distinct, non-blank `employees.department` values, so the Add New
+     * Employee modal's dropdown can never offer (and the backend never
+     * accepts) a department no current employee actually belongs to.
+     */
+    private function departmentOptions(): Collection
+    {
+        return Employee::whereNotNull('department')
+            ->where('department', '!=', '')
+            ->distinct()
+            ->orderBy('department')
+            ->pluck('department');
+    }
+
+    /**
+     * Unlike `departmentOptions()` above, Position (`designation`) has no
+     * equivalent lookup/enum anywhere in this app — these are only ever
+     * suggestions for the Add New Employee modal's datalist, never a
+     * closed set the backend validates against (see `storeEmployee()`).
+     */
+    private function positionOptions(): Collection
+    {
+        return Employee::whereNotNull('designation')
+            ->where('designation', '!=', '')
+            ->distinct()
+            ->orderBy('designation')
+            ->pluck('designation');
+    }
+
+    /**
      * The exact 12 columns the Employee Master import expects, in header
      * order. Every one of these must be present in the uploaded file's
      * header row (structure check) — but not every one requires a value on
@@ -382,15 +638,25 @@ class EmployeeGroupController extends Controller
             'excel_file' => ['required', 'file', 'mimes:xlsx,xls'],
         ]);
 
+        // Captured up front, before anything about the file's CONTENTS is
+        // even looked at — the Last Upload card (see `latestRosterUpload()`)
+        // needs the original filename on every outcome, failures included,
+        // not only on a successful import.
+        $fileName = $request->file('excel_file')->getClientOriginalName();
+
         try {
             $sheet = IOFactory::load($request->file('excel_file')->getRealPath())->getActiveSheet();
         } catch (\Throwable $e) {
+            $this->logFailedImport($fileName, 'Could not read that file — please upload a valid Excel (.xlsx or .xls) file.');
+
             return back()->withErrors(['excel_file' => 'Could not read that file — please upload a valid Excel (.xlsx or .xls) file.']);
         }
 
         $rows = $sheet->toArray(null, true, true, false);
 
         if (empty($rows)) {
+            $this->logFailedImport($fileName, 'The uploaded file is empty.');
+
             return back()->withErrors(['excel_file' => 'The uploaded file is empty.']);
         }
 
@@ -400,8 +666,11 @@ class EmployeeGroupController extends Controller
         if ($headerMap === null) {
             $present = array_keys($this->normalizedHeaders($headerRow));
             $missing = array_filter(self::IMPORT_COLUMNS, fn ($column) => ! in_array(strtolower($column), $present, true));
+            $reason = 'Missing required column(s): ' . implode(', ', $missing) . '.';
 
-            return back()->withErrors(['excel_file' => 'Missing required column(s): ' . implode(', ', $missing) . '.']);
+            $this->logFailedImport($fileName, $reason);
+
+            return back()->withErrors(['excel_file' => $reason]);
         }
 
         [$validRows, $errors] = $this->validateRows($rows, $headerMap);
@@ -409,8 +678,30 @@ class EmployeeGroupController extends Controller
         if (! empty($errors)) {
             $shown = array_slice($errors, 0, 5);
             $suffix = count($errors) > 5 ? ' (+' . (count($errors) - 5) . ' more)' : '';
+            $reason = implode('; ', $shown) . $suffix;
 
-            return back()->withErrors(['excel_file' => implode('; ', $shown) . $suffix]);
+            // `validateRows()` pushes EVERY non-blank row into `$validRows`
+            // unconditionally — "valid" only actually describes its
+            // contents once the caller (here) has confirmed `$errors` is
+            // empty; with errors present, as here, it's really just "every
+            // row this file had," which is exactly the file's own "Total
+            // Records". Failed rows are further split into "duplicate
+            // employeeNo within this file" vs every other validation reason
+            // (see `classifyImportRowFailures()`), matching the Last Upload
+            // card's own Skipped/Duplicate vs Failed distinction — NOT added
+            // on top of `$validRows`'s own count, which already includes
+            // them.
+            $totalRows = count($validRows);
+            $duplicateRowCount = $this->countDuplicateEmployeeNoRows($errors);
+
+            $this->logFailedImport($fileName, $reason, [
+                'total_records' => $totalRows,
+                'successfully_imported' => 0,
+                'skipped_duplicate_records' => $duplicateRowCount,
+                'failed_records' => $totalRows - $duplicateRowCount,
+            ]);
+
+            return back()->withErrors(['excel_file' => $reason]);
         }
 
         $created = 0;
@@ -489,11 +780,97 @@ class EmployeeGroupController extends Controller
 
         $total = $created + $updated;
 
+        // Every key an earlier version of this call already recorded
+        // (`created`/`updated`/`deleted` — the whole-ROSTER delta, deletions
+        // included) is kept exactly as-is; the `file_name`/`total_records`/
+        // `successfully_imported`/`skipped_duplicate_records`/
+        // `failed_records` keys alongside them are what `latestRosterUpload()`
+        // actually reads for the Last Upload card — a SUCCESSFUL import
+        // never skips or fails a row that was validated (an all-or-nothing
+        // file either imports completely or not at all), so `total_records`
+        // here is just every valid row in THIS file, matching the card's own
+        // "Total Records" wording (the file's content, not the net roster
+        // change that `deleted` also factors in).
         ActivityLog::record('employee_roster_imported', 'Employees', "Employee Master roster imported: {$created} added, {$updated} updated, {$deleted} removed.", [
-            'new_values' => ['created' => $created, 'updated' => $updated, 'deleted' => $deleted],
+            'status' => 'success',
+            'new_values' => [
+                'created' => $created,
+                'updated' => $updated,
+                'deleted' => $deleted,
+                'file_name' => $fileName,
+                'total_records' => $total,
+                'successfully_imported' => $total,
+                'skipped_duplicate_records' => 0,
+                'failed_records' => 0,
+            ],
         ]);
 
         return back()->with('success', "Imported {$total} employee(s) ({$created} added, {$updated} updated, {$deleted} removed).");
+    }
+
+    /**
+     * The single write path every failure branch of `import()` above uses —
+     * `employee_roster_imported` (success) and this (`employee_roster_import_failed`)
+     * are deliberately two DIFFERENT action keys, never the same key with
+     * just a different `status`, so `latestRosterUpload()` below can tell
+     * them apart with a plain `whereIn()` without having to also inspect
+     * `status`. A failed attempt writes NOTHING to the `employees` table
+     * (see `import()`'s own docblock — validation happens before any DB
+     * write), so every count here defaults to 0 unless the caller already
+     * worked out more specific per-row numbers (the row-validation failure
+     * branch does; the three earlier, more structural failures — unreadable
+     * file, empty file, missing columns — never get far enough to count
+     * rows meaningfully at all, so they stay at 0 rather than guess).
+     */
+    private function logFailedImport(string $fileName, string $reason, array $counts = []): void
+    {
+        ActivityLog::record('employee_roster_import_failed', 'Employees', "Employee Master import failed: {$reason}", [
+            'status' => 'failed',
+            'failure_reason' => $reason,
+            'new_values' => array_merge([
+                'file_name' => $fileName,
+                'total_records' => 0,
+                'successfully_imported' => 0,
+                'skipped_duplicate_records' => 0,
+                'failed_records' => 0,
+            ], $counts),
+        ]);
+    }
+
+    /**
+     * Counts the DISTINCT rows (never double-counting a row that produced
+     * more than one error message) whose failure was specifically a
+     * duplicate `employeeNo` WITHIN this file — the Last Upload card's own
+     * "Skipped/Duplicate Records" number. Everything else that didn't make
+     * it in (`total_records - successfully_imported - this count`, computed
+     * by the caller) is "Failed Records" instead — per that field's own
+     * definition ("records that failed validation OR could not be
+     * imported"), which deliberately also covers a row with no problem of
+     * its own that still didn't import because this app's `import()` is
+     * all-or-nothing (see its own docblock): one bad row blocks every row
+     * in the same file, not just itself. Keeping the three displayed counts
+     * (Imported/Skipped/Failed) always summing back to Total Records is
+     * worth more to an admin reading this card than narrowing "Failed" to
+     * only a row's own direct validation error.
+     *
+     * Deliberately parses the SAME error strings `import()` already shows
+     * the admin directly, rather than having `validateRows()` return a
+     * second, separately-shaped structure alongside them — one source of
+     * truth for what each row's problem actually was.
+     *
+     * @param  array<int, string>  $errors
+     */
+    private function countDuplicateEmployeeNoRows(array $errors): int
+    {
+        $duplicateRows = [];
+
+        foreach ($errors as $error) {
+            if (preg_match('/^Row (\d+):/', $error, $matches) && str_contains($error, 'duplicate employeeNo')) {
+                $duplicateRows[(int) $matches[1]] = true;
+            }
+        }
+
+        return count($duplicateRows);
     }
 
     /**

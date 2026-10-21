@@ -4,116 +4,167 @@ namespace App\Helpers;
 
 class MenuHelper
 {
-    public static function getMainNavItems()
+    /**
+     * The 5 top-level sidebar categories, each holding its existing leaf
+     * items unchanged (same `path`/`permission`/`roles` keys as before the
+     * sidebar was grouped) — reorganizing navigation is purely a
+     * presentation change, never a permissions change.
+     *
+     * Every leaf item is gated by its own `.view` permission — real,
+     * Spatie-backed module access control, not a hardcoded role list —
+     * EXCEPT the two identity-scoped self-service pages (a user's own
+     * profile, an Employee-role account's own dashboard), which have
+     * no corresponding admin-toggleable permission on purpose: every
+     * authenticated account always has a profile, and every Employee-
+     * role account always has their own dashboard, regardless of what
+     * permissions an admin has or hasn't assigned.
+     */
+    public static function getCategories(): array
     {
-        $user = auth()->user();
-
-        // Every item is gated by its own `.view` permission — real,
-        // Spatie-backed module access control, not a hardcoded role list —
-        // EXCEPT the two identity-scoped self-service pages (a user's own
-        // profile, an Employee-role account's own dashboard), which have
-        // no corresponding admin-toggleable permission on purpose: every
-        // authenticated account always has a profile, and every Employee-
-        // role account always has their own dashboard, regardless of what
-        // permissions an admin has or hasn't assigned.
-        $items = [
+        return [
             [
                 'icon' => 'dashboard',
-                'name' => 'Dashboard',
-                'path' => '/',
-                'permission' => 'dashboard.view',
-            ],
-            [
-                'icon' => 'dashboard',
-                'name' => 'My Dashboard',
-                'path' => '/employee/dashboard',
-                'roles' => ['employee'],
-            ],
-            [
-                'icon' => 'user-profile',
-                'name' => 'User Profile',
-                'path' => '/profile',
-                'roles' => ['admin', 'approver', 'employee'],
-            ],
-            [
-                'icon' => 'task',
-                'name' => 'Offboarding Checklist',
-                'path' => '/offboarding-checklists',
-                'permission' => 'offboarding-checklists.view',
-            ],
-            [
-                'icon' => 'offboardee',
-                'name' => 'Offboardee',
-                'path' => '/offboardees',
-                'permission' => 'offboardees.view',
-            ],
-            [
-                'icon' => 'tables',
-                'name' => 'Employee Master',
-                'path' => '/employee-groups',
-                'permission' => 'employee-master.view',
-            ],
-            [
-                'icon' => 'approval',
-                'name' => 'Approval',
-                'path' => '/approvals',
-                'permission' => 'approvals.view',
+                'name' => 'Dashboard & Reports',
+                'items' => [
+                    [
+                        'icon' => 'dashboard',
+                        'name' => 'Dashboard',
+                        'path' => '/',
+                        'permission' => 'dashboard.view',
+                    ],
+                    [
+                        'icon' => 'dashboard',
+                        'name' => 'My Dashboard',
+                        'path' => '/employee/dashboard',
+                        'roles' => ['employee'],
+                    ],
+                    [
+                        'icon' => 'approval',
+                        'name' => 'Approval',
+                        'path' => '/approvals',
+                        'permission' => 'approvals.view',
+                    ],
+                    [
+                        'icon' => 'charts',
+                        'name' => 'Reports',
+                        'path' => '/reports',
+                        'permission' => 'reports.view',
+                    ],
+                ],
             ],
             [
                 'icon' => 'calendar',
-                'name' => 'Calendar',
-                'path' => '/calendar',
-                'permission' => 'calendar.view',
-            ],
-            [
-                'icon' => 'email',
-                'name' => 'Email and Notification',
-                'path' => '/email-templates',
-                'permission' => 'email-templates.view',
-            ],
-            [
-                'icon' => 'tables',
-                'name' => 'Separation Types',
-                'path' => '/separation-types',
-                'permission' => 'separation-types.view',
-            ],
-            [
-                'icon' => 'charts',
-                'name' => 'Reports',
-                'path' => '/reports',
-                'permission' => 'reports.view',
+                'name' => 'Scheduling',
+                'items' => [
+                    [
+                        'icon' => 'calendar',
+                        'name' => 'Calendar',
+                        'path' => '/calendar',
+                        'permission' => 'calendar.view',
+                    ],
+                ],
             ],
             [
                 'icon' => 'authentication',
-                'name' => 'Roles & Permissions',
-                'path' => '/roles-permissions',
-                'permission' => 'roles.view',
+                'name' => 'User & Access Management',
+                'items' => [
+                    [
+                        'icon' => 'user-profile',
+                        'name' => 'User Profile',
+                        'path' => '/profile',
+                        'roles' => ['admin', 'approver', 'employee'],
+                    ],
+                    [
+                        'icon' => 'tables',
+                        'name' => 'Users',
+                        'path' => '/users',
+                        'permission' => 'users.view',
+                    ],
+                    [
+                        'icon' => 'authentication',
+                        'name' => 'Roles & Permissions',
+                        'path' => '/roles-permissions',
+                        'permission' => 'roles.view',
+                    ],
+                ],
             ],
             [
-                'icon' => 'tables',
-                'name' => 'Users',
-                'path' => '/users',
-                'permission' => 'users.view',
+                'icon' => 'offboardee',
+                'name' => 'Employee Management',
+                'items' => [
+                    [
+                        'icon' => 'tables',
+                        'name' => 'Employee Master',
+                        'path' => '/employee-groups',
+                        'permission' => 'employee-master.view',
+                    ],
+                    [
+                        'icon' => 'offboardee',
+                        'name' => 'Offboardee',
+                        'path' => '/offboardees',
+                        'permission' => 'offboardees.view',
+                    ],
+                    [
+                        'icon' => 'task',
+                        'name' => 'Offboarding Checklist',
+                        'path' => '/offboarding-checklists',
+                        'permission' => 'offboarding-checklists.view',
+                    ],
+                    [
+                        'icon' => 'tables',
+                        'name' => 'Separation Types',
+                        'path' => '/separation-types',
+                        'permission' => 'separation-types.view',
+                    ],
+                ],
             ],
             [
-                'icon' => 'pages',
-                'name' => 'Logs',
-                'path' => '/logs',
-                'permission' => 'logs.view',
-            ],
-            [
-                'icon' => 'email',
-                'name' => 'Mail Settings',
-                'path' => '/smtp-settings',
-                'permission' => 'smtp-settings.view',
+                'icon' => 'settings',
+                'name' => 'System Administration',
+                'items' => [
+                    [
+                        'icon' => 'pages',
+                        'name' => 'Logs',
+                        'path' => '/logs',
+                        'permission' => 'logs.view',
+                    ],
+                    [
+                        'icon' => 'email',
+                        'name' => 'Email and Notification',
+                        'path' => '/email-templates',
+                        'permission' => 'email-templates.view',
+                    ],
+                    [
+                        'icon' => 'email',
+                        'name' => 'Mail Settings',
+                        'path' => '/smtp-settings',
+                        'permission' => 'smtp-settings.view',
+                    ],
+                ],
             ],
         ];
+    }
 
-        return array_values(array_filter($items, function ($item) use ($user) {
-            return isset($item['permission'])
-                ? ($user?->can($item['permission']) ?? false)
-                : ($user?->hasAnyRole($item['roles']) ?? false);
-        }));
+    /**
+     * Each category's items filtered down to what the current user is
+     * actually authorized to see, with any category left empty dropped
+     * entirely — a category is never shown as an empty shell.
+     */
+    public static function getVisibleCategories(): array
+    {
+        $user = auth()->user();
+
+        $categories = array_map(function ($category) use ($user) {
+            $category['items'] = array_values(array_filter($category['items'], function ($item) use ($user) {
+                return isset($item['permission'])
+                    ? ($user?->can($item['permission']) ?? false)
+                    : ($user?->hasAnyRole($item['roles']) ?? false);
+            }));
+
+            return $category;
+        }, self::getCategories());
+
+        return array_values(array_filter($categories, fn ($category) => count($category['items']) > 0));
     }
 
     /**
@@ -137,7 +188,11 @@ class MenuHelper
         return [
             [
                 'title' => 'Menu',
-                'items' => self::getMainNavItems()
+                'items' => array_map(fn ($category) => [
+                    'icon' => $category['icon'],
+                    'name' => $category['name'],
+                    'subItems' => $category['items'],
+                ], self::getVisibleCategories()),
             ],
         ];
     }
@@ -183,6 +238,8 @@ class MenuHelper
             'support-ticket' => '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M20 17.0518V12C20 7.58174 16.4183 4 12 4C7.58168 4 3.99994 7.58174 3.99994 12V17.0518M19.9998 14.041V19.75C19.9998 20.5784 19.3282 21.25 18.4998 21.25H13.9998M6.5 18.75H5.5C4.67157 18.75 4 18.0784 4 17.25V13.75C4 12.9216 4.67157 12.25 5.5 12.25H6.5C7.32843 12.25 8 12.9216 8 13.75V17.25C8 18.0784 7.32843 18.75 6.5 18.75ZM17.4999 18.75H18.4999C19.3284 18.75 19.9999 18.0784 19.9999 17.25V13.75C19.9999 12.9216 19.3284 12.25 18.4999 12.25H17.4999C16.6715 12.25 15.9999 12.9216 15.9999 13.75V17.25C15.9999 18.0784 16.6715 18.75 17.4999 18.75Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg>',
 
             'email' => '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M3.5 8.187V17.25C3.5 17.6642 3.83579 18 4.25 18H19.75C20.1642 18 20.5 17.6642 20.5 17.25V8.18747L13.2873 13.2171C12.5141 13.7563 11.4866 13.7563 10.7134 13.2171L3.5 8.187ZM20.5 6.2286C20.5 6.23039 20.5 6.23218 20.5 6.23398V6.24336C20.4976 6.31753 20.4604 6.38643 20.3992 6.42905L12.4293 11.9867C12.1716 12.1664 11.8291 12.1664 11.5713 11.9867L3.60116 6.42885C3.538 6.38481 3.50035 6.31268 3.50032 6.23568C3.50028 6.10553 3.60577 6 3.73592 6H20.2644C20.3922 6 20.4963 6.10171 20.5 6.2286ZM22 6.25648V17.25C22 18.4926 20.9926 19.5 19.75 19.5H4.25C3.00736 19.5 2 18.4926 2 17.25V6.23398C2 6.22371 2.00021 6.2135 2.00061 6.20333C2.01781 5.25971 2.78812 4.5 3.73592 4.5H20.2644C21.2229 4.5 22 5.27697 22.0001 6.23549C22.0001 6.24249 22.0001 6.24949 22 6.25648Z" fill="currentColor"></path></svg>',
+
+            'settings' => '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 15.25C13.7949 15.25 15.25 13.7949 15.25 12C15.25 10.2051 13.7949 8.75 12 8.75C10.2051 8.75 8.75 10.2051 8.75 12C8.75 13.7949 10.2051 15.25 12 15.25Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path><path d="M19.25 12.0001C19.25 12.3103 19.2235 12.6143 19.1731 12.9101L20.8392 14.3101C21.0866 14.5176 21.1576 14.8691 21.0056 15.1549L19.5296 17.9012C19.3776 18.187 19.0498 18.3219 18.7421 18.2188L16.7236 17.5321C16.2439 17.906 15.7111 18.2114 15.1403 18.4308L14.7716 20.5419C14.7182 20.8637 14.4443 21.1001 14.1182 21.1001H10.8821C10.5559 21.1001 10.282 20.8637 10.2286 20.5419L9.85993 18.4308C9.28908 18.2114 8.75632 17.906 8.27656 17.5321L6.25806 18.2188C5.95036 18.3219 5.62257 18.187 5.47058 17.9012L3.99456 15.1549C3.84258 14.8691 3.91356 14.5176 4.16096 14.3101L5.82705 12.9101C5.77666 12.6143 5.75018 12.3103 5.75018 12.0001C5.75018 11.6898 5.77666 11.3858 5.82705 11.09L4.16096 9.69007C3.91356 9.48259 3.84258 9.13102 3.99456 8.84524L5.47058 6.09899C5.62257 5.81321 5.95036 5.67826 6.25806 5.78143L8.27656 6.46805C8.75632 6.09418 9.28908 5.78878 9.85993 5.56931L10.2286 3.45825C10.282 3.1365 10.5559 2.90002 10.8821 2.90002H14.1182C14.4443 2.90002 14.7182 3.1365 14.7716 3.45825L15.1403 5.56931C15.7111 5.78878 16.2439 6.09418 16.7236 6.46805L18.7421 5.78143C19.0498 5.67826 19.3776 5.81321 19.5296 6.09899L21.0056 8.84524C21.1576 9.13102 21.0866 9.48259 20.8392 9.69007L19.1731 11.09C19.2235 11.3858 19.25 11.6898 19.25 12.0001Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg>',
         ];
 
         return $icons[$iconName] ?? '<svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" fill="currentColor"/></svg>';

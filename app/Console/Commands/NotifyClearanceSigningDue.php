@@ -182,7 +182,7 @@ class NotifyClearanceSigningDue extends Command
         );
 
         try {
-            Mail::to($signatory->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+            Mail::to($signatory->email)->cc($emailTemplate->ccRecipientEmails($signatory->email))->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
         } catch (\Throwable $e) {
             Log::error('Failed to send Clearance Signing Due Reached email.', [
                 'assignment_id' => $assignmentId,

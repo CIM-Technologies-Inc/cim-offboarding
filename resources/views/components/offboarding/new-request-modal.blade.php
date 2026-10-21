@@ -157,9 +157,56 @@
                                 // it to its own state instead.
                                 window.dispatchEvent(new CustomEvent('immediate-head-auto-select', { detail: matchedId ?? null }));
                             },
+                            // Warns HR/Admin, the instant an offboardee is picked, if
+                            // that employee is still the Clearance Signatory of record
+                            // on one or more OTHER, still-open offboarding requests'
+                            // checklists — see signatory-conflict-cards.blade.php
+                            // (included below) and OffboardingRequestController::
+                            // checkSignatoryConflicts(). Purely advisory: a failure
+                            // here must never block filling out or submitting this
+                            // form, so it fails silently (leaving the list empty)
+                            // rather than surfacing a network error.
+                            signatoryConflicts: [],
+                            eligibleReplacements: [],
+                            checkingSignatoryConflicts: false,
+                            // Conflicts resolved with Temporary — keyed by
+                            // `checklist_template_id`, since nothing is
+                            // persisted server-side until this form is
+                            // actually submitted (see
+                            // signatory-conflict-modal.blade.php's own
+                            // `submitAssignment()`: Temporary dispatches
+                            // `signatory-temporary-override-added` instead of
+                            // calling the resolve endpoint). Rendered below
+                            // as hidden inputs and read server-side by
+                            // `OffboardingRequestController::store()`'s
+                            // `temporary_signatory_overrides` handling.
+                            temporaryOverrides: {},
+                            async checkSignatoryConflicts(employeeId) {
+                                this.checkingSignatoryConflicts = true;
+                                this.signatoryConflicts = [];
+                                this.eligibleReplacements = [];
+                                try {
+                                    const response = await fetch(`{{ url('/offboarding-requests/signatory-conflicts') }}/${employeeId}`, {
+                                        headers: {
+                                            'Accept': 'application/json',
+                                            'X-Requested-With': 'XMLHttpRequest',
+                                        },
+                                    });
+                                    if (response.ok) {
+                                        const data = await response.json();
+                                        this.signatoryConflicts = data.conflicts || [];
+                                        this.eligibleReplacements = data.eligibleReplacements || [];
+                                    }
+                                } catch (e) {
+                                    // Silently leave the list empty - see the comment above.
+                                } finally {
+                                    this.checkingSignatoryConflicts = false;
+                                }
+                            },
                         }"
                         @click="activeDropdown = null"
-                        @reset-offboarding-request-fields.window="activeDropdown = null">
+                        @signatory-temporary-override-added.window="temporaryOverrides[$event.detail.templateId] = $event.detail"
+                        @reset-offboarding-request-fields.window="activeDropdown = null; signatoryConflicts = []; eligibleReplacements = []; checkingSignatoryConflicts = false; temporaryOverrides = {};">
                         <div>
                             <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
                                 Employee <span class="text-error-500">*</span>
@@ -239,7 +286,7 @@
                                 <div x-show="activeDropdown === 'employee'"
                                     class="shadow-theme-lg absolute z-50 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
                                     <template x-for="employee in filteredEmployees()" :key="employee.id">
-                                        <div @click="selectEmployee(employee); setImmediateHeadFromEmployee(employee.id); activeDropdown = null"
+                                        <div @click="selectEmployee(employee); setImmediateHeadFromEmployee(employee.id); checkSignatoryConflicts(employee.id); activeDropdown = null"
                                             class="cursor-pointer border-b border-gray-100 px-4 py-2.5 text-sm last:border-b-0 hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-white/[0.03]">
                                             <span class="block font-medium text-gray-800 dark:text-white/90"
                                                 x-text="`${employee.name} (${employee.code})`"></span>
@@ -336,6 +383,42 @@
                                 <p class="mt-1.5 text-xs text-error-500" x-show="hasErrors">{{ $message }}</p>
                             @enderror
                         </div>
+
+                        <x-offboarding.signatory-conflict-cards />
+
+                        {{-- Summary of every "Temporary" choice made so far — nothing
+                             here is persisted yet; it only becomes real the moment
+                             this form is actually submitted (see the hidden inputs
+                             below and `OffboardingRequestController::store()`'s own
+                             `temporary_signatory_overrides` handling). --}}
+                        <div x-show="Object.keys(temporaryOverrides).length > 0" x-cloak
+                            class="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm dark:border-emerald-500/30 dark:bg-emerald-500/10">
+                            <p class="font-medium text-emerald-800 dark:text-emerald-400">
+                                Temporary Clearance Signatory changes (applied once this request is submitted):
+                            </p>
+                            <ul class="mt-1.5 list-disc space-y-0.5 pl-5 text-emerald-700 dark:text-emerald-300">
+                                <template x-for="override in Object.values(temporaryOverrides)" :key="override.templateId">
+                                    <li>
+                                        <span x-text="override.checklistTitle"></span>
+                                        <span aria-hidden="true"> &rarr; </span>
+                                        <span x-text="override.replacementLabel"></span>
+                                    </li>
+                                </template>
+                            </ul>
+                        </div>
+
+                        {{-- One pair of hidden inputs per pending Temporary override —
+                             submitted as a normal nested array
+                             (`temporary_signatory_overrides[N][...]`) alongside every
+                             other field in this form, so `store()` receives it exactly
+                             like a native multi-row form input without any client-side
+                             JSON encoding/decoding. --}}
+                        <template x-for="(override, templateId) in temporaryOverrides" :key="templateId">
+                            <span>
+                                <input type="hidden" :name="`temporary_signatory_overrides[${templateId}][template_id]`" :value="templateId" />
+                                <input type="hidden" :name="`temporary_signatory_overrides[${templateId}][replacement_employee_id]`" :value="override.replacementId" />
+                            </span>
+                        </template>
                     </div>
 
                     @php
@@ -599,7 +682,7 @@
                             emailTemplateSelections: @js($emailTemplateFunctions->mapWithKeys(fn ($function) => [$function['field'] => (string) old($function['field'], $function['defaultId'] ?? '')])),
                         }"
                         @reset-offboarding-request-fields.window="showEmailTemplates = false; emailTemplateSelections = { ...emailTemplateDefaults }">
-                        <button type="button" @click="showEmailTemplates = !showEmailTemplates"
+                        <!-- <button type="button" @click="showEmailTemplates = !showEmailTemplates"
                             class="flex items-center gap-2 text-sm text-gray-600 hover:text-[#145a3a] dark:text-gray-400 dark:hover:text-[#3aa876]">
                             <svg class="shrink-0" width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
                                 <path d="M2.25 5.25C2.25 4.42157 2.92157 3.75 3.75 3.75H14.25C15.0784 3.75 15.75 4.42157 15.75 5.25V12.75C15.75 13.5784 15.0784 14.25 14.25 14.25H3.75C2.92157 14.25 2.25 13.5784 2.25 12.75V5.25Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
@@ -646,7 +729,7 @@
                                     @enderror
                                 </div>
                             @endforeach
-                        </div>
+                        </div> -->
                     </div>
 
                 </div>
@@ -665,3 +748,11 @@
         </form>
     </div>
 </x-ui.modal>
+
+{{-- Top-level sibling, not nested inside the modal above — same reasoning
+     resources/views/components/approvals/assign-item-modal.blade.php /
+     assign-modal.blade.php already follow as siblings of the checklist
+     modal they're opened from. Rendered here (rather than in every page
+     that includes this component) so it's automatically available
+     everywhere <x-offboarding.new-request-modal> already is. --}}
+<x-offboarding.signatory-conflict-modal />

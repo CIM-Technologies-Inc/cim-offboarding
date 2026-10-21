@@ -598,7 +598,7 @@ class GeneralSignatoryApprovalController extends Controller
                     signatoryType: 'General Signatory',
                 );
 
-                Mail::to($recipient->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+                Mail::to($recipient->email)->cc($emailTemplate->ccRecipientEmails($recipient->email))->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
             } catch (\Throwable $e) {
                 Log::error('Failed to send General Signatory decline notification.', [
                     'offboarding_request_general_signatory_id' => $generalSignatoryApproval->id,

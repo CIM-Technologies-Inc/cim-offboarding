@@ -13,7 +13,21 @@
             <div class="flex flex-1 items-center gap-3 sm:flex-col sm:items-center sm:gap-2 sm:text-center">
                 <div class="relative flex w-full items-center sm:justify-center">
                     @unless ($loop->first)
-                        <div class="absolute right-1/2 hidden h-px w-full -translate-y-1/2 sm:block {{ $stage['done'] || $index - 1 === $currentIndex ? 'bg-[#145a3a] dark:bg-[#3aa876]' : 'bg-gray-200 dark:bg-gray-700' }}" style="top: 16px;"></div>
+                        {{-- Colors the connector leading INTO this stage —
+                             green for every segment up to and including the
+                             one arriving at the current step, gray beyond
+                             it. Was previously keyed off `$stage['done']`
+                             (THIS stage's own done flag) instead of how far
+                             along we actually are, which colored the
+                             segment arriving at the current (not-yet-done)
+                             step gray — visually "cutting" the line right
+                             before it — while the segment LEAVING the
+                             current step toward a stage not yet reached was
+                             wrongly colored green instead. `$index <=
+                             $currentIndex` matches the same left-to-right,
+                             monotonic progression `$currentIndex` itself is
+                             already derived from above. --}}
+                        <div class="absolute right-1/2 hidden h-px w-full -translate-y-1/2 sm:block {{ $index <= $currentIndex ? 'bg-[#145a3a] dark:bg-[#3aa876]' : 'bg-gray-200 dark:bg-gray-700' }}" style="top: 16px;"></div>
                     @endunless
                     <div class="relative z-10 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-semibold
                         {{ $stage['done']

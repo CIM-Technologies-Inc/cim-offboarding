@@ -2,6 +2,7 @@
 
 namespace App\Providers;
 
+use App\Listeners\ApplyNoReplyHeaders;
 use App\Listeners\RedirectMailInNonProduction;
 use App\Services\MailConfigurator;
 use Illuminate\Mail\Events\MessageSending;
@@ -27,6 +28,10 @@ class AppServiceProvider extends ServiceProvider
         // set — see RedirectMailInNonProduction's own docblock. A no-op in
         // production, where that env var must stay unset.
         Event::listen(MessageSending::class, RedirectMailInNonProduction::class);
+
+        // Sets Reply-To to the configured no-reply From address on every
+        // outgoing email — see ApplyNoReplyHeaders's own docblock.
+        Event::listen(MessageSending::class, ApplyNoReplyHeaders::class);
 
         // Applies the admin-configured SMTP settings (if any, and only
         // when active) over the .env-sourced mail config, on every

@@ -15,7 +15,7 @@
         <div class="space-y-6">
             <x-employee.overview :overview="$overview" />
             <x-employee.progress-stepper :stages="$stages" />
-            <x-employee.checklist-status :checklists="$checklists" />
+            <x-employee.checklist-status :checklists="$checklists" :generalSignatories="$generalSignatories" />
             <x-employee.timeline :timeline="$timeline" />
         </div>
     @endif

@@ -585,7 +585,7 @@ class ChecklistCompletionService
                     ? new FinalPayCompletionMail($subject, $body, $pdfBytes, $offboardee->name)
                     : new ChecklistSignatoryAnnouncementMail($subject, $body);
 
-                Mail::to($recipient->email)->send($mailable);
+                Mail::to($recipient->email)->cc($emailTemplate->ccRecipientEmails($recipient->email))->send($mailable);
             } catch (\Throwable $e) {
                 Log::error('Failed to send Final Pay Checklist completion notification.', [
                     'offboarding_request_id' => $offboardingRequest->id,

@@ -486,6 +486,14 @@ class ChecklistDelegationController extends Controller
     {
         $this->authorizePrimaryApprover($offboardingRequestApprover);
 
+        // Same guard `reassignChecklist()` (the whole-checklist equivalent
+        // of this action) already applies.
+        abort_if(
+            $offboardingRequestApprover->offboardingRequest->isReadOnly(),
+            422,
+            'This offboarding request has been retracted and can no longer be actioned.'
+        );
+
         abort_unless($checklistItem->checklist_template_id === $offboardingRequestApprover->checklist_template_id, 404);
 
         abort_unless(
@@ -503,6 +511,18 @@ class ChecklistDelegationController extends Controller
         $validated = $request->validate([
             'employee_id' => ['required', 'exists:employees,id'],
         ]);
+
+        // Same eligibility restriction `reassignChecklist()`/`assignPool()`
+        // already enforce for the functionally identical whole-checklist
+        // case — without this, a single-item reassignment could be handed
+        // to ANY employee in the company, not just one actually eligible
+        // (in the owning Employee Group, flagged `is_task_assignee`) for
+        // this checklist.
+        abort_unless(
+            in_array((int) $validated['employee_id'], $offboardingRequestApprover->eligiblePoolAssigneeIds(), true),
+            422,
+            'This employee is not eligible to be assigned to this checklist.'
+        );
 
         $newEmployee = Employee::findOrFail($validated['employee_id']);
         $previousEmployee = $offboardingRequestApprover->effectiveSignatoryFor($checklistItem);
@@ -1413,7 +1433,7 @@ class ChecklistDelegationController extends Controller
             );
 
             try {
-                Mail::to($head->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+                Mail::to($head->email)->cc($emailTemplate->ccRecipientEmails($head->email))->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
             } catch (\Throwable $e) {
                 Log::error('Failed to send head-approval-pending notification.', [
                     'checklist_item_progress_id' => $progress->id,

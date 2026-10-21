@@ -492,12 +492,12 @@
                                                         <input type="hidden" name="_token" :value="csrfToken" />
                                                         <input type="hidden" name="email_template_id" :value="selectedTemplateId" />
                                                         <button type="submit" :disabled="confirmed || !emailTemplates.length" data-turbo-submits-with="Sending..."
-                                                            class="mb-4 rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
+                                                            class="mb-4 rounded-lg border border-gray-300 px-4 py-2.5 text-xs font-medium text-gray-700 hover:border-[#145a3a] hover:bg-[#145a3a] hover:text-white disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:border-[#3aa876] dark:hover:bg-[#3aa876] dark:hover:text-white">
                                                             Notify Approver
                                                         </button>
                                                     </form>
                                                     <button type="button" title="Choose Email Template" @click="showEmailPicker = !showEmailPicker"
-                                                        class="mb-4 rounded-lg border border-gray-300 p-1.5 text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
+                                                        class="mb-4 rounded-lg border border-gray-300 p-2.5 text-gray-600 hover:border-[#145a3a] hover:bg-[#145a3a] hover:text-white dark:border-gray-700 dark:text-gray-300 dark:hover:border-[#3aa876] dark:hover:bg-[#3aa876] dark:hover:text-white">
                                                         <svg width="14" height="14" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
                                                             <path d="M2.25 5.25C2.25 4.42157 2.92157 3.75 3.75 3.75H14.25C15.0784 3.75 15.75 4.42157 15.75 5.25V12.75C15.75 13.5784 15.0784 14.25 14.25 14.25H3.75C2.92157 14.25 2.25 13.5784 2.25 12.75V5.25Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
                                                             <path d="M2.75 5L9 9.75L15.25 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
@@ -745,12 +745,12 @@
                                                             <input type="hidden" name="_token" :value="csrfToken" />
                                                             <input type="hidden" name="email_template_id" :value="selectedTemplateId" />
                                                             <button type="submit" :disabled="confirmed || !emailTemplates.length" data-turbo-submits-with="Sending..."
-                                                                class="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
+                                                                class="rounded-lg border border-gray-300 px-4 py-2.5 text-xs font-medium text-gray-700 hover:border-[#145a3a] hover:bg-[#145a3a] hover:text-white disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:border-[#3aa876] dark:hover:bg-[#3aa876] dark:hover:text-white">
                                                                 Notify Approver
                                                             </button>
                                                         </form>
                                                         <button type="button" title="Choose Email Template" @click="showEmailPicker = !showEmailPicker"
-                                                            class="rounded-lg border border-gray-300 p-1.5 text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
+                                                            class="rounded-lg border border-gray-300 p-2.5 text-gray-600 hover:border-[#145a3a] hover:bg-[#145a3a] hover:text-white dark:border-gray-700 dark:text-gray-300 dark:hover:border-[#3aa876] dark:hover:bg-[#3aa876] dark:hover:text-white">
                                                             <svg width="14" height="14" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
                                                                 <path d="M2.25 5.25C2.25 4.42157 2.92157 3.75 3.75 3.75H14.25C15.0784 3.75 15.75 4.42157 15.75 5.25V12.75C15.75 13.5784 15.0784 14.25 14.25 14.25H3.75C2.92157 14.25 2.25 13.5784 2.25 12.75V5.25Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
                                                                 <path d="M2.75 5L9 9.75L15.25 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />

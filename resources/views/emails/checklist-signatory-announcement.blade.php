@@ -18,6 +18,7 @@
                             {!! $emailBody !!}
                         </td>
                     </tr>
+                    @include('emails.partials.no-reply-notice')
                 </table>
             </td>
         </tr>

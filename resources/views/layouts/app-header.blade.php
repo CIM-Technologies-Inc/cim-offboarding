@@ -85,8 +85,8 @@
 
             <!-- Logo (mobile only) -->
             <a href="{{ \App\Helpers\MenuHelper::homePath() }}" class="xl:hidden">
-                <img class="dark:hidden" src="/images/logo/logo.svg" alt="Logo" width="170" height="50" />
-                <img class="hidden dark:block" src="/images/logo/logo-dark.svg" alt="Logo" />
+                <img class="dark:hidden" src="{{ asset('images/logo/logo.svg') }}" alt="CIM OffBoarding" width="170" height="50" />
+                <img class="hidden dark:block" src="{{ asset('images/logo/logo-dark.svg') }}" alt="CIM OffBoarding" />
             </a>
 
             <!-- Application Menu Toggle (mobile only) -->

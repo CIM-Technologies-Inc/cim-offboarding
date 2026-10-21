@@ -103,16 +103,29 @@ class ChecklistItemProgress extends Model
      * happened to submit the form.
      *
      * @param  array<int, array{checklist_item_id: int, is_checked?: bool, remark?: ?string}>  $items
-     * @return Collection<int, static> every row that just became genuinely
-     *         checked AND newly requires head approval on THIS call — never
-     *         one that already required it from a previous save. Callers
-     *         use this to email the required head exactly once, right when
-     *         the gate is first created, not on every subsequent save.
+     * @return \Illuminate\Database\Eloquent\Collection<int, static> every row
+     *         that just became genuinely checked AND newly requires head
+     *         approval on THIS call — never one that already required it
+     *         from a previous save. Callers use this to email the required
+     *         head exactly once, right when the gate is first created, not
+     *         on every subsequent save.
+     *
+     *         Deliberately built as a real `Eloquent\Collection` (not the
+     *         bare `collect()` this used to return) — `ChecklistDelegationController::notifyPendingHeadApprovals()`
+     *         calls `->load(...)` on whatever comes back to batch-eager-load
+     *         before emailing, and only an Eloquent collection has that
+     *         method. A bare `Support\Collection` here used to throw
+     *         `BadMethodCallException: Method ... Collection::load does not
+     *         exist` the moment an item both got checked AND genuinely
+     *         needed a new head-approval gate — i.e. after the triggering
+     *         `updateOrCreate()` below had already committed, so the item
+     *         itself was correctly saved/cleared while the request still
+     *         came back as a 500 to the caller.
      */
     public static function syncForAssignment(OffboardingRequestApprover $assignment, array $items, int $userId): Collection
     {
         $existing = $assignment->itemProgress()->get()->keyBy('checklist_item_id');
-        $newlyPendingHeadApproval = collect();
+        $newlyPendingHeadApproval = new \Illuminate\Database\Eloquent\Collection();
 
         foreach ($items as $item) {
             $current = $existing->get($item['checklist_item_id']);

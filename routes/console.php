@@ -28,12 +28,13 @@ Schedule::command('app:notify-clearance-signing-due')->everyFiveMinutes();
 // siblings above.
 Schedule::command('app:log-expired-sessions')->everyFiveMinutes();
 
-// Sends every active, scheduled Email and Notification template whose "N
-// days before/after Last Working Day" date is due, for every still-active
-// offboarding request. Daily is sufficient granularity since the trigger is
-// a calendar date, not a time-of-day deadline — same scheduler-must-be-
-// running caveat as the overdue-checklist job above.
-Schedule::command('app:send-scheduled-email-templates')->dailyAt('08:00');
+// Resolves every HR/Admin-configured "N days before/after Last Working Day"
+// Email Notification Schedule (see the Email and Notification template's
+// own "Email Notification Schedule Timeline" section) that's due, for every
+// still-active offboarding request. Daily is sufficient granularity since
+// the trigger is a calendar date, not a time-of-day deadline — same
+// scheduler-must-be-running caveat as the overdue-checklist job above.
+Schedule::command('app:send-email-template-schedules')->dailyAt('08:00');
 
 // Per-task-item version of the same idea: sends each checklist item's own
 // scheduled Email and Notification template to that item's Task Assignee

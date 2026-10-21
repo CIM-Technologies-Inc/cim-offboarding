@@ -5,9 +5,13 @@
 @endphp
 
 @section('content')
-    <div class="relative z-1 bg-white p-6 sm:p-0 dark:bg-gray-900"
+    {{-- A soft green-tinted wash (never a flat white/gray page anymore)
+         replaces the plain `bg-white dark:bg-gray-900` fill so every
+         screen size still reads as "this app's dark-green theme," not
+         just the two-panel desktop layout. --}}
+    <div class="relative z-1 overflow-hidden bg-gradient-to-br from-white via-white to-[#145a3a]/5 p-6 sm:p-0 dark:from-gray-900 dark:via-gray-900 dark:to-[#0a3321]/40"
         x-data="Object.assign(flashToast(@js(session('success')), @js($forgotPasswordHasErrors ? $errors->first('email') : null)), { signingIn: false })">
-        <div class="relative flex h-screen w-full flex-col justify-center sm:p-0 lg:flex-row dark:bg-gray-900">
+        <div class="relative flex h-screen w-full flex-col justify-center sm:p-0 lg:flex-row">
             <!-- Form -->
             <div class="flex w-full flex-1 flex-col lg:w-1/2">
                 <div class="mx-auto w-full max-w-md pt-10">
@@ -109,7 +113,12 @@
                 </div>
             </div>
 
-            <div class="bg-brand-950 relative hidden h-full w-full items-center lg:grid lg:w-1/2 dark:bg-white/5">
+            {{-- Decorative branding panel — a dark-green gradient (the app's
+                 own `#145a3a` primary, not the TailAdmin template's default
+                 `bg-brand-950` navy). The illustration itself lives with the
+                 form on the left instead of here, so this panel stays clean
+                 and never competes with the logo/tagline for attention. --}}
+            <div class="relative hidden h-full w-full items-center justify-center overflow-hidden bg-gradient-to-br from-[#0f4630] via-[#145a3a] to-[#0a3321] lg:grid lg:w-1/2 dark:from-black dark:via-[#0a2e1d] dark:to-black">
                 <div class="z-1 flex items-center justify-center">
                     <!-- ===== Common Grid Shape Start ===== -->
                     <x-common.common-grid-shape/>
@@ -117,7 +126,7 @@
                         <a href="/" class="block">
                             <img src="./images/logo/CIM_logo.png" alt="CIM Logo" class="h-18 w-auto" />
                         </a>
-                        <p class="text-center text-gray-400 dark:text-white/60">
+                        <p class="text-center text-gray-200 dark:text-white/60">
                             Welcome To Employee Offboarding Platform
                         </p>
                     </div>

@@ -365,9 +365,16 @@ class OffboardingRequest extends Model
         return $this->hasOne(OffboardingRequestFinalApproval::class);
     }
 
+    /**
+     * Every `EmailTemplateSchedule` ledger row recorded against this
+     * request — see `EmailTemplateScheduleSend`. Reset (`OffboardingRequestController::reset()`)
+     * clears these along with every other per-request artifact so a fresh
+     * run of `SendEmailTemplateSchedules` re-evaluates this request from
+     * scratch.
+     */
     public function scheduledEmailSends(): HasMany
     {
-        return $this->hasMany(EmailTemplateScheduledSend::class);
+        return $this->hasMany(EmailTemplateScheduleSend::class);
     }
 
     /**

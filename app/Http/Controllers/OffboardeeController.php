@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\EmailTemplate;
 use App\Models\Employee;
+use App\Models\FinalApprover;
 use App\Models\OffboardingRequest;
 use App\Models\SeparationType;
 use Illuminate\Http\Request;
@@ -47,7 +48,7 @@ class OffboardeeController extends Controller
 
         $openOffboardeeId = $request->query('offboardee') ? (int) $request->query('offboardee') : null;
 
-        $eagerLoad = ['checklistTemplates', 'approvers.checklistTemplate', 'approvers.employee', 'approvers.itemProgress', 'generalSignatoryApprovals', 'immediateHead', 'finalApproval.employee', 'cancelledBy'];
+        $eagerLoad = ['checklistTemplates', 'approvers.checklistTemplate', 'approvers.employee', 'approvers.itemProgress', 'generalSignatoryApprovals', 'immediateHead', 'finalApproval.employee.user', 'cancelledBy'];
 
         // `offboarding` (still in progress) and `offboarded` (fully
         // completed — see `ChecklistCompletionService::checkFinalPayCompletion()`)
@@ -102,7 +103,15 @@ class OffboardeeController extends Controller
             );
         }
 
-        $mapRequest = function (Employee $employee, ?OffboardingRequest $offboardingRequest) {
+        // The active Final Approver is a single global config, not
+        // per-request — resolved once here (not inside the closure below)
+        // to avoid an N+1 query across every card on the page. Drives the
+        // "Complete Offboarding" button's signature-availability check and
+        // display name, since that action always targets whoever is
+        // CURRENTLY configured, same as `FinalApprovalController::send()`/`completeOffboarding()`.
+        $activeFinalApprover = FinalApprover::with('employee.user')->where('is_active', true)->first();
+
+        $mapRequest = function (Employee $employee, ?OffboardingRequest $offboardingRequest) use ($activeFinalApprover) {
             return [
             'id' => $offboardingRequest?->id,
             // Kept alongside the request-scoped `id` above (which is what
@@ -285,6 +294,26 @@ class OffboardeeController extends Controller
             // between showing the button and a plain "Approved" badge.
             'finalApprovalStatus' => $offboardingRequest?->finalApproval?->status,
             'finalSignatoryName' => $offboardingRequest?->finalApproval?->employee?->name,
+            // "Complete Offboarding" (on behalf of the Final Approver) — a
+            // PEER option to "Final Approval" above, available as soon as
+            // the request is eligible (not gated behind "Final Approval"
+            // having been sent first); gated server-side by the
+            // `final-approval.complete-on-behalf` permission same as the
+            // route itself, and client-side by `@can(...)` in the card
+            // partial. Always targets whoever is CURRENTLY the active Final
+            // Approver, same as `FinalApprovalController::completeOffboarding()`
+            // itself — never the (possibly nonexistent) existing row's
+            // snapshotted employee, which is why this and the next two
+            // fields read from `$activeFinalApprover`, not `$offboardingRequest->finalApproval`.
+            'completeOnBehalfUrl' => $offboardingRequest
+                ? route('final-approval.complete-offboarding', $offboardingRequest)
+                : null,
+            'completeOnBehalfSignatoryName' => $activeFinalApprover?->employee?->name,
+            // Pre-checked at render time so the modal can show an upload
+            // field instead of assuming one's already on file — the
+            // controller action re-checks this too, since it could change
+            // between page load and submission.
+            'finalApproverHasSignature' => (bool) $activeFinalApprover?->employee?->user?->hasUsableSignature(),
             // Display-only, for the Card/List View "Created" field — the
             // request's own creation timestamp, never recomputed/derived.
             'createdAt' => $offboardingRequest?->created_at?->format('M d, Y'),

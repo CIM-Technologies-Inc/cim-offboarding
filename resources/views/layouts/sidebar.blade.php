@@ -19,6 +19,10 @@
         initializeActiveMenus() {
             const currentPath = window.location.pathname.replace(/^\//, '');
 
+            // Every item, including Dashboard/My Dashboard, auto-expands
+            // its parent category when it's the active page — on login,
+            // landing on Dashboard shows Dashboard & Reports expanded with
+            // Dashboard highlighted, same as navigating to any other page.
             @foreach ($menuGroups as $groupIndex => $menuGroup)
                 @foreach ($menuGroup['items'] as $itemIndex => $item)
                     @if (isset($item['subItems']))
@@ -34,14 +38,10 @@
         },
         toggleSubmenu(groupIndex, itemIndex) {
             const key = groupIndex + '-' + itemIndex;
-            const newState = !this.openSubmenus[key];
 
-            // Close all other submenus when opening a new one
-            if (newState) {
-                this.openSubmenus = {};
-            }
-
-            this.openSubmenus[key] = newState;
+            // Independent multi-expand: toggle only this category's own
+            // key, never touch any other open category's state.
+            this.openSubmenus[key] = !this.openSubmenus[key];
         },
         isSubmenuOpen(groupIndex, itemIndex) {
             const key = groupIndex + '-' + itemIndex;
@@ -54,7 +54,7 @@
     }"
     @turbo:load.window="navTick++; initializeActiveMenus()"
     :class="{
-        'w-[290px]': $store.sidebar.isExpanded || $store.sidebar.isMobileOpen || $store.sidebar.isHovered,
+        'w-[310px]': $store.sidebar.isExpanded || $store.sidebar.isMobileOpen || $store.sidebar.isHovered,
         'w-[90px]': !$store.sidebar.isExpanded && !$store.sidebar.isHovered,
         'translate-x-0': $store.sidebar.isMobileOpen,
         '-translate-x-full xl:translate-x-0': !$store.sidebar.isMobileOpen
@@ -68,12 +68,12 @@
         'justify-center'">
         <a href="{{ MenuHelper::homePath() }}">
             <img x-show="$store.sidebar.isExpanded || $store.sidebar.isHovered || $store.sidebar.isMobileOpen"
-                class="dark:hidden" src="/images/logo/logo.svg" alt="Logo" width="150" height="40" />
+                class="dark:hidden" src="{{ asset('images/logo/logo.svg') }}" alt="CIM OffBoarding" width="150" height="40" />
             <img x-show="$store.sidebar.isExpanded || $store.sidebar.isHovered || $store.sidebar.isMobileOpen"
-                class="hidden dark:block" src="/images/logo/logo-dark.svg" alt="Logo" width="150"
+                class="hidden dark:block" src="{{ asset('images/logo/logo-dark.svg') }}" alt="CIM OffBoarding" width="150"
                 height="40" />
             <img x-show="!$store.sidebar.isExpanded && !$store.sidebar.isHovered && !$store.sidebar.isMobileOpen"
-                src="/images/logo/logo-icon.svg" alt="Logo" width="40" height="40" />
+                src="{{ asset('images/logo/logo-icon.svg') }}" alt="CIM OffBoarding" width="40" height="40" />
 
         </a>
     </div>
@@ -115,7 +115,7 @@
                                             ]">
 
                                             <!-- Icon -->
-                                            <span :class="isSubmenuOpen({{ $groupIndex }}, {{ $itemIndex }}) ?
+                                            <span class="shrink-0" :class="isSubmenuOpen({{ $groupIndex }}, {{ $itemIndex }}) ?
                                                     'menu-item-icon-active' : 'menu-item-icon-inactive'">
                                                 {!! MenuHelper::getIconSvg($item['icon']) !!}
                                             </span>
@@ -123,7 +123,7 @@
                                             <!-- Text -->
                                             <span
                                                 x-show="$store.sidebar.isExpanded || $store.sidebar.isHovered || $store.sidebar.isMobileOpen"
-                                                class="menu-item-text flex items-center gap-2">
+                                                class="menu-item-text flex min-w-0 flex-1 items-center gap-2 overflow-hidden text-ellipsis whitespace-nowrap text-left">
                                                 {{ $item['name'] }}
                                                 @if (!empty($item['new']))
                                                     <span class="absolute right-10"
@@ -137,7 +137,7 @@
 
                                             <!-- Chevron Down Icon -->
                                             <svg x-show="$store.sidebar.isExpanded || $store.sidebar.isHovered || $store.sidebar.isMobileOpen"
-                                                class="ml-auto w-5 h-5 transition-transform duration-200"
+                                                class="ml-auto w-5 h-5 shrink-0 transition-transform duration-200"
                                                 :class="{
                                                     'rotate-180 text-[#145a3a] dark:text-[#3aa876]': isSubmenuOpen({{ $groupIndex }},
                                                         {{ $itemIndex }})
@@ -148,7 +148,13 @@
                                         </button>
 
                                         <!-- Submenu -->
-                                        <div x-show="isSubmenuOpen({{ $groupIndex }}, {{ $itemIndex }}) && ($store.sidebar.isExpanded || $store.sidebar.isHovered || $store.sidebar.isMobileOpen)">
+                                        <div x-show="isSubmenuOpen({{ $groupIndex }}, {{ $itemIndex }}) && ($store.sidebar.isExpanded || $store.sidebar.isHovered || $store.sidebar.isMobileOpen)"
+                                            x-transition:enter="transition ease-out duration-200"
+                                            x-transition:enter-start="opacity-0 -translate-y-1"
+                                            x-transition:enter-end="opacity-100 translate-y-0"
+                                            x-transition:leave="transition ease-in duration-150"
+                                            x-transition:leave-start="opacity-100 translate-y-0"
+                                            x-transition:leave-end="opacity-0 -translate-y-1">
                                             <ul class="mt-2 space-y-1 ml-9">
                                                 @foreach ($item['subItems'] as $subItem)
                                                     <li>
@@ -157,7 +163,12 @@
                                                             :class="isActive('{{ $subItem['path'] }}') ?
                                                                 'menu-dropdown-item-active' :
                                                                 'menu-dropdown-item-inactive'">
-                                                            {{ $subItem['name'] }}
+                                                            <span class="shrink-0"
+                                                                :class="isActive('{{ $subItem['path'] }}') ?
+                                                                    'menu-item-icon-active' : 'menu-item-icon-inactive'">
+                                                                {!! MenuHelper::getIconSvg($subItem['icon']) !!}
+                                                            </span>
+                                                            <span class="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">{{ $subItem['name'] }}</span>
                                                             <span class="flex items-center gap-1 ml-auto">
                                                                 @if (!empty($subItem['new']))
                                                                     <span

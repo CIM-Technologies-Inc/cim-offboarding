@@ -492,5 +492,8 @@
 
         <!-- Offboardee Status Modal -->
         <x-offboarding.status-timeline-modal :initial="$deepLinkOffboardee" :email-templates="$activeEmailTemplates" />
+
+        <!-- Complete Offboarding (on behalf of the Final Approver) Modal -->
+        <x-offboarding.complete-final-approval-modal />
     </div>
 @endsection

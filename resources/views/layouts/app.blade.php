@@ -7,7 +7,7 @@
     <meta name="csrf-token" content="{{ csrf_token() }}">
 
     <title>{{ $title ?? 'Dashboard' }} | CIM Offboarding</title>
-    <link rel="icon" type="image/svg+xml" href="/images/logo/logo-icon.svg">
+    <link rel="icon" type="image/svg+xml" href="{{ asset('images/logo/logo-icon.svg') }}">
 
     <!-- Scripts -->
     @vite(['resources/css/app.css', 'resources/js/app.js'])
@@ -82,7 +82,7 @@
 
         <div class="flex-1 transition-all duration-300 ease-in-out"
             :class="{
-                'xl:ml-[290px]': $store.sidebar.isExpanded || $store.sidebar.isHovered,
+                'xl:ml-[310px]': $store.sidebar.isExpanded || $store.sidebar.isHovered,
                 'xl:ml-[90px]': !$store.sidebar.isExpanded && !$store.sidebar.isHovered,
                 'ml-0': $store.sidebar.isMobileOpen
             }">

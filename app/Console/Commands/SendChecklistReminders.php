@@ -172,7 +172,7 @@ class SendChecklistReminders extends Command
             );
 
             try {
-                Mail::to($recipient->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+                Mail::to($recipient->email)->cc($emailTemplate->ccRecipientEmails($recipient->email))->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
                 $status = 'sent';
                 $sentAt = now();
             } catch (\Throwable $e) {

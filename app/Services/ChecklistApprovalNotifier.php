@@ -89,9 +89,20 @@ class ChecklistApprovalNotifier
      * announcement email they always have — this is purely additive.
      *
      * @param  Collection<int, ChecklistTemplate>  $templates
+     * @param  array<int, int>  $signatoryOverrides  Per-request, non-persisted override of a template's
+     *   Clearance Signatory — `[checklist_template_id => replacement_employee_id]`. Used by the
+     *   "Temporary" half of the Clearance Signatory conflict feature
+     *   (`OffboardingRequestController::store()`): when the offboardee being
+     *   created right now would otherwise be assigned as their OWN
+     *   Clearance Signatory on one of their own checklists, this swaps in
+     *   the chosen replacement for THIS one brand-new row only — the
+     *   template's own `department_head_id` is never read or written here.
+     *   Only ever affects a template's FIRST attach (`firstOrCreate()`
+     *   below ignores this for a template that already has a row), which
+     *   matches "applies to this offboarding process only."
      * @return array<int, string> names of department heads actually emailed
      */
-    public function attachAndNotify(OffboardingRequest $offboardingRequest, Collection $templates, ?EmailTemplate $emailTemplate, string $creatorName = ''): array
+    public function attachAndNotify(OffboardingRequest $offboardingRequest, Collection $templates, ?EmailTemplate $emailTemplate, string $creatorName = '', array $signatoryOverrides = []): array
     {
         if ($templates->isEmpty()) {
             return [];
@@ -124,9 +135,10 @@ class ChecklistApprovalNotifier
             // attached (recorded above) but unassigned to anyone — same as
             // today's behavior for a normal checklist with no department
             // head configured.
-            $approverEmployeeId = $template->is_immediate_head_checklist
-                ? $offboardingRequest->immediate_head_id
-                : $template->department_head_id;
+            $approverEmployeeId = $signatoryOverrides[$template->id]
+                ?? ($template->is_immediate_head_checklist
+                    ? $offboardingRequest->immediate_head_id
+                    : $template->department_head_id);
 
             // A "Use Task Assignee as Clearance Signatory" checklist has NO
             // owner at all by design — its Task Assignees are themselves the
@@ -226,7 +238,7 @@ class ChecklistApprovalNotifier
             );
 
             try {
-                Mail::to($approver->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+                Mail::to($approver->email)->cc($emailTemplate->ccRecipientEmails($approver->email))->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
                 $notified[] = $approver->name;
             } catch (\Throwable $e) {
                 Log::error('Failed to send checklist approval notification email.', [
@@ -266,7 +278,7 @@ class ChecklistApprovalNotifier
      * notifies alongside every other template in the very same
      * `attachAndNotify()` call.
      */
-    public function notifyDepartmentHeadsOfNewRequest(OffboardingRequest $offboardingRequest, Collection $templates): void
+    public function notifyDepartmentHeadsOfNewRequest(OffboardingRequest $offboardingRequest, Collection $templates, array $signatoryOverrides = []): void
     {
         // Prefers the admin's per-request override (picked on the New
         // Offboarding Request modal), captured once at creation and never
@@ -295,9 +307,10 @@ class ChecklistApprovalNotifier
             ->filter(fn (ChecklistTemplate $template) => ! $template->is_final_pay_checklist)
             ->map(fn (ChecklistTemplate $template) => [
                 'template' => $template,
-                'approverEmployeeId' => $template->is_immediate_head_checklist
-                    ? $offboardingRequest->immediate_head_id
-                    : $template->department_head_id,
+                'approverEmployeeId' => $signatoryOverrides[$template->id]
+                    ?? ($template->is_immediate_head_checklist
+                        ? $offboardingRequest->immediate_head_id
+                        : $template->department_head_id),
             ])
             ->filter(fn (array $entry) => $entry['approverEmployeeId']);
 
@@ -310,9 +323,17 @@ class ChecklistApprovalNotifier
         foreach ($eligible->groupBy('approverEmployeeId') as $approverEmployeeId => $entriesForApprover) {
             /** @var Collection<int, array{template: ChecklistTemplate, approverEmployeeId: int}> $entriesForApprover */
             $templatesForApprover = $entriesForApprover->pluck('template');
-            $approver = $templatesForApprover->first()->is_immediate_head_checklist
-                ? $offboardingRequest->immediateHead
-                : $templatesForApprover->first()->departmentHead;
+            // When any template in this group was overridden, its own
+            // `departmentHead`/`immediateHead` relation would still resolve
+            // to the OLD signatory being replaced, not `$approverEmployeeId`
+            // (the override) — go straight to a fresh lookup instead so the
+            // replacement is the one actually emailed.
+            $isOverridden = $templatesForApprover->contains(fn (ChecklistTemplate $t) => isset($signatoryOverrides[$t->id]));
+            $approver = $isOverridden
+                ? Employee::find($approverEmployeeId)
+                : ($templatesForApprover->first()->is_immediate_head_checklist
+                    ? $offboardingRequest->immediateHead
+                    : $templatesForApprover->first()->departmentHead);
 
             $approver ??= Employee::find($approverEmployeeId);
 
@@ -356,7 +377,7 @@ class ChecklistApprovalNotifier
             );
 
             try {
-                Mail::to($approver->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+                Mail::to($approver->email)->cc($emailTemplate->ccRecipientEmails($approver->email))->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
             } catch (\Throwable $e) {
                 Log::error('Failed to send offboarding request notification email.', [
                     'offboarding_request_id' => $offboardingRequest->id,
@@ -385,7 +406,9 @@ class ChecklistApprovalNotifier
     {
         $offboardee = $offboardingRequest->employee;
 
-        if (! $offboardee->email || ! filter_var($offboardee->email, FILTER_VALIDATE_EMAIL)) {
+        $recipientEmail = OffboardeeEmailResolver::resolve($offboardingRequest, self::OFFBOARDEE_NOTIFICATION_TEMPLATE);
+
+        if (! $recipientEmail) {
             return;
         }
 
@@ -428,11 +451,11 @@ class ChecklistApprovalNotifier
         );
 
         try {
-            Mail::to($offboardee->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+            Mail::to($recipientEmail)->cc($emailTemplate->ccRecipientEmails($recipientEmail))->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
         } catch (\Throwable $e) {
             Log::error('Failed to send offboarding details notification email.', [
                 'offboarding_request_id' => $offboardingRequest->id,
-                'recipient' => $offboardee->email,
+                'recipient' => $recipientEmail,
                 'exception' => $e->getMessage(),
             ]);
         }
@@ -604,7 +627,7 @@ class ChecklistApprovalNotifier
             );
 
             try {
-                Mail::to($clearanceSignatory->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+                Mail::to($clearanceSignatory->email)->cc($emailTemplate->ccRecipientEmails($clearanceSignatory->email))->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
             } catch (\Throwable $e) {
                 Log::error('Failed to send General Signatory offboarding notification email.', [
                     'offboarding_request_id' => $offboardingRequest->id,
@@ -664,7 +687,7 @@ class ChecklistApprovalNotifier
                 : '',
         );
 
-        Mail::to($clearanceSignatory->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+        Mail::to($clearanceSignatory->email)->cc($emailTemplate->ccRecipientEmails($clearanceSignatory->email))->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
 
         return true;
     }
@@ -811,7 +834,7 @@ class ChecklistApprovalNotifier
         );
 
         try {
-            Mail::to($recipient->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+            Mail::to($recipient->email)->cc($emailTemplate->ccRecipientEmails($recipient->email))->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
 
             return true;
         } catch (\Throwable $e) {

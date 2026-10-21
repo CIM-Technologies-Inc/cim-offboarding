@@ -3,7 +3,7 @@
 @section('content')
     <x-common.page-breadcrumb pageTitle="Employee Master" />
 
-    <div x-data="employeeGroupsWorkspace(@js($groups), @js($employees), @js(session('success')), @js(session('error') ?? ($errors->any() ? $errors->first() : null)))">
+    <div x-data="employeeGroupsWorkspace(@js($groups), @js($employees), @js(session('success')), @js(session('error') ?? ($errors->any() ? $errors->first() : null)), @js($departmentOptions), @js($positionOptions))">
         <div class="mb-6 flex items-center justify-between">
             <p class="text-sm text-gray-500 dark:text-gray-400">
                 Organize employees into groups and assign the Group Head/Department Head responsible for each one.
@@ -105,13 +105,134 @@
             </div>
         @endif
 
+        <!-- LAST EMPLOYEE MASTER FILE UPLOAD -->
+        {{-- Reuses `ActivityLog` (see `EmployeeGroupController::latestRosterUpload()`),
+             never derived from any `employees` row's own timestamps — those
+             change independently (a manual edit, a later Add New Employee,
+             etc.) and would silently drift from the actual last FILE
+             upload. Static server-rendered Blade, not Alpine state: this
+             only ever changes on a real page load (a fresh Upload Excel
+             submit is a real Turbo form POST that redirects back here —
+             see the form's own comment further down — so the normal
+             Turbo-driven re-render already keeps it current with no extra
+             wiring); Add New Employee's own fetch()-based submit never
+             touches it at all, by design. --}}
+        <div class="mt-10 rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-white/[0.03] sm:p-6">
+            <h3 class="text-base font-semibold text-gray-800 dark:text-white/90">Last Employee Master File Upload</h3>
+
+            @if (! $latestRosterUpload)
+                <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">No employee master file has been uploaded yet.</p>
+            @else
+                <div class="mt-4 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
+                    <div class="flex items-start gap-3">
+                        <span class="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]">
+                            <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M5 2.5h6.67L15 5.83V17.5H5v-15Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                                <path d="M11.67 2.5V5.83H15" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                            </svg>
+                        </span>
+                        <div class="min-w-0">
+                            <p class="text-theme-xs text-gray-400">File Name</p>
+                            <p class="truncate text-sm font-medium text-gray-800 dark:text-white/90" title="{{ $latestRosterUpload['fileName'] ?? '—' }}">
+                                {{ $latestRosterUpload['fileName'] ?? '—' }}
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="flex items-start gap-3">
+                        <span class="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]">
+                            <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M5.83 2.5v2.5M14.17 2.5v2.5M3.33 7.5h13.34M4.17 4.17h11.66c.46 0 .84.37.84.83v10.83c0 .46-.38.84-.84.84H4.17a.84.84 0 0 1-.84-.84V5c0-.46.38-.83.84-.83Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                            </svg>
+                        </span>
+                        <div class="min-w-0">
+                            <p class="text-theme-xs text-gray-400">Uploaded</p>
+                            <p class="text-sm font-medium text-gray-800 dark:text-white/90">
+                                {{ $latestRosterUpload['uploadedAt']->format('M d, Y') }}
+                                <span class="text-gray-400">&middot;</span>
+                                {{ $latestRosterUpload['uploadedAt']->format('g:i A') }}
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="flex items-start gap-3">
+                        <span class="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]">
+                            <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M10 10a3.33 3.33 0 1 0 0-6.67A3.33 3.33 0 0 0 10 10Zm0 1.67c-3.33 0-6.67 1.67-6.67 4.16v1.67h13.34v-1.67c0-2.49-3.34-4.16-6.67-4.16Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                            </svg>
+                        </span>
+                        <div class="min-w-0">
+                            <p class="text-theme-xs text-gray-400">Uploaded By</p>
+                            <p class="truncate text-sm font-medium text-gray-800 dark:text-white/90">{{ $latestRosterUpload['uploadedByName'] ?? '—' }}</p>
+                        </div>
+                    </div>
+
+                    <div class="flex items-start gap-3">
+                        <span class="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg {{ $latestRosterUpload['status'] === 'success' ? 'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]' : 'bg-error-50 text-error-600 dark:bg-error-500/15 dark:text-error-400' }}">
+                            @if ($latestRosterUpload['status'] === 'success')
+                                <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <path d="M4.17 10.83 8.33 15l7.5-10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                                </svg>
+                            @else
+                                <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <path d="M5 5l10 10M15 5 5 15" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                                </svg>
+                            @endif
+                        </span>
+                        <div class="min-w-0">
+                            <p class="text-theme-xs text-gray-400">Upload Status</p>
+                            <p class="text-sm font-medium {{ $latestRosterUpload['status'] === 'success' ? 'text-[#145a3a] dark:text-[#3aa876]' : 'text-error-600 dark:text-error-400' }}">
+                                {{ $latestRosterUpload['status'] === 'success' ? 'Successful' : 'Failed' }}
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mt-5 grid grid-cols-2 gap-4 border-t border-gray-100 pt-5 dark:border-gray-800 sm:grid-cols-4">
+                    <div>
+                        <p class="text-theme-xs text-gray-400">Total Records</p>
+                        <p class="text-lg font-semibold text-gray-800 dark:text-white/90">{{ $latestRosterUpload['totalRecords'] }}</p>
+                    </div>
+                    <div>
+                        <p class="text-theme-xs text-gray-400">Successfully Imported</p>
+                        <p class="text-lg font-semibold text-[#145a3a] dark:text-[#3aa876]">{{ $latestRosterUpload['successfullyImported'] }}</p>
+                    </div>
+                    <div>
+                        <p class="text-theme-xs text-gray-400">Skipped/Duplicate</p>
+                        <p class="text-lg font-semibold text-amber-600 dark:text-amber-400">{{ $latestRosterUpload['skippedDuplicateRecords'] }}</p>
+                    </div>
+                    <div>
+                        <p class="text-theme-xs text-gray-400">Failed</p>
+                        <p class="text-lg font-semibold text-error-600 dark:text-error-400">{{ $latestRosterUpload['failedRecords'] }}</p>
+                    </div>
+                </div>
+
+                @if ($latestRosterUpload['status'] !== 'success' && $latestRosterUpload['failureReason'])
+                    <div class="mt-5 rounded-lg border border-error-500 bg-error-50 px-4 py-3 text-sm text-error-600 dark:border-error-500/30 dark:bg-error-500/10 dark:text-error-400">
+                        {{ $latestRosterUpload['failureReason'] }}
+                    </div>
+                @endif
+            @endif
+        </div>
+
         <!-- EMPLOYEE DIRECTORY -->
         <div class="mt-10 border-t border-gray-200 pt-8 dark:border-gray-800">
-            <div class="mb-5">
-                <h3 class="text-lg font-semibold text-gray-800 dark:text-white/90">Employee Directory</h3>
-                <p class="text-sm text-gray-500 dark:text-gray-400">
-                    Browse every employee on record and manage their group assignment.
-                </p>
+            <div class="mb-5 flex flex-wrap items-start justify-between gap-3">
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800 dark:text-white/90">Employee Directory</h3>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                        Browse every employee on record and manage their group assignment.
+                    </p>
+                </div>
+                @can('employee-master.create')
+                    <button type="button" @click="openAddEmployeeModal()"
+                        class="shadow-theme-xs flex shrink-0 items-center justify-center gap-2 rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white hover:bg-[#0f4630]">
+                        <svg class="fill-current" width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M9 3.75V14.25M3.75 9H14.25" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                        </svg>
+                        Add New Employee
+                    </button>
+                @endcan
             </div>
 
             <div class="mb-4 flex flex-wrap items-center gap-3">
@@ -652,13 +773,141 @@
                 </template>
             </div>
         </x-ui.modal>
+
+        <!-- ADD NEW EMPLOYEE MODAL -->
+        {{-- Manually creates a brand-new `employees` row (the one-at-a-time
+             counterpart to "Upload Excel") — submitted via fetch() so the
+             Employee Directory updates immediately through the same
+             `applyEmployeeUpdate()` every other reactive action on this page
+             already uses, with no full-page reload. Field-level errors come
+             straight from the backend's own validation (see
+             `EmployeeGroupController::storeEmployee()`), so the two never
+             drift apart. --}}
+        <x-ui.modal x-data="{ open: false }" @open-add-employee-modal.window="open = true" @close-add-employee-modal.window="open = false" :isOpen="false" class="max-w-[560px]">
+            <div class="no-scrollbar relative max-h-[85vh] w-full max-w-[560px] overflow-y-auto rounded-3xl bg-white p-6 dark:bg-gray-900 lg:p-8" x-cloak>
+                <h4 class="mb-5 text-xl font-semibold text-gray-800 dark:text-white/90">Add New Employee</h4>
+
+                {{-- A likely-same-person match on name (see
+                     `EmployeeGroupController::isDuplicateEmployeeName()`) is
+                     a single clear banner here, not the same sentence
+                     repeated under First/Middle/Last Name individually. --}}
+                <div x-show="addEmployeeErrors.duplicate_name" x-cloak
+                    class="mb-5 rounded-lg border border-error-500 bg-error-50 px-4 py-3 text-sm text-error-600 dark:border-error-500/30 dark:bg-error-500/10 dark:text-error-400">
+                    <span x-text="addEmployeeErrors.duplicate_name?.[0]"></span>
+                </div>
+
+                <form @submit.prevent="submitAddEmployee()">
+                    <div>
+                        <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                            Employee No. <span class="text-error-500">*</span>
+                        </label>
+                        <input type="text" x-model="addEmployeeForm.employee_code" placeholder="e.g. EMP00123"
+                            class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
+                        <p x-show="addEmployeeErrors.employee_code" x-text="addEmployeeErrors.employee_code?.[0]" class="mt-1.5 text-xs text-error-500"></p>
+                    </div>
+
+                    <div class="mt-5 grid grid-cols-1 gap-5 sm:grid-cols-2">
+                        <div>
+                            <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                                First Name <span class="text-error-500">*</span>
+                            </label>
+                            <input type="text" x-model="addEmployeeForm.firstName" placeholder="e.g. Juan"
+                                class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
+                            <p x-show="addEmployeeErrors.firstName" x-text="addEmployeeErrors.firstName?.[0]" class="mt-1.5 text-xs text-error-500"></p>
+                        </div>
+                        <div>
+                            <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                                Last Name <span class="text-error-500">*</span>
+                            </label>
+                            <input type="text" x-model="addEmployeeForm.lastName" placeholder="e.g. Dela Cruz"
+                                class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
+                            <p x-show="addEmployeeErrors.lastName" x-text="addEmployeeErrors.lastName?.[0]" class="mt-1.5 text-xs text-error-500"></p>
+                        </div>
+                    </div>
+
+                    <div class="mt-5">
+                        <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                            Middle Name <span class="text-error-500">*</span>
+                        </label>
+                        <input type="text" x-model="addEmployeeForm.middleName" placeholder="e.g. Santos"
+                            class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
+                        <p x-show="addEmployeeErrors.middleName" x-text="addEmployeeErrors.middleName?.[0]" class="mt-1.5 text-xs text-error-500"></p>
+                    </div>
+
+                    <div class="mt-5">
+                        <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                            Email <span class="text-error-500">*</span>
+                        </label>
+                        <input type="email" x-model="addEmployeeForm.email" placeholder="name@cimtechnologies.com"
+                            class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
+                        <p x-show="addEmployeeErrors.email" x-text="addEmployeeErrors.email?.[0]" class="mt-1.5 text-xs text-error-500"></p>
+                    </div>
+
+                    <div class="mt-5">
+                        <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                            Personal Email
+                        </label>
+                        <input type="email" x-model="addEmployeeForm.personal_email" placeholder="Optional"
+                            class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
+                        <p x-show="addEmployeeErrors.personal_email" x-text="addEmployeeErrors.personal_email?.[0]" class="mt-1.5 text-xs text-error-500"></p>
+                    </div>
+
+                    <div class="mt-5 grid grid-cols-1 gap-5 sm:grid-cols-2">
+                        <div>
+                            <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                                Department <span class="text-error-500">*</span>
+                            </label>
+                            <select x-model="addEmployeeForm.department"
+                                class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent px-3 pr-8 text-sm text-gray-700 shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300">
+                                <option value="">Select department</option>
+                                <template x-for="dept in departmentOptions" :key="dept">
+                                    <option :value="dept" x-text="dept"></option>
+                                </template>
+                            </select>
+                            <p x-show="addEmployeeErrors.department" x-text="addEmployeeErrors.department?.[0]" class="mt-1.5 text-xs text-error-500"></p>
+                        </div>
+                        <div>
+                            <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                                Position <span class="text-error-500">*</span>
+                            </label>
+                            <input type="text" x-model="addEmployeeForm.position" list="addEmployeePositionOptions" placeholder="e.g. Accounting Staff"
+                                class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
+                            <datalist id="addEmployeePositionOptions">
+                                <template x-for="pos in positionOptions" :key="pos">
+                                    <option :value="pos"></option>
+                                </template>
+                            </datalist>
+                            <p x-show="addEmployeeErrors.position" x-text="addEmployeeErrors.position?.[0]" class="mt-1.5 text-xs text-error-500"></p>
+                        </div>
+                    </div>
+
+                    <div class="mt-7 flex items-center gap-3 lg:justify-end">
+                        <button @click="open = false" type="button"
+                            class="flex w-full justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03] sm:w-auto">
+                            Cancel
+                        </button>
+                        <button type="submit" :disabled="addingEmployee"
+                            :class="addingEmployee ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#0f4630]'"
+                            class="flex w-full justify-center rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white sm:w-auto">
+                            <span x-text="addingEmployee ? 'Saving...' : 'Save Employee'"></span>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </x-ui.modal>
     </div>
 
     <script>
-        function employeeGroupsWorkspace(initialGroups, initialEmployees, flashSuccess, flashError) {
+        function employeeGroupsWorkspace(initialGroups, initialEmployees, flashSuccess, flashError, departmentOptions, positionOptions) {
             return {
                 groups: initialGroups,
                 employees: initialEmployees,
+                departmentOptions: departmentOptions,
+                positionOptions: positionOptions,
+
+                addEmployeeForm: { employee_code: '', firstName: '', lastName: '', middleName: '', email: '', personal_email: '', department: '', position: '' },
+                addEmployeeErrors: {},
+                addingEmployee: false,
 
                 editingGroup: null,
                 groupForm: { name: '', group_head_employee_id: '', is_active: true, auto_add_members: true },
@@ -948,6 +1197,71 @@
                         const newGroup = this.groups.find((g) => g.id === updatedEmployee.employee_group_id);
                         if (newGroup) newGroup.employees_count++;
                     }
+                },
+
+                openAddEmployeeModal() {
+                    this.addEmployeeForm = { employee_code: '', firstName: '', lastName: '', middleName: '', email: '', personal_email: '', department: '', position: '' };
+                    this.addEmployeeErrors = {};
+                    this.$dispatch('open-add-employee-modal');
+                },
+                // Same fetch()-based, no-reload convention as
+                // `addEmployeeToGroup()` above, plus field-level errors from
+                // the backend's own validation (a 422 response) so the modal
+                // stays open with the admin's input intact and each field's
+                // own message shown beneath it — never a generic toast alone
+                // for a validation failure. `addingEmployee` both disables
+                // the Save button and guards against a duplicate submit.
+                submitAddEmployee() {
+                    if (this.addingEmployee) return;
+                    this.addingEmployee = true;
+                    this.addEmployeeErrors = {};
+
+                    // `route()` here (not a hardcoded `/employee-groups/employees`
+                    // string, unlike this file's older fetch() calls) so this
+                    // still resolves correctly when the app isn't served from
+                    // the domain root — e.g. this local XAMPP install, which
+                    // lives under `/tailadmin-laravel-main/offboarding/public`.
+                    window.fetchWithTimeout('{{ route('employee-groups.employees.store') }}', {
+                        method: 'POST',
+                        headers: {
+                            'X-CSRF-TOKEN': this.csrfToken(),
+                            'Content-Type': 'application/json',
+                            Accept: 'application/json',
+                        },
+                        body: JSON.stringify(this.addEmployeeForm),
+                    })
+                        .then(async (response) => {
+                            const data = await response.json().catch(() => ({}));
+
+                            if (response.status === 422) {
+                                this.addEmployeeErrors = data.errors || {};
+                                throw new Error(data.message || 'Please fix the errors below.');
+                            }
+                            if (!response.ok) {
+                                throw new Error(data.message || 'Could not add employee.');
+                            }
+
+                            return data;
+                        })
+                        .then((data) => {
+                            this.applyEmployeeUpdate(data.employee);
+                            this.notify('success', data.message || 'Employee added.');
+                            this.$dispatch('close-add-employee-modal');
+                        })
+                        .catch((error) => {
+                            // A 422 already shows its own per-field messages
+                            // inline — a toast on top of those would be
+                            // redundant noise, so it's skipped specifically
+                            // for that case.
+                            if (Object.keys(this.addEmployeeErrors).length === 0) {
+                                this.notify('error', error?.name === 'AbortError'
+                                    ? 'This is taking longer than expected. Please check before trying again.'
+                                    : error.message);
+                            }
+                        })
+                        .finally(() => {
+                            this.addingEmployee = false;
+                        });
                 },
 
                 // ---- Employee Directory ----

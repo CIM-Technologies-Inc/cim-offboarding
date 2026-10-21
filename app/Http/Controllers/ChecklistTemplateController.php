@@ -55,18 +55,10 @@ class ChecklistTemplateController extends Controller
 
     public function store(Request $request): RedirectResponse
     {
-        $useTaskAssigneeAsSignatory = $request->boolean('use_task_assignee_as_signatory');
-        // Mutually exclusive with Immediate Head — a checklist can't both
-        // follow the offboardee's own Immediate Head AND have no head at
-        // all. The (disabled-in-the-UI, but still defended here) Immediate
-        // Head checkbox is ignored the moment this one is checked.
-        $isImmediateHeadChecklist = $request->boolean('is_immediate_head_checklist') && ! $useTaskAssigneeAsSignatory;
-
         $validated = $request->validate([
             'title' => ['required', 'string', 'max:255'],
             'employee_group_id' => ['nullable', 'exists:employee_groups,id'],
             'is_immediate_head_checklist' => ['nullable', 'boolean'],
-            'use_task_assignee_as_signatory' => ['nullable', 'boolean'],
             'department' => ['nullable', 'string', Rule::in($this->departmentOptions())],
             // Primary/Secondary/Final Pay — the Sync workflow's stage
             // ordering (see `ChecklistCompletionService::checkPrimaryChecklistsCompletion()`).
@@ -93,6 +85,16 @@ class ChecklistTemplateController extends Controller
 
         $isFinalPayChecklist = $validated['checklist_classification'] === 'final_pay';
         $sequenceType = $isFinalPayChecklist ? null : $validated['checklist_classification'];
+        // "Multiple Signatory Checklist" is no longer an independently
+        // submitted checkbox — a Final Pay checklist is always treated as
+        // one, every other priority never is. See `ChecklistTemplate.$use_task_assignee_as_signatory`
+        // for what this actually drives downstream.
+        $useTaskAssigneeAsSignatory = $isFinalPayChecklist;
+        // Mutually exclusive with Immediate Head — a checklist can't both
+        // follow the offboardee's own Immediate Head AND have no head at
+        // all. The (disabled-in-the-UI, but still defended here) Immediate
+        // Head checkbox is ignored whenever this is forced on.
+        $isImmediateHeadChecklist = $request->boolean('is_immediate_head_checklist') && ! $useTaskAssigneeAsSignatory;
 
         // An Immediate Head checklist is assigned exclusively to whichever
         // Immediate Head is picked on each individual offboarding request
@@ -177,14 +179,10 @@ class ChecklistTemplateController extends Controller
 
     public function update(Request $request, ChecklistTemplate $checklistTemplate): RedirectResponse
     {
-        $useTaskAssigneeAsSignatory = $request->boolean('use_task_assignee_as_signatory');
-        $isImmediateHeadChecklist = $request->boolean('is_immediate_head_checklist') && ! $useTaskAssigneeAsSignatory;
-
         $validated = $request->validate([
             'title' => ['required', 'string', 'max:255'],
             'employee_group_id' => ['nullable', 'exists:employee_groups,id'],
             'is_immediate_head_checklist' => ['nullable', 'boolean'],
-            'use_task_assignee_as_signatory' => ['nullable', 'boolean'],
             'department' => ['nullable', 'string', Rule::in($this->departmentOptions($checklistTemplate->department))],
             'checklist_classification' => ['required', Rule::in(['primary', 'secondary', 'final_pay'])],
             'due_in_days' => ['nullable', 'integer', 'min:0', 'max:3650'],
@@ -202,6 +200,10 @@ class ChecklistTemplateController extends Controller
 
         $isFinalPayChecklist = $validated['checklist_classification'] === 'final_pay';
         $sequenceType = $isFinalPayChecklist ? null : $validated['checklist_classification'];
+        // See the matching comment in store() — no longer an independently
+        // submitted checkbox.
+        $useTaskAssigneeAsSignatory = $isFinalPayChecklist;
+        $isImmediateHeadChecklist = $request->boolean('is_immediate_head_checklist') && ! $useTaskAssigneeAsSignatory;
 
         $employeeGroupId = ($isImmediateHeadChecklist || $useTaskAssigneeAsSignatory)
             ? null

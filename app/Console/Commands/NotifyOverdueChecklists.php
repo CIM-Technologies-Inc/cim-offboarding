@@ -164,7 +164,7 @@ class NotifyOverdueChecklists extends Command
         );
 
         try {
-            Mail::to($departmentHead->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+            Mail::to($departmentHead->email)->cc($emailTemplate->ccRecipientEmails($departmentHead->email))->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
         } catch (\Throwable $e) {
             Log::error('Failed to send overdue checklist email.', [
                 'offboarding_request_approver_id' => $assignment->id,

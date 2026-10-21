@@ -45,7 +45,7 @@
 
             @canany(['user-profile.edit-personal-info', 'user-profile.edit-contact-info', 'user-profile.edit-employment-info'])
                 <button @click="$dispatch('open-profile-info-modal')"
-                    class="shadow-theme-xs flex w-full items-center justify-center gap-2 rounded-full border border-gray-300 bg-white px-4 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50 hover:text-gray-800 lg:inline-flex lg:w-auto dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03] dark:hover:text-gray-200">
+                    class="shadow-theme-xs flex w-full items-center justify-center gap-2 rounded-full border border-gray-300 bg-white px-4 py-3 text-sm font-medium text-gray-700 hover:border-[#145a3a] hover:bg-[#145a3a] hover:text-white lg:inline-flex lg:w-auto dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:border-[#3aa876] dark:hover:bg-[#3aa876] dark:hover:text-white">
                     <svg class="fill-current" width="18" height="18" viewBox="0 0 18 18" fill="none"
                         xmlns="http://www.w3.org/2000/svg">
                         <path fill-rule="evenodd" clip-rule="evenodd"
@@ -150,11 +150,11 @@
                 </div>
                 <div class="flex items-center gap-3 px-2 mt-6 lg:justify-end">
                     <button @click="open = false" type="button"
-                        class="flex w-full justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03] sm:w-auto">
+                        class="flex w-full justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:border-[#145a3a] hover:bg-[#145a3a] hover:text-white dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:border-[#3aa876] dark:hover:bg-[#3aa876] dark:hover:text-white sm:w-auto">
                         Close
                     </button>
                     <button type="submit" data-turbo-submits-with="Saving..."
-                        class="flex w-full justify-center rounded-lg bg-brand-500 px-4 py-2.5 text-sm font-medium text-white hover:bg-brand-600 sm:w-auto">
+                        class="flex w-full justify-center rounded-lg bg-brand-500 px-4 py-2.5 text-sm font-medium text-white hover:bg-[#145a3a] sm:w-auto">
                         Save Changes
                     </button>
                 </div>
@@ -258,11 +258,11 @@
                     </form>
                 @endif
                 <button @click="open = false" type="button"
-                    class="flex w-full justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03] sm:w-auto">
+                    class="flex w-full justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:border-[#145a3a] hover:bg-[#145a3a] hover:text-white dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:border-[#3aa876] dark:hover:bg-[#3aa876] dark:hover:text-white sm:w-auto">
                     Close
                 </button>
                 <button type="submit" form="profilePhotoForm" x-show="photoPreviewUrl" data-turbo-submits-with="Saving..."
-                    class="flex w-full justify-center rounded-lg bg-brand-500 px-4 py-2.5 text-sm font-medium text-white hover:bg-brand-600 sm:w-auto">
+                    class="flex w-full justify-center rounded-lg bg-brand-500 px-4 py-2.5 text-sm font-medium text-white hover:bg-[#145a3a] sm:w-auto">
                     Save Photo
                 </button>
             </div>

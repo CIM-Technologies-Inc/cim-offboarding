@@ -406,6 +406,66 @@ class OffboardingRequestApprover extends Model
     }
 
     /**
+     * Every active checklist this employee is currently the Clearance
+     * Signatory of — covering TWO distinct kinds of conflict, since either
+     * one alone misses real cases:
+     *
+     * 1. **Instance-level**: an open `OffboardingRequestApprover` row
+     *    (`employee_id` = this employee, not yet approved) on some OTHER,
+     *    still-active offboarding request — they're mid-reviewing someone
+     *    else's checklist right now.
+     * 2. **Template-level**: the employee is the active `ChecklistTemplate`'s
+     *    own configured `department_head_id` — the reusable default every
+     *    FUTURE offboarding request in that department would assign — even
+     *    when there's currently no open request using it at all. This is
+     *    the more common real-world case (confirmed against production
+     *    data: a Department Head can easily have zero currently-open
+     *    checklists yet still be the template's signatory of record) and
+     *    was missing from the first version of this method, which only
+     *    checked #1 and so reported "no conflict" for exactly this
+     *    situation.
+     *
+     * One row per distinct checklist TEMPLATE, never two for the same one —
+     * if an instance-level conflict exists for a template, that already
+     * covers the template-level concern too (its own card's "Permanent"
+     * option fixes both at once), so a template is only ever added as its
+     * own template-only entry when no open instance already represents it.
+     *
+     * Both exclude Immediate Head checklists (no "Group Head" concept
+     * applies there) and inactive templates. Deliberately keyed on
+     * `employee_id` only, never `delegated_employee_id` — a delegate never
+     * replaces the owner of record, so the owner leaving the company is
+     * still a real conflict regardless of any active delegation.
+     *
+     * @return Collection<int, array{approver: ?OffboardingRequestApprover, template: ChecklistTemplate}>
+     */
+    public static function activeConflictsForEmployee(int $employeeId): Collection
+    {
+        $instanceApprovers = static::where('employee_id', $employeeId)
+            ->where('status', '!=', 'approved')
+            ->whereHas('checklistTemplate', fn (Builder $query) => $query
+                ->where('is_active', true)
+                ->where('is_immediate_head_checklist', false))
+            ->whereHas('offboardingRequest', fn (Builder $query) => $query
+                ->whereIn('status', ['pending', 'in_progress']))
+            ->with(['checklistTemplate', 'offboardingRequest.employee'])
+            ->get();
+
+        $coveredTemplateIds = $instanceApprovers->pluck('checklist_template_id')->unique();
+
+        $templateOnlyConflicts = ChecklistTemplate::where('is_active', true)
+            ->where('is_immediate_head_checklist', false)
+            ->where('department_head_id', $employeeId)
+            ->whereNotIn('id', $coveredTemplateIds)
+            ->get();
+
+        return $instanceApprovers
+            ->map(fn (self $approver) => ['approver' => $approver, 'template' => $approver->checklistTemplate])
+            ->concat($templateOnlyConflicts->map(fn (ChecklistTemplate $template) => ['approver' => null, 'template' => $template]))
+            ->values();
+    }
+
+    /**
      * True once every checklist item on this assignment's template has
      * been checked, regardless of who checked it. Items with no progress
      * row yet count as unchecked. An empty checklist counts as complete.

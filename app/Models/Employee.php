@@ -214,6 +214,18 @@ class Employee extends Model
     }
 
     /**
+     * True only when `personal_email` is both present and a well-formed
+     * address — used to gate every email notification addressed to this
+     * employee AS AN OFFBOARDEE (see `App\Services\OffboardeeEmailResolver`).
+     * Offboardees lose access to their company `email` once separated, so
+     * those notifications must never fall back to it.
+     */
+    public function hasUsablePersonalEmail(): bool
+    {
+        return (bool) filter_var($this->personal_email, FILTER_VALIDATE_EMAIL);
+    }
+
+    /**
      * Reverse of `approvalHead()`: every employee (by id) this employee is
      * the approval head of — everyone whose Immediate Head is `$this`, plus
      * everyone from `subordinateEmployeeIds()` (Group Head/Department Head

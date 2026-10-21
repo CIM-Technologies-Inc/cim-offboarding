@@ -40,7 +40,7 @@
                             <p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Status</p>
                         </th>
                         <th class="px-5 py-3 text-left sm:px-6">
-                            <p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Priority</p>
+                            <p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Label</p>
                         </th>
                         <th class="px-5 py-3 text-right sm:px-6">
                             <p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Actions</p>
@@ -50,20 +50,21 @@
                 <tbody>
                     @forelse ($templates as $template)
                         @php
-                            // Display-only classification — reads the Sync
-                            // workflow's existing `is_final_pay_checklist`/
-                            // `sequence_type` columns (see
-                            // `ChecklistCompletionService::checkPrimaryChecklistsCompletion()`
-                            // for where these actually drive behavior) without
-                            // changing or duplicating that logic here. "Core"
-                            // is this page's own label for a `sequence_type`
-                            // of 'primary' — the underlying value is unchanged.
+                            // Display-only classification, reading the
+                            // existing `is_final_pay_checklist`/
+                            // `is_immediate_head_checklist` columns without
+                            // changing or duplicating what actually drives
+                            // behavior elsewhere (`ChecklistCompletionService`,
+                            // the Immediate Head checklist release flow).
+                            // "Support Group" is this page's own label for
+                            // every checklist that is neither of those two —
+                            // no new column/value is introduced for it.
                             $priorityLabel = $template->is_final_pay_checklist
                                 ? 'Final Pay'
-                                : ($template->sequence_type === 'secondary' ? 'Secondary' : 'Core');
+                                : ($template->is_immediate_head_checklist ? 'Immediate Head' : 'Support Group');
                             $priorityClass = match (true) {
                                 $template->is_final_pay_checklist => 'bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400',
-                                $template->sequence_type === 'secondary' => 'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400',
+                                $template->is_immediate_head_checklist => 'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400',
                                 default => 'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]',
                             };
                         @endphp
@@ -215,9 +216,6 @@
                         <th class="px-5 py-3 text-left sm:px-6">
                             <p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Status</p>
                         </th>
-                        <th class="px-5 py-3 text-left sm:px-6">
-                            <p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Priority</p>
-                        </th>
                         <th class="px-5 py-3 text-right sm:px-6">
                             <p class="font-medium text-gray-500 text-theme-xs dark:text-gray-400">Actions</p>
                         </th>
@@ -227,17 +225,14 @@
                     @forelse ($generalSignatories as $generalSignatory)
                         @php
                             $assigneeNames = $generalSignatory->tasks->pluck('signatory.name')->filter()->unique()->values();
+                            // Still needed — feeds the View/Edit modal's own
+                            // classification field below (`open-view-general-signatory-modal`/
+                            // `open-general-signatory-modal`); only the
+                            // Priority COLUMN that used to be displayed
+                            // alongside it in this table was removed.
                             $gsClassification = $generalSignatory->is_final_pay_signatory
                                 ? 'final_pay'
                                 : ($generalSignatory->sequence_type === 'secondary' ? 'secondary' : 'primary');
-                            $gsPriorityLabel = $generalSignatory->is_final_pay_signatory
-                                ? 'Final Pay'
-                                : ($generalSignatory->sequence_type === 'secondary' ? 'Secondary' : 'Core');
-                            $gsPriorityClass = match (true) {
-                                $generalSignatory->is_final_pay_signatory => 'bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400',
-                                $generalSignatory->sequence_type === 'secondary' => 'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400',
-                                default => 'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]',
-                            };
                         @endphp
                         <tr class="border-b border-gray-100 dark:border-gray-800">
                             <td class="px-5 py-4 sm:px-6">
@@ -269,11 +264,6 @@
                                         {{ $generalSignatory->is_active ? 'Active' : 'Inactive' }}
                                     </span>
                                 </form>
-                            </td>
-                            <td class="px-5 py-4 sm:px-6">
-                                <span class="rounded-full px-2.5 py-1 text-xs font-medium {{ $gsPriorityClass }}">
-                                    {{ $gsPriorityLabel }}
-                                </span>
                             </td>
                             <td class="px-5 py-4 text-right sm:px-6">
                                 <div class="flex items-center justify-end gap-2" x-data>
@@ -358,7 +348,7 @@
                         </tr>
                     @empty
                         <tr>
-                            <td colspan="6" class="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
+                            <td colspan="5" class="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
                                 No Signatory records yet. Click "Add Signatory" to create one.
                             </td>
                         </tr>

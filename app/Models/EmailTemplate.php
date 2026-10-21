@@ -4,10 +4,42 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class EmailTemplate extends Model
 {
+    /**
+     * Every template name the application's own trigger code looks up by a
+     * fixed, hardcoded string (a `private const *_TEMPLATE` or literal
+     * `where('template_name', ...)` match in a Controller/Service/Console
+     * Command) — see each one's own trigger file for the exact call site.
+     * `User Account Reactivation Notification` is the one exception that's
+     * looked up by the `is_default_reactivation` flag instead of by name,
+     * but it's just as much a fixed system trigger (`UserController::reactivate()`),
+     * so it belongs in this list too.
+     *
+     * Renaming or deleting a template whose name is in this list breaks the
+     * workflow that sends it — see `isSystemDefault()`.
+     */
+    public const SYSTEM_TEMPLATE_NAMES = [
+        'Offboarding Request Notification',
+        'Offboarding Details Notification – Employee',
+        'Employee Offboarding Follow-Up Notification',
+        'General Signatory Offboarding Notification',
+        'Final Pay Checklist Approval',
+        'Final Pay Checklist Completed',
+        'Offboarding Overdue Notice',
+        'Clearance Signing Due Reached',
+        'Offboarding Reminder',
+        'Checklist Item Pending Head Approval',
+        'Final Approval Request',
+        'Checklist Due Date Extended',
+        'Offboarding Request Cancelled',
+        'Checklist Signatory Declined',
+        'User Account Reactivation Notification',
+    ];
+
     protected $fillable = [
         'template_name',
         'subject',
@@ -15,11 +47,6 @@ class EmailTemplate extends Model
         'is_active',
         'is_default_announcement',
         'is_default_reactivation',
-        'is_scheduled',
-        'schedule_type',
-        'schedule_timing',
-        'schedule_days',
-        'schedule_interval_days',
         'created_by',
     ];
 
@@ -29,9 +56,6 @@ class EmailTemplate extends Model
             'is_active' => 'boolean',
             'is_default_announcement' => 'boolean',
             'is_default_reactivation' => 'boolean',
-            'is_scheduled' => 'boolean',
-            'schedule_days' => 'integer',
-            'schedule_interval_days' => 'integer',
         ];
     }
 
@@ -40,44 +64,98 @@ class EmailTemplate extends Model
         return $this->belongsTo(User::class, 'created_by');
     }
 
-    public function scheduledSends(): HasMany
+    /**
+     * HR/Admin-configured "N days before/after Last Working Day" schedules
+     * — the Email Notification Schedule Timeline feature. Independent of
+     * (and additive to) this template's own hardcoded system trigger, if it
+     * has one — see `isSystemDefault()`.
+     */
+    public function schedules(): HasMany
     {
-        return $this->hasMany(EmailTemplateScheduledSend::class);
+        return $this->hasMany(EmailTemplateSchedule::class);
     }
 
     /**
-     * Human-readable summary of this template's schedule for the template
-     * list, or null when scheduling isn't enabled/configured. Two
-     * independent modes: 'one_time' (e.g. "5 days before Last Working
-     * Day" — fires once) and 'recurring' (e.g. "Every 5 days until Last
-     * Working Day" — keeps firing on that interval, counted from the
-     * offboarding request's creation date, until its Last Working Day is
-     * reached — see `SendScheduledEmailTemplates::processRecurringTemplate()`).
+     * Individually-selected CC recipients — "Recipients / CC" on the
+     * Create/Edit Email Template form. See `ccRecipientEmails()` for how
+     * these combine with `recipientGroups()` below at actual send time.
+     */
+    public function recipientEmployees(): BelongsToMany
+    {
+        return $this->belongsToMany(Employee::class, 'email_template_recipient_employees');
+    }
+
+    /**
+     * Whole Employee Master groups selected as CC recipients — every
+     * current member of each selected group is CC'd (resolved fresh at
+     * send time, so group membership changes are picked up automatically
+     * without re-saving the template).
+     */
+    public function recipientGroups(): BelongsToMany
+    {
+        return $this->belongsToMany(EmployeeGroup::class, 'email_template_recipient_groups');
+    }
+
+    /**
+     * This template's configured CC list — every individually-selected
+     * employee plus every current member of every selected group —
+     * deduped (an employee picked individually AND via a group is only
+     * CC'd once) and filtered down to valid, non-empty email addresses.
+     * `$excludePrimaryEmail` keeps whoever is already this specific send's
+     * "To" recipient out of the CC list, so nobody gets two copies of the
+     * same email. Returns `[]` (a documented no-op for Laravel Mail's
+     * `->cc()`) when nothing is configured, so every existing call site
+     * behaves exactly as before for every template that doesn't use this.
+     *
+     * @return array<int, string>
+     */
+    public function ccRecipientEmails(?string $excludePrimaryEmail = null): array
+    {
+        $exclude = $excludePrimaryEmail ? strtolower(trim($excludePrimaryEmail)) : null;
+
+        return $this->recipientEmployees->pluck('email')
+            ->merge($this->recipientGroups->flatMap(fn (EmployeeGroup $group) => $group->employees->pluck('email')))
+            ->filter(fn (?string $email) => $email && filter_var($email, FILTER_VALIDATE_EMAIL))
+            ->map(fn (string $email) => strtolower(trim($email)))
+            ->unique()
+            ->reject(fn (string $email) => $exclude && $email === $exclude)
+            ->values()
+            ->all();
+    }
+
+    /**
+     * True when this template is one the application's own code looks up
+     * automatically by a fixed name (or, for the reactivation template, by
+     * the `is_default_reactivation` flag) — see `SYSTEM_TEMPLATE_NAMES`.
+     * Everything else is a Customizable template: freely created, renamed,
+     * deleted, and either selected manually (a per-request override, the
+     * "Notify Approver" picker) or attached to a specific checklist's own
+     * "Schedule Email/Notification" setting.
+     */
+    public function isSystemDefault(): bool
+    {
+        return in_array($this->template_name, self::SYSTEM_TEMPLATE_NAMES, true)
+            || $this->is_default_reactivation;
+    }
+
+    /**
+     * Human-readable summary of this template's active custom schedules for
+     * the template list, or null when none are configured — the single
+     * schedule's own label when there's exactly one, otherwise a count.
      */
     public function scheduleLabel(): ?string
     {
-        if (! $this->is_scheduled) {
+        $active = $this->schedules->where('is_active', true);
+
+        if ($active->isEmpty()) {
             return null;
         }
 
-        if ($this->schedule_type === 'recurring') {
-            if (! $this->schedule_interval_days) {
-                return null;
-            }
-
-            $unit = $this->schedule_interval_days === 1 ? 'day' : 'days';
-
-            return "Every {$this->schedule_interval_days} {$unit} until Last Working Day";
+        if ($active->count() === 1) {
+            return $active->first()->label();
         }
 
-        if (! $this->schedule_days || ! $this->schedule_timing) {
-            return null;
-        }
-
-        $unit = $this->schedule_days === 1 ? 'day' : 'days';
-        $timing = $this->schedule_timing === 'before' ? 'before' : 'after';
-
-        return "{$this->schedule_days} {$unit} {$timing} Last Working Day";
+        return "{$active->count()} custom schedules";
     }
 
     /**

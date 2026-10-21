@@ -63,22 +63,29 @@ Route::post('/reset-password/{id}/{token}', [ForgotPasswordController::class, 'r
 // above, so the Department Head never has to log in first just to click it.
 // GET shows a confirmation page (validating the link/checklist state without
 // approving anything yet); POST — triggered only by confirming on that page
-// — performs the actual approval.
-Route::get('/approval/{id}/{token}', [ApprovalController::class, 'showEmailApproval'])->name('approval.show');
-Route::post('/approval/{id}/{token}', [ApprovalController::class, 'confirmEmailApproval'])->name('approval.confirm');
+// — performs the actual approval. `throttle:10,1` for the same defense-in-
+// depth reason the reset-password links above already have it (token
+// entropy alone — 64 random chars, bcrypt-hashed — already makes brute
+// force impractical, but every other public, unauthenticated action link in
+// this app is rate-limited and these three families of routes were the only
+// ones that weren't).
+Route::middleware('throttle:10,1')->group(function () {
+    Route::get('/approval/{id}/{token}', [ApprovalController::class, 'showEmailApproval'])->name('approval.show');
+    Route::post('/approval/{id}/{token}', [ApprovalController::class, 'confirmEmailApproval'])->name('approval.confirm');
 
-// Same public, unauthenticated "Approve" link pattern as above, for the
-// General Signatory Offboarding Notification email — see
-// GeneralSignatoryApprovalController's docblock. Deliberately its own
-// controller/token model/routes, entirely independent of the checklist
-// Clearance Signatory pair above.
-Route::get('/general-signatory-approval/{id}/{token}', [GeneralSignatoryApprovalController::class, 'showEmailApproval'])->name('general-signatory-approval.show');
-Route::post('/general-signatory-approval/{id}/{token}', [GeneralSignatoryApprovalController::class, 'confirmEmailApproval'])->name('general-signatory-approval.confirm');
+    // Same public, unauthenticated "Approve" link pattern as above, for the
+    // General Signatory Offboarding Notification email — see
+    // GeneralSignatoryApprovalController's docblock. Deliberately its own
+    // controller/token model/routes, entirely independent of the checklist
+    // Clearance Signatory pair above.
+    Route::get('/general-signatory-approval/{id}/{token}', [GeneralSignatoryApprovalController::class, 'showEmailApproval'])->name('general-signatory-approval.show');
+    Route::post('/general-signatory-approval/{id}/{token}', [GeneralSignatoryApprovalController::class, 'confirmEmailApproval'])->name('general-signatory-approval.confirm');
 
-// Same public, unauthenticated "Approve" link pattern, for the Final
-// Approval Request email — see FinalApprovalController's docblock.
-Route::get('/final-approval/{id}/{token}', [FinalApprovalController::class, 'showEmailApproval'])->name('final-approval.show');
-Route::post('/final-approval/{id}/{token}', [FinalApprovalController::class, 'confirmEmailApproval'])->name('final-approval.confirm');
+    // Same public, unauthenticated "Approve" link pattern, for the Final
+    // Approval Request email — see FinalApprovalController's docblock.
+    Route::get('/final-approval/{id}/{token}', [FinalApprovalController::class, 'showEmailApproval'])->name('final-approval.show');
+    Route::post('/final-approval/{id}/{token}', [FinalApprovalController::class, 'confirmEmailApproval'])->name('final-approval.confirm');
+});
 
 Route::middleware(['auth', 'password.changed', 'account.active', 'no-cache'])->group(function () {
 
@@ -213,6 +220,12 @@ Route::middleware('permission:dashboard.view')->group(function () {
 // viewing).
 Route::middleware('permission:offboarding-requests.create')->group(function () {
     Route::post('/offboarding-requests', [OffboardingRequestController::class, 'store'])->name('offboarding-requests.store');
+    // Checked live (via fetch()) by the New Offboarding Request form the
+    // moment an employee is selected, and resolved from the card it
+    // renders — see `OffboardingRequestController::checkSignatoryConflicts()`/
+    // `resolveSignatoryConflict()`'s own docblocks.
+    Route::get('/offboarding-requests/signatory-conflicts/{employee}', [OffboardingRequestController::class, 'checkSignatoryConflicts'])->name('offboarding-requests.signatory-conflicts');
+    Route::post('/offboarding-requests/signatory-conflicts/{checklistTemplate}/resolve', [OffboardingRequestController::class, 'resolveSignatoryConflict'])->name('offboarding-requests.signatory-conflicts.resolve');
 });
 
 // offboarding checklist templates
@@ -325,6 +338,12 @@ Route::middleware('permission:employee-master.create')->group(function () {
     Route::post('/employee-groups', [EmployeeGroupController::class, 'store'])->name('employee-groups.store');
     Route::post('/employee-groups/{employeeGroup}/employees', [EmployeeGroupController::class, 'addEmployee'])->name('employee-groups.employees.add');
     Route::post('/employee-groups/import', [EmployeeGroupController::class, 'import'])->name('employee-groups.import');
+    // Manual "Add New Employee" — creates a brand-new `employees` row from
+    // scratch (unlike `addEmployee` above, which only attaches an EXISTING
+    // employee to a group). Deliberately under the same `.create` permission
+    // as the Excel import, since both ultimately do the same thing: add a
+    // row to the employee roster.
+    Route::post('/employee-groups/employees', [EmployeeGroupController::class, 'storeEmployee'])->name('employee-groups.employees.store');
 });
 Route::middleware('permission:employee-master.edit')->group(function () {
     Route::put('/employee-groups/{employeeGroup}', [EmployeeGroupController::class, 'update'])->name('employee-groups.update');
@@ -375,6 +394,20 @@ Route::middleware('permission:offboarding-requests.cancel')->group(function () {
 // permission, same reasoning as the reset action above.
 Route::middleware('permission:final-approval.send')->group(function () {
     Route::post('/offboarding-requests/{offboardingRequest}/final-approval', [FinalApprovalController::class, 'send'])->name('final-approval.send');
+});
+
+// Complete Offboarding on behalf of the actual Final Approver — a PEER
+// option to "Final Approval" above, not a second step gated behind it: lets
+// an authorized HR/Admin user finish the whole Final Approval stage
+// themselves, right away, reusing the same `finalizeApproval()` core as a
+// normal approval. Works whether or not `final-approval.send` was ever
+// clicked for this request — see `FinalApprovalController::completeOffboarding()`'s
+// own docblock. Its own dedicated permission (not folded into
+// `final-approval.send` or the in-app `approve()` route's group), since
+// granting "send the request" should not implicitly grant "approve it for
+// someone else."
+Route::middleware('permission:final-approval.complete-on-behalf')->group(function () {
+    Route::post('/offboarding-requests/{offboardingRequest}/complete-offboarding', [FinalApprovalController::class, 'completeOffboarding'])->name('final-approval.complete-offboarding');
 });
 
 // Extend Due (Offboardee page) — the single bulk button that sets every

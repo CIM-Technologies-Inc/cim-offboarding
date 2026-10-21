@@ -1,13 +1,26 @@
-@props(['checklists' => []])
+@props(['checklists' => [], 'generalSignatories' => []])
 
 @php
     $statusStyles = [
         'Cleared' => 'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]',
         'Declined' => 'bg-error-50 text-error-700 dark:bg-error-500/15 dark:text-error-400',
-        'Hold' => 'bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400',
+        // Was keyed 'Hold' before — every status actually PRODUCING this
+        // badge (both `OffboardingRequestApprover::clearanceStatusLabel()`
+        // and `OffboardingRequestGeneralSignatory::clearanceStatusLabel()`)
+        // returns the string 'On Hold', so the old 'Hold' key was dead code:
+        // an on-hold checklist/signatory silently fell through to the
+        // 'Pending' (gray) style below instead of this amber one. Fixed
+        // here rather than left for the new General Signatories section to
+        // inherit the same bug.
+        'On Hold' => 'bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400',
         'Overdue' => 'bg-orange-50 text-orange-700 dark:bg-orange-500/15 dark:text-orange-400',
         'In Progress' => 'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400',
         'Pending' => 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300',
+        // Same color the Approvals page's own "Ready for Approval" badge
+        // already uses (see pages/approvals/index.blade.php) — a General
+        // Signatory with no Task List to wait on (see
+        // EmployeeDashboardController::index()).
+        'Ready for Approval' => 'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]',
     ];
 @endphp
 
@@ -128,4 +141,51 @@
             <p class="col-span-full text-theme-sm text-gray-500 dark:text-gray-400">No checklists have been assigned yet.</p>
         @endforelse
     </div>
+
+    {{-- General Signatories — a separate approval track from the
+         checklists above (see `OffboardingRequestGeneralSignatory`'s own
+         docblock): purely additive visibility reusing that same model's
+         existing `clearanceStatusLabel()`, never a second approval
+         mechanism of its own. Shown only when this request actually has
+         any attached, so a request with none never displays an empty
+         section. --}}
+    @if (count($generalSignatories))
+        <div class="mt-6 border-t border-gray-100 pt-5 dark:border-gray-800">
+            <h4 class="text-sm font-semibold text-gray-800 dark:text-white/90">Department</h4>
+            <p class="mt-1 text-theme-xs text-gray-500 dark:text-gray-400">
+                Additional signatories responsible for clearing your offboarding request.
+            </p>
+
+            <div class="mt-3 grid grid-cols-1 gap-4 lg:grid-cols-2">
+                @foreach ($generalSignatories as $signatory)
+                    @php
+                        $gsBadgeClass = $statusStyles[$signatory['status']] ?? $statusStyles['Pending'];
+                    @endphp
+                    <div class="rounded-xl border border-gray-200 p-4 dark:border-gray-800">
+                        <div class="flex items-start justify-between gap-2">
+                            <div>
+                                <p class="text-sm font-semibold text-gray-800 dark:text-white/90">{{ $signatory['name'] }}</p>
+                                <p class="text-theme-xs text-gray-400">Signatory</p>
+                            </div>
+                            <span class="shrink-0 rounded-full px-2.5 py-1 text-xs font-medium {{ $gsBadgeClass }}">
+                                {{ $signatory['status'] }}
+                            </span>
+                        </div>
+
+                        <div class="mt-2 space-y-1 text-theme-xs text-gray-500 dark:text-gray-400">
+                            @if ($signatory['dueAt'])
+                                <p class="{{ $signatory['isOverdue'] ? 'font-medium text-error-600 dark:text-error-400' : '' }}">
+                                    Due: {{ $signatory['dueAt'] }}
+                                    @if ($signatory['isOverdue']) — Overdue @endif
+                                </p>
+                            @endif
+                            @if ($signatory['approvedAt'])
+                                <p>Completed: {{ $signatory['approvedAt'] }}</p>
+                            @endif
+                        </div>
+                    </div>
+                @endforeach
+            </div>
+        </div>
+    @endif
 </div>

@@ -1,8 +1,13 @@
 {{--
-    Final Approval / Resend Final Approval / "Approved" badge — shared by
-    Card View and List View (@include'd from each) so this block's
-    permission/status gating lives in exactly one place. Only the
+    Final Approval / Resend Final Approval / Complete Offboarding / "Approved"
+    badge — shared by Card View and List View (@include'd from each) so this
+    block's permission/status gating lives in exactly one place. Only the
     wrapper/button CLASSES vary, via the `$compact` flag.
+
+    "Final Approval" and "Complete Offboarding" are PEERS shown side by
+    side, not a two-step sequence — HR/Admin picks one: send it to the real
+    Final Signatory and wait, or complete it themselves right now. See
+    `FinalApprovalController::completeOffboarding()`'s own docblock.
 --}}
 @php
     $compact = $compact ?? false;
@@ -28,33 +33,62 @@
                         ? 'Resend the Final Approval request?'
                         : 'Send this offboarding request for Final Approval?';
                 @endphp
-                <form method="POST" action="{{ $offboardee['finalApprovalUrl'] }}" x-data="{ confirmed: false }"
-                    @submit="if (!confirmed) {
-                        $event.preventDefault();
-                        Swal.fire({
-                            title: @js($finalApprovalConfirmTitle),
-                            text: 'This will email the currently active Final Signatory' + (@js($offboardee['finalSignatoryName']) ? (' (' + @js($offboardee['finalSignatoryName']) + ')') : '') + ' the completed Clearance Form for ' + @js($offboardee['name']) + ' and a one-click Approve link.',
-                            icon: 'question',
-                            showCancelButton: true,
-                            confirmButtonText: 'Send',
-                            cancelButtonText: 'Cancel',
-                            confirmButtonColor: '#145a3a',
-                            cancelButtonColor: '#6b7280',
-                            reverseButtons: true
-                        }).then((result) => { if (result.isConfirmed) { confirmed = true; $el.requestSubmit(); } });
-                    }">
-                    @csrf
-                    <button type="submit" data-turbo-submits-with="Sending..."
-                        class="{{ $compact
-                            ? 'inline-flex items-center justify-center gap-1.5 rounded-lg border border-[#145a3a]/30 px-3.5 py-2 text-sm font-medium text-[#145a3a] transition-colors hover:border-[#145a3a] hover:bg-[#145a3a] hover:text-white dark:border-[#3aa876]/30 dark:text-[#3aa876] dark:hover:border-[#3aa876] dark:hover:bg-[#3aa876] dark:hover:text-white'
-                            : 'flex w-full items-center justify-center gap-1.5 rounded-lg border border-[#145a3a]/30 px-3 py-2 text-xs font-medium text-[#145a3a] transition-colors hover:border-[#145a3a] hover:bg-[#145a3a] hover:text-white dark:border-[#3aa876]/30 dark:text-[#3aa876] dark:hover:border-[#3aa876] dark:hover:bg-[#3aa876] dark:hover:text-white' }}">
-                        <svg width="{{ $compact ? 16 : 14 }}" height="{{ $compact ? 16 : 14 }}" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                            <path d="M3.5 5.5L10 10.5L16.5 5.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-                            <path d="M3.5 5.5C3.5 4.94772 3.94772 4.5 4.5 4.5H15.5C16.0523 4.5 16.5 4.94772 16.5 5.5V14C16.5 14.5523 16.0523 15 15.5 15H4.5C3.94772 15 3.5 14.5523 3.5 14V5.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
-                        </svg>
-                        {{ $offboardee['finalApprovalStatus'] === 'pending' ? 'Resend Final Approval' : 'Final Approval' }}
-                    </button>
-                </form>
+                {{-- Two PEER options, each on its own row — HR/Admin picks
+                     one: "Final Approval" sends it to the real Final
+                     Signatory and waits for their actual approval;
+                     "Complete Offboarding" lets HR/Admin finish it
+                     themselves right now, without ever sending it or
+                     waiting. Neither is gated behind the other having been
+                     used first — both are available as soon as the request
+                     is eligible. --}}
+                <div class="flex flex-col gap-2">
+                    <form method="POST" action="{{ $offboardee['finalApprovalUrl'] }}" x-data="{ confirmed: false }"
+                        @submit="if (!confirmed) {
+                            $event.preventDefault();
+                            Swal.fire({
+                                title: @js($finalApprovalConfirmTitle),
+                                text: 'This will email the currently active Final Signatory' + (@js($offboardee['finalSignatoryName']) ? (' (' + @js($offboardee['finalSignatoryName']) + ')') : '') + ' the completed Clearance Form for ' + @js($offboardee['name']) + ' and a one-click Approve link.',
+                                icon: 'question',
+                                showCancelButton: true,
+                                confirmButtonText: 'Send',
+                                cancelButtonText: 'Cancel',
+                                confirmButtonColor: '#145a3a',
+                                cancelButtonColor: '#6b7280',
+                                reverseButtons: true
+                            }).then((result) => { if (result.isConfirmed) { confirmed = true; $el.requestSubmit(); } });
+                        }">
+                        @csrf
+                        <button type="submit" data-turbo-submits-with="Sending..."
+                            class="{{ $compact
+                                ? 'inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-[#145a3a]/30 px-3.5 py-2 text-sm font-medium text-[#145a3a] transition-colors hover:border-[#145a3a] hover:bg-[#145a3a] hover:text-white dark:border-[#3aa876]/30 dark:text-[#3aa876] dark:hover:border-[#3aa876] dark:hover:bg-[#3aa876] dark:hover:text-white'
+                                : 'flex w-full items-center justify-center gap-1.5 rounded-lg border border-[#145a3a]/30 px-3 py-2 text-xs font-medium text-[#145a3a] transition-colors hover:border-[#145a3a] hover:bg-[#145a3a] hover:text-white dark:border-[#3aa876]/30 dark:text-[#3aa876] dark:hover:border-[#3aa876] dark:hover:bg-[#3aa876] dark:hover:text-white' }}">
+                            <svg width="{{ $compact ? 16 : 14 }}" height="{{ $compact ? 16 : 14 }}" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M3.5 5.5L10 10.5L16.5 5.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                                <path d="M3.5 5.5C3.5 4.94772 3.94772 4.5 4.5 4.5H15.5C16.0523 4.5 16.5 4.94772 16.5 5.5V14C16.5 14.5523 16.0523 15 15.5 15H4.5C3.94772 15 3.5 14.5523 3.5 14V5.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+                            </svg>
+                            {{ $offboardee['finalApprovalStatus'] === 'pending' ? 'Resend Final Approval' : 'Final Approval' }}
+                        </button>
+                    </form>
+
+                    @can('final-approval.complete-on-behalf')
+                        <button type="button"
+                            @click="$dispatch('open-complete-on-behalf-modal', {
+                                url: @js($offboardee['completeOnBehalfUrl']),
+                                finalSignatoryName: @js($offboardee['completeOnBehalfSignatoryName']),
+                                offboardeeName: @js($offboardee['name']),
+                                hasSignature: @js($offboardee['finalApproverHasSignature']),
+                            })"
+                            class="{{ $compact
+                                ? 'inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-gray-300 px-3.5 py-2 text-sm font-medium text-gray-700 transition-colors hover:border-[#145a3a] hover:bg-[#145a3a] hover:text-white dark:border-gray-700 dark:text-gray-300 dark:hover:border-[#3aa876] dark:hover:bg-[#3aa876] dark:hover:text-white'
+                                : 'flex w-full items-center justify-center gap-1.5 rounded-lg border border-gray-300 px-3 py-2 text-xs font-medium text-gray-700 transition-colors hover:border-[#145a3a] hover:bg-[#145a3a] hover:text-white dark:border-gray-700 dark:text-gray-300 dark:hover:border-[#3aa876] dark:hover:bg-[#3aa876] dark:hover:text-white' }}">
+                            <svg width="{{ $compact ? 16 : 14 }}" height="{{ $compact ? 16 : 14 }}" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M10 6.5V10L12.5 11.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                                <circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.5" />
+                            </svg>
+                            Complete Offboarding
+                        </button>
+                    @endcan
+                </div>
             @endif
         </div>
     @endif

@@ -253,7 +253,7 @@ class UserController extends Controller
         );
 
         try {
-            Mail::to($employee->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+            Mail::to($employee->email)->cc($emailTemplate->ccRecipientEmails($employee->email))->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
 
             ActivityLog::record('account_reactivation_email_sent', 'Notifications', "Reactivation notification emailed to {$employee->name}.", [
                 'subject_type' => 'User',

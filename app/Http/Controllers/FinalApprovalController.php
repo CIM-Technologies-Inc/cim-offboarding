@@ -19,7 +19,9 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 use Illuminate\View\View;
 
 /**
@@ -243,6 +245,145 @@ class FinalApprovalController extends Controller
     }
 
     /**
+     * Lets an authorized HR/Admin user complete the ENTIRE Final Approval
+     * step — and therefore the offboarding request — ON BEHALF OF the
+     * actual Final Approver, as a peer option alongside `send()`'s "Final
+     * Approval" button rather than something that only unlocks after it.
+     * Works from a cold start: if no `OffboardingRequestFinalApproval` row
+     * exists yet for this request, one is created and targeted at whoever
+     * is CURRENTLY the active `FinalApprover` — the exact same
+     * `firstOrCreate` + re-target block `send()` already uses (lines
+     * 88-104 above), just without ever emailing anyone. If `send()` was
+     * already clicked and it's still `pending`, this re-targets the SAME
+     * row (a no-op re-set unless the active Final Approver changed) and
+     * completes it directly — so clicking "Complete Offboarding" after
+     * "Final Approval" was already sent works identically to before.
+     *
+     * Deliberately does NOT call `authorizeAssignment()` (that answers "may
+     * this user act AS the approver," which is the wrong question here);
+     * the `final-approval.complete-on-behalf` permission alone is the gate,
+     * checked here as defense-in-depth on top of the route's own
+     * `permission:` middleware, same convention as
+     * `ApprovalController::extendAllDue()`'s `->can('checklists.extend-due')`
+     * check. Reuses `finalizeApproval()` completely unchanged — it already
+     * records `approved_by` as whoever the acting `$actor` is (here, the
+     * admin) while `ClearanceFormController` renders the Clearance Form
+     * signature from `$finalApproval->employee->user` (the REAL Final
+     * Approver) regardless of `approved_by`, so no signature/PDF code needs
+     * to change for this to work correctly.
+     *
+     * The signature check below is intentionally against the Final
+     * Approver's own `User` (the active `FinalApprover`'s employee's own
+     * account), never `auth()->user()` — copying `approve()`'s own
+     * `auth()->user()->hasUsableSignature()` check here would check the
+     * wrong person's signature.
+     *
+     * If the Final Approver has no signature on file yet, the admin may
+     * upload one for him right here (`signature`, same validation rule
+     * `ProfileController::updateSignature()` already enforces) — it's
+     * written to the Final Approver's own `User.signature_path`, exactly as
+     * if he'd uploaded it himself from his Profile page, since that's the
+     * only place `ClearanceFormController` ever reads a signature from.
+     * Never silently skipped: the field is conditionally required by the
+     * validation rule itself whenever he doesn't already have one.
+     */
+    public function completeOffboarding(Request $request, OffboardingRequest $offboardingRequest): RedirectResponse
+    {
+        abort_unless(auth()->user()->can('final-approval.complete-on-behalf'), 403);
+
+        abort_unless(
+            $offboardingRequest->status === 'completed',
+            422,
+            'This can only be completed once the offboarding request is fully completed.'
+        );
+
+        $activeFinalApprover = FinalApprover::with('employee.user')->where('is_active', true)->first();
+
+        if (! $activeFinalApprover) {
+            return back()->with('error', 'No active Final Signatory is configured. Please set one on the Offboarding Checklist page first.');
+        }
+
+        $existing = $offboardingRequest->finalApproval;
+
+        if ($existing?->status === 'approved') {
+            return back()->with('error', 'This offboarding request has already received Final Approval.');
+        }
+
+        $admin = auth()->user();
+
+        $finalApproval = DB::transaction(function () use ($offboardingRequest, $activeFinalApprover, $admin) {
+            $finalApproval = OffboardingRequestFinalApproval::firstOrCreate(
+                ['offboarding_request_id' => $offboardingRequest->id],
+                ['employee_id' => $activeFinalApprover->employee_id, 'status' => 'pending']
+            );
+
+            $finalApproval->update([
+                'employee_id' => $activeFinalApprover->employee_id,
+                'initiated_by' => $admin->id,
+                'initiated_at' => now(),
+            ]);
+
+            return $finalApproval;
+        });
+
+        $finalApproverEmployee = $activeFinalApprover->employee;
+        $finalApproverUser = $finalApproverEmployee?->user;
+
+        abort_if(! $finalApproverUser, 422, 'The configured Final Approver has no user account on file.');
+
+        // Required only when he has no signature yet — if one's already on
+        // file, this field is optional and the existing signature is used
+        // as-is, same as every other "complete on behalf of" case already
+        // verified. Same validation rule `ProfileController::updateSignature()`
+        // already enforces for a user uploading their OWN signature; here
+        // it's HR/Admin uploading it for the Final Approver instead.
+        $validated = $request->validate([
+            'remarks' => ['nullable', 'string', 'max:2000'],
+            'signature' => [
+                Rule::requiredIf(! $finalApproverUser->hasUsableSignature()),
+                'nullable', 'image', 'mimes:png,jpg,jpeg', 'max:1900',
+            ],
+        ]);
+
+        if (! empty($validated['signature'])) {
+            $path = $validated['signature']->store('signatures', 'public');
+            $previousPath = $finalApproverUser->signature_path;
+
+            $finalApproverUser->update(['signature_path' => $path]);
+
+            if ($previousPath) {
+                Storage::disk('public')->delete($previousPath);
+            }
+
+            // Deliberately distinct wording from `ProfileController::updateSignature()`'s
+            // own self-upload log line ("{name} uploaded a new e-signature")
+            // — this one must never read as if the Final Approver uploaded
+            // it himself.
+            ActivityLog::record('employee_profile_updated', 'Users', $admin->name . " uploaded an e-signature for {$finalApproverUser->name}, on their behalf, to complete Final Approval.", [
+                'user' => $admin,
+                'subject_type' => 'User',
+                'subject_id' => $finalApproverUser->id,
+                'old_values' => ['signature_path' => $previousPath],
+                'new_values' => ['signature_path' => $path],
+            ]);
+        }
+
+        $approved = $this->finalizeApproval(
+            $finalApproval,
+            $admin,
+            $validated['remarks'] ?? null,
+            'On Behalf Of ' . $finalApproverEmployee->name . ', by ' . $admin->name
+        );
+
+        abort_unless($approved, 422, 'This has already been actioned.');
+
+        return redirect()->back()->with(
+            'success',
+            'Offboarding completed on behalf of ' . $finalApproverEmployee->name . '.'
+        );
+    }
+
+    /**
      * Only the CURRENTLY configured Final Approver (or admin) may give
      * in-app Final Approval — same "not every Admin/HR user" gate
      * `GeneralSignatoryApprovalController::authorizeAssignment()` already
@@ -310,7 +451,7 @@ class FinalApprovalController extends Controller
                     . ($remarks ? ' — Remarks: ' . $remarks : ''),
             ]);
 
-            ActivityLog::record('checklist_approved', 'Checklist', "Final Approval given by {$actor->name}.", [
+            ActivityLog::record('checklist_approved', 'Checklist', "Final Approval given by {$actor->name} ({$via}).", [
                 'user' => $actor,
                 'subject_type' => 'OffboardingRequestFinalApproval',
                 'subject_id' => $locked->id,
@@ -486,9 +627,12 @@ class FinalApprovalController extends Controller
             ]);
         }
 
-        Mail::to($signatoryEmployee->email)->send(
-            new FinalApprovalRequestMail($subject, $body, $pdfBytes, $offboardee->name, $pngBytes)
-        );
+        // $emailTemplate is null in the fallback-content branch above (no
+        // active "Final Approval Request" template found) — nothing
+        // configured to CC in that case either.
+        Mail::to($signatoryEmployee->email)
+            ->cc($emailTemplate?->ccRecipientEmails($signatoryEmployee->email) ?? [])
+            ->send(new FinalApprovalRequestMail($subject, $body, $pdfBytes, $offboardee->name, $pngBytes));
 
         return true;
     }

@@ -144,6 +144,15 @@ class OffboardingActivity extends Model
             'checklist_reassigned' => $this->offboardingRequestApprover?->checklistTemplate?->title
                 ? "Checklist Reassigned: \"{$this->offboardingRequestApprover->checklistTemplate->title}\" by {$actor}{$suffix}"
                 : "Checklist Reassigned by {$actor}{$suffix}",
+            // Fires when HR/Admin replaces a checklist's Clearance Signatory
+            // because the original signatory is themselves being offboarded
+            // — see `OffboardingRequestController::resolveSignatoryConflict()`.
+            // Names the checklist itself, same reasoning as `checklist_reassigned`
+            // above; the specific previous/new signatory names live in this
+            // row's own `comment`, set by the controller.
+            'clearance_signatory_replaced' => $this->offboardingRequestApprover?->checklistTemplate?->title
+                ? "Clearance Signatory Replaced: \"{$this->offboardingRequestApprover->checklistTemplate->title}\" by {$actor}{$suffix}"
+                : "Clearance Signatory Replaced by {$actor}{$suffix}",
             'checklist_item_reassigned' => "Checklist Item Reassigned by {$actor}{$suffix}",
             'checklist_item_auto_assigned' => 'Checklist Items Auto-Assigned to Group Members',
             'checklist_delegate_completed' => "Checklist Completed by {$actor}{$suffix} (Delegated Approver)",
