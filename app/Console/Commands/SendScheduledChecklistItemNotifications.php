@@ -5,6 +5,8 @@ namespace App\Console\Commands;
 use App\Mail\ChecklistSignatoryAnnouncementMail;
 use App\Models\ChecklistItem;
 use App\Models\OffboardingRequestApprover;
+use App\Models\User;
+use App\Services\AutoLoginLinkService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
@@ -99,6 +101,8 @@ class SendScheduledChecklistItemNotifications extends Command
         $recipient = $assignment->effectiveSignatoryFor($item);
 
         if ($recipient && $recipient->email && filter_var($recipient->email, FILTER_VALIDATE_EMAIL)) {
+            $recipientUser = User::firstWhere('username', $recipient->employee_code_digits);
+
             [$subject, $body] = $item->emailTemplate->render(
                 approverName: $recipient->name,
                 offboardeeName: $offboardee->name,
@@ -107,6 +111,7 @@ class SendScheduledChecklistItemNotifications extends Command
                 department: $offboardee->department,
                 position: $offboardee->designation,
                 separationDate: $request->last_working_day?->format('M d, Y'),
+                offboardingLinkUrl: $recipientUser ? app(AutoLoginLinkService::class)->generate($recipientUser) : null,
             );
 
             try {

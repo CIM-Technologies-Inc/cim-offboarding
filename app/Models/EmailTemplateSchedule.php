@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
@@ -16,8 +17,10 @@ class EmailTemplateSchedule extends Model
 {
     protected $fillable = [
         'email_template_id',
+        'event',
         'timing',
         'days',
+        'clearance_signing_deadline_days',
         'channel',
         'is_active',
         'created_by',
@@ -27,6 +30,7 @@ class EmailTemplateSchedule extends Model
     {
         return [
             'days' => 'integer',
+            'clearance_signing_deadline_days' => 'integer',
             'is_active' => 'boolean',
         ];
     }
@@ -42,30 +46,66 @@ class EmailTemplateSchedule extends Model
     }
 
     /**
-     * Human-readable label for the timeline UI, e.g. "7 days before Last
-     * Working Day" or "On Last Working Day" when `days` is 0 (before/after
-     * are equivalent at zero days, so the label collapses to one phrase
-     * rather than showing a misleading direction).
+     * The "Active Checklist Selection" for this one schedule — which
+     * checklist templates' Clearance Signatories it should reach. Empty
+     * means no selection was made; see `SendEmailTemplateSchedules::resolveRecipients()`
+     * for how that's resolved (every checklist actually attached to the
+     * request, never "nobody").
      */
-    public function label(): string
+    public function checklistTemplates(): BelongsToMany
     {
-        if ($this->days === 0) {
-            return 'On Last Working Day';
-        }
-
-        $unit = $this->days === 1 ? 'day' : 'days';
-        $timing = $this->timing === 'before' ? 'before' : 'after';
-
-        return "{$this->days} {$unit} {$timing} Last Working Day";
+        return $this->belongsToMany(ChecklistTemplate::class, 'email_template_schedule_checklist_templates');
     }
 
     /**
-     * Signed day offset from Last Working Day, used purely to sort schedules
-     * chronologically in the timeline UI ('before' sorts earlier than
-     * 'after' at the same day count).
+     * The "Active General Signatory Selection" for this one schedule —
+     * which General Signatories (via their own Clearance Signatory) it
+     * should reach. Empty means no selection was made; same "defaults to
+     * everyone attached to the request" resolution as `checklistTemplates()`
+     * above.
      */
-    public function sortOffset(): int
+    public function generalSignatories(): BelongsToMany
     {
-        return $this->timing === 'before' ? -$this->days : $this->days;
+        return $this->belongsToMany(GeneralSignatory::class, 'email_template_schedule_general_signatories');
+    }
+
+    /**
+     * `event` => its display label, used both here and wherever the admin
+     * UI needs the same mapping (e.g. `workspace.blade.php`'s own
+     * `scheduleLabel()` JS mirrors this exact list).
+     */
+    public const EVENT_LABELS = [
+        'creation' => 'Creation',
+        'last_working_day' => 'Last Working Day',
+        'clearance' => 'Clearance',
+        'final_pay' => 'Final Pay',
+    ];
+
+    /**
+     * Human-readable label for the timeline UI, e.g. "7 days Before
+     * Clearance (19 days after Last Working Day)" or "On Last Working Day"
+     * when `days` is 0 (before/after are equivalent at zero days, so the
+     * label collapses to one phrase rather than showing a misleading
+     * direction) — a cosmetic convenience on top of the ticket's own
+     * literal "{days} days {Timing} {Event}" template, not a departure from
+     * it.
+     */
+    public function label(): string
+    {
+        $eventLabel = self::EVENT_LABELS[$this->event] ?? $this->event;
+
+        if ($this->days === 0) {
+            $base = "On {$eventLabel}";
+        } else {
+            $unit = $this->days === 1 ? 'day' : 'days';
+            $timingLabel = $this->timing === 'before' ? 'Before' : 'After';
+            $base = "{$this->days} {$unit} {$timingLabel} {$eventLabel}";
+        }
+
+        if ($this->event === 'clearance' && $this->clearance_signing_deadline_days !== null) {
+            $base .= " ({$this->clearance_signing_deadline_days} days after Last Working Day)";
+        }
+
+        return $base;
     }
 }

@@ -2,13 +2,20 @@
     use App\Http\Controllers\EmailTemplateController;
 
     $metadata = EmailTemplateController::templateMetadataFor($item);
+    $isBeingEdited = $template && $template->id === $item->id;
 @endphp
-
-<div class="rounded-lg border p-3 {{ $template && $template->id === $item->id ? 'border-[#145a3a]/40 bg-[#145a3a]/5' : 'border-gray-200 dark:border-gray-800' }}">
+<div class="rounded-lg border p-3 transition-shadow {{ $isBeingEdited
+    ? 'border-[#145a3a] bg-[#145a3a]/5 shadow-md ring-1 ring-[#145a3a]/30 dark:border-[#3aa876] dark:bg-[#3aa876]/10 dark:ring-[#3aa876]/30'
+    : 'border-gray-200 dark:border-gray-800' }}">
     <div class="flex flex-wrap items-center gap-1.5">
-        <p class="truncate text-sm font-medium {{ $template && $template->id === $item->id ? 'text-[#145a3a] dark:text-[#3aa876]' : 'text-gray-700 dark:text-gray-300' }}">
+        <p class="truncate text-sm font-medium {{ $isBeingEdited ? 'text-[#145a3a] dark:text-[#3aa876]' : 'text-gray-700 dark:text-gray-300' }}">
             {{ $item->template_name }}
         </p>
+        @if ($isBeingEdited)
+            <span class="shrink-0 rounded-full bg-[#145a3a] px-2 py-0.5 text-[10px] font-medium text-white dark:bg-[#3aa876] dark:text-gray-900">
+                Editing
+            </span>
+        @endif
         @if ($isSystem)
             <span class="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/15 dark:text-amber-400">
                 System

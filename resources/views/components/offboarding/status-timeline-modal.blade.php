@@ -71,6 +71,54 @@
             this[prop] = true;
             setTimeout(() => { this[prop] = false; }, 2500);
         },
+        // Scheduled Email Notifications tab — lazily fetched (never
+        // pre-embedded in the modal's payload like Timeline is) precisely
+        // because this data must stay unreachable to anyone lacking the
+        // `offboarding-requests.view-scheduled-notifications` permission,
+        // which a pre-embedded page payload could not guarantee (see
+        // `OffboardingRequestController::scheduledEmailNotifications()`'s
+        // own docblock). `scheduledEmailNotificationsRequestId` tracks
+        // WHICH request the currently-loaded data belongs to, so switching
+        // tabs back and forth on the same request never re-fetches, but
+        // opening a different request always does.
+        scheduledEmailNotifications: null,
+        scheduledEmailNotificationsLoading: false,
+        scheduledEmailNotificationsError: null,
+        scheduledEmailNotificationsRequestId: null,
+        loadScheduledEmailNotifications() {
+            if (this.scheduledEmailNotificationsRequestId === this.selected?.id) {
+                return;
+            }
+
+            this.scheduledEmailNotificationsLoading = true;
+            this.scheduledEmailNotificationsError = null;
+
+            fetch(this.selected.scheduledEmailNotificationsUrl, {
+                headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            })
+                .then(async (response) => {
+                    const data = await response.json().catch(() => ({}));
+                    if (!response.ok) {
+                        throw new Error(data.message || 'Could not load scheduled email notifications.');
+                    }
+                    this.scheduledEmailNotifications = data.notifications;
+                    this.scheduledEmailNotificationsRequestId = this.selected.id;
+                })
+                .catch((error) => {
+                    this.scheduledEmailNotificationsError = error.message || 'Could not load scheduled email notifications. Please try again.';
+                })
+                .finally(() => {
+                    this.scheduledEmailNotificationsLoading = false;
+                });
+        },
+        // Fixed priority order so items needing attention (Due, Failed)
+        // surface first — everything else follows in a sensible what's-next
+        // order, Sent last since it needs no further action.
+        scheduledEmailNotificationStatusOrder: { due: 0, failed: 1, scheduled: 2, pending_event: 3, sent: 4, not_applicable: 5 },
+        sortedScheduledEmailNotifications() {
+            return [...(this.scheduledEmailNotifications ?? [])].sort((a, b) =>
+                (this.scheduledEmailNotificationStatusOrder[a.status] ?? 99) - (this.scheduledEmailNotificationStatusOrder[b.status] ?? 99));
+        },
         // Bumped every time this modal opens (see the event handler right
         // below) — folded into the checklist accordion's own :key below so
         // Alpine always tears down and recreates every panel's own open/
@@ -82,7 +130,8 @@
         // left expanded from the last time this modal was open.
         openGeneration: 0,
     }"
-    @open-offboardee-modal.window="selected = $event.detail; activeTab = hideStatusTab ? 'timeline' : 'status'; openGeneration++">
+    @open-offboardee-modal.window="selected = $event.detail; activeTab = hideStatusTab ? 'timeline' : 'status'; openGeneration++;
+        if (scheduledEmailNotificationsRequestId !== selected?.id) { scheduledEmailNotifications = null; scheduledEmailNotificationsRequestId = null; scheduledEmailNotificationsError = null; }">
     <x-ui.modal x-data="{ open: false }" @open-offboardee-modal.window="open = true" :isOpen="$initial !== null" class="w-full sm:w-[60vw] sm:max-w-[60vw]">
         <div class="relative flex max-h-[85vh] w-full sm:max-w-[60vw] flex-col rounded-3xl bg-white dark:bg-gray-900" x-show="selected" x-cloak>
             <template x-if="selected">
@@ -240,6 +289,14 @@
                                         : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'">
                                     Timeline
                                 </button>
+                                <button type="button" x-show="selected.canViewScheduledEmailNotifications"
+                                    @click="activeTab = 'scheduled-emails'; loadScheduledEmailNotifications()"
+                                    class="border-b-2 pb-3 text-sm font-medium transition-colors"
+                                    :class="activeTab === 'scheduled-emails'
+                                        ? 'border-[#145a3a] text-[#145a3a] dark:border-[#3aa876] dark:text-[#3aa876]'
+                                        : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'">
+                                    Scheduled Email Notifications
+                                </button>
                             </div>
                         </template>
 
@@ -274,7 +331,7 @@
                         </template>
                         <div class="space-y-4">
                             <template x-for="(step, index) in richSteps()" :key="openGeneration + '-' + index">
-                                <div class="rounded-xl border border-gray-200 dark:border-gray-800" x-data="{ open: false }">
+                                <div class="rounded-xl border border-gray-200 overflow-hidden dark:border-gray-800" x-data="{ open: false }">
                                     <!-- Collapsed header — always visible: Checklist Title, assigned
                                          Clearance/General Signatory, and Status. Click anywhere to
                                          expand/collapse this checklist independently of any other
@@ -789,6 +846,89 @@
                             </div>
                         </template>
                     </div>
+                    </div>
+
+                    <!-- TAB 3: Scheduled Email Notifications — real delivery status from the
+                         EmailTemplateScheduleSend ledger, lazily fetched (see loadScheduledEmailNotifications()
+                         above) so this data never reaches a viewer lacking the dedicated permission. -->
+                    <div x-show="activeTab === 'scheduled-emails'" x-cloak>
+                        <template x-if="scheduledEmailNotificationsLoading">
+                            <div class="flex items-center justify-center gap-2 py-10 text-sm text-gray-400">
+                                <span class="h-4 w-4 animate-spin rounded-full border-2 border-solid border-gray-300 border-t-[#145a3a] dark:border-gray-600 dark:border-t-[#3aa876]"></span>
+                                Loading scheduled notifications...
+                            </div>
+                        </template>
+
+                        <template x-if="!scheduledEmailNotificationsLoading && scheduledEmailNotificationsError">
+                            <div class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-error-300 bg-error-50 px-4 py-3 text-sm text-error-700 dark:border-error-500/30 dark:bg-error-500/10 dark:text-error-400">
+                                <span x-text="scheduledEmailNotificationsError"></span>
+                                <button type="button" @click="scheduledEmailNotificationsRequestId = null; loadScheduledEmailNotifications()"
+                                    class="shrink-0 rounded-lg border border-error-300 px-3 py-1.5 text-xs font-medium hover:bg-error-100 dark:border-error-500/30 dark:hover:bg-error-500/10">
+                                    Retry
+                                </button>
+                            </div>
+                        </template>
+
+                        <template x-if="!scheduledEmailNotificationsLoading && !scheduledEmailNotificationsError && scheduledEmailNotifications && scheduledEmailNotifications.length === 0">
+                            <p class="py-8 text-center text-sm text-gray-400">No active or upcoming email notifications for this request.</p>
+                        </template>
+
+                        <template x-if="!scheduledEmailNotificationsLoading && !scheduledEmailNotificationsError && scheduledEmailNotifications && scheduledEmailNotifications.length > 0">
+                            <!-- Same collapsible-card design as the Offboarding Status tab's own
+                                 checklist cards above (button header with title/subtitle + status
+                                 badge + chevron, hover color-change, expand for full details) — kept
+                                 visually identical on purpose for consistency within this modal. -->
+                            <div class="space-y-4">
+                                <template x-for="(notification, idx) in sortedScheduledEmailNotifications()" :key="idx">
+                                    <div class="rounded-xl border border-gray-200 overflow-hidden dark:border-gray-800" x-data="{ open: false }">
+                                        <button type="button" @click="open = !open"
+                                            class="group flex w-full flex-wrap items-center justify-between gap-2 p-4 text-left">
+                                            <div class="min-w-0">
+                                                <p class="text-sm font-semibold text-gray-800 group-hover:text-[#145a3a] dark:text-white/90 dark:group-hover:text-[#3aa876]" x-text="notification.template_name"></p>
+                                                <p class="text-xs text-gray-500 group-hover:text-[#145a3a] dark:text-gray-400 dark:group-hover:text-[#3aa876]" x-text="notification.label"></p>
+                                            </div>
+                                            <div class="flex shrink-0 items-center gap-3">
+                                                <span class="rounded-full px-2.5 py-1 text-xs font-medium group-hover:text-[#145a3a] dark:group-hover:text-[#3aa876]"
+                                                    :class="{
+                                                        'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300': notification.status === 'pending_event' || notification.status === 'not_applicable',
+                                                        'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400': notification.status === 'scheduled' || notification.status === 'due',
+                                                        'bg-[#145a3a]/10 text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]': notification.status === 'sent',
+                                                        'bg-error-50 text-error-700 dark:bg-error-500/15 dark:text-error-400': notification.status === 'failed',
+                                                    }"
+                                                    x-text="{ pending_event: 'Pending Event', scheduled: 'Scheduled', due: 'Scheduled', sent: 'Sent', failed: 'Failed', not_applicable: 'Not Applicable' }[notification.status] ?? notification.status">
+                                                </span>
+                                                <svg class="h-4 w-4 shrink-0 text-gray-400 transition-transform duration-200 dark:text-gray-500"
+                                                    :class="open ? 'rotate-180' : ''"
+                                                    fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                                </svg>
+                                            </div>
+                                        </button>
+
+                                        <div x-show="open" x-cloak
+                                            x-transition:enter="transition ease-out duration-200"
+                                            x-transition:enter-start="opacity-0 -translate-y-1"
+                                            x-transition:enter-end="opacity-100 translate-y-0"
+                                            x-transition:leave="transition ease-in duration-150"
+                                            x-transition:leave-start="opacity-100 translate-y-0"
+                                            x-transition:leave-end="opacity-0 -translate-y-1"
+                                            class="border-t border-gray-100 px-4 pb-4 dark:border-gray-800">
+
+                                            <div class="mt-2 space-y-1 text-xs text-gray-500 dark:text-gray-400">
+                                                <p>Scheduled Date: <span class="font-medium text-gray-700 dark:text-gray-300" x-text="notification.scheduled_date || '—'"></span></p>
+                                                <p>Channel: <span class="font-medium text-gray-700 dark:text-gray-300" x-text="{ email: 'Email', system: 'System Notification', email_and_system: 'Email and System Notification' }[notification.channel] ?? notification.channel"></span></p>
+                                                <p>Recipients: <span class="font-medium text-gray-700 dark:text-gray-300" x-text="notification.recipients.length ? notification.recipients.map((r) => r.name).join(', ') : 'None resolved'"></span></p>
+                                                <p x-show="notification.cc_recipients.length">CC: <span class="font-medium text-gray-700 dark:text-gray-300" x-text="notification.cc_recipients.join(', ')"></span></p>
+                                                <p x-show="notification.status === 'sent'">Sent At: <span class="font-medium text-gray-700 dark:text-gray-300" x-text="notification.sent_at"></span></p>
+                                            </div>
+
+                                            <p x-show="notification.status === 'failed'" class="mt-2 font-medium text-orange-600 dark:text-orange-400">Error: <span x-text="notification.failure_reason"></span></p>
+                                            <p x-show="notification.note" class="mt-2 text-xs italic text-gray-400" x-text="notification.note"></p>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </template>
                     </div>
                     </div>
 

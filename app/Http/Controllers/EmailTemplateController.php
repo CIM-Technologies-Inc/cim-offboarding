@@ -4,9 +4,11 @@ namespace App\Http\Controllers;
 
 use App\Http\Requests\StoreEmailTemplateRequest;
 use App\Http\Requests\UpdateEmailTemplateRequest;
+use App\Models\ChecklistTemplate;
 use App\Models\Employee;
 use App\Models\EmailTemplate;
 use App\Models\EmployeeGroup;
+use App\Models\GeneralSignatory;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -114,6 +116,11 @@ class EmailTemplateController extends Controller
             'trigger' => 'Assigned to a checklist\'s own "Schedule Email/Notification" setting; sent on the configured cycle.',
             'recipients' => 'That checklist\'s Clearance Signatory (or Immediate Head), Task Assignee(s), and monitoring Department Head.',
         ],
+        'Offboarding Checklist Assigned to You' => [
+            'purpose' => 'Tells a Task Assignee which checklist item(s) they\'ve just been handed, with their own due dates.',
+            'trigger' => 'Automatically sent whenever items are assigned/reassigned to a Task Assignee (initial attach, delegation, pool assignment, or reassignment).',
+            'recipients' => 'The newly assigned Task Assignee.',
+        ],
     ];
 
     /**
@@ -140,7 +147,7 @@ class EmailTemplateController extends Controller
 
     public function edit(EmailTemplate $emailTemplate): View
     {
-        $emailTemplate->load('recipientEmployees:id', 'recipientGroups:id', 'schedules');
+        $emailTemplate->load('recipientEmployees:id', 'recipientGroups:id', 'schedules.checklistTemplates:id', 'schedules.generalSignatories:id');
 
         return $this->workspace($emailTemplate);
     }
@@ -159,6 +166,13 @@ class EmailTemplateController extends Controller
             // on the right simply ignores the extra keys.
             'employees' => Employee::orderBy('name')->get(['id', 'name', 'department', 'employee_code', 'email']),
             'employeeGroups' => $this->recipientGroupOptions(),
+            // "Active Checklist Selection" / "Active General Signatory
+            // Selection" pickers on each schedule — see
+            // `EmailTemplateSchedule::checklistTemplates()`/`generalSignatories()`.
+            'activeChecklistTemplates' => ChecklistTemplate::where('is_active', true)->orderBy('title')->get(['id', 'title']),
+            'activeGeneralSignatories' => GeneralSignatory::where('is_active', true)
+                ->with('clearanceSignatory:id,name,employee_code')
+                ->get(),
         ]);
     }
 
@@ -286,16 +300,43 @@ class EmailTemplateController extends Controller
             }
 
             $attributes = [
+                'event' => $row['event'],
                 'timing' => $row['timing'],
                 'days' => $row['days'],
+                // Only meaningful for `event = 'clearance'` — locked to
+                // null server-side for every other event even though the
+                // UI already hides the field, mirroring this controller's
+                // own server-side defense of `template_name` for system
+                // templates elsewhere in this class. Prevents a stale
+                // value surviving a switch away from Clearance and silently
+                // reapplying if the admin switches back without
+                // re-entering it.
+                'clearance_signing_deadline_days' => $row['event'] === 'clearance'
+                    ? ($row['clearance_signing_deadline_days'] ?? 19)
+                    : null,
                 'channel' => $row['channel'],
             ];
 
+            // "Active Checklist Selection" / "Active General Signatory
+            // Selection" — per-schedule, independent of every other
+            // schedule on this same template. An empty array here (nothing
+            // submitted, or every checkbox left unticked) correctly syncs
+            // the pivot down to empty, which `resolveRecipients()` reads as
+            // "no selection made" (defaults to every checklist/General
+            // Signatory actually attached to each request), never as
+            // "selected nothing, so notify nobody".
+            $checklistTemplateIds = $row['checklist_template_ids'] ?? [];
+            $generalSignatoryIds = $row['general_signatory_ids'] ?? [];
+
             if ($id) {
-                $template->schedules()->whereKey($id)->update($attributes);
+                $schedule = $template->schedules()->whereKey($id)->first();
+                $schedule->update($attributes);
             } else {
-                $template->schedules()->create($attributes + ['created_by' => $userId]);
+                $schedule = $template->schedules()->create($attributes + ['created_by' => $userId]);
             }
+
+            $schedule->checklistTemplates()->sync($checklistTemplateIds);
+            $schedule->generalSignatories()->sync($generalSignatoryIds);
         }
     }
 

@@ -8,6 +8,8 @@ use App\Models\ChecklistTemplate;
 use App\Models\EmailTemplate;
 use App\Models\Employee;
 use App\Models\OffboardingRequestApprover;
+use App\Models\User;
+use App\Services\AutoLoginLinkService;
 use Illuminate\Console\Command;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Carbon;
@@ -159,6 +161,7 @@ class SendChecklistReminders extends Command
 
         if (! $isComplete) {
             $offboardee = $assignment->offboardingRequest->employee;
+            $recipientUser = User::firstWhere('username', $recipient->employee_code_digits);
 
             [$subject, $body] = $emailTemplate->render(
                 approverName: $recipient->name,
@@ -169,6 +172,7 @@ class SendChecklistReminders extends Command
                 department: $offboardee->department,
                 position: $offboardee->designation,
                 separationDate: $assignment->offboardingRequest->last_working_day?->format('M d, Y'),
+                offboardingLinkUrl: $recipientUser ? app(AutoLoginLinkService::class)->generate($recipientUser) : null,
             );
 
             try {

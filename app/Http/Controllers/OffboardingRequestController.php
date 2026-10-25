@@ -2,8 +2,10 @@
 
 namespace App\Http\Controllers;
 
+use App\Jobs\ProcessCreationEmailTemplateSchedules;
 use App\Mail\ChecklistSignatoryAnnouncementMail;
 use App\Models\ActivityLog;
+use App\Models\ChecklistItem;
 use App\Models\ChecklistItemAssignment;
 use App\Models\ChecklistItemScheduledSend;
 use App\Models\ChecklistTemplate;
@@ -19,6 +21,8 @@ use App\Models\User;
 use App\Services\ChecklistApprovalNotifier;
 use App\Services\ChecklistCompletionService;
 use App\Services\OffboardeeEmailResolver;
+use App\Services\OffboardingRequestPreviewService;
+use App\Services\OffboardingRequestScheduledNotificationsService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -30,9 +34,16 @@ use Illuminate\Validation\Rule;
 
 class OffboardingRequestController extends Controller
 {
-    public function store(Request $request): RedirectResponse
+    /**
+     * The New Offboarding Request form's own validation rules — shared
+     * verbatim between `store()` (the real submission) and `preview()` (the
+     * read-only Review Request computation), so the two can never silently
+     * drift apart: whatever the review screen computed is guaranteed to be
+     * validated the exact same way the real submission re-validates it.
+     */
+    private function storeValidationRules(): array
     {
-        $validated = $request->validate([
+        return [
             'employee_id' => ['required', 'exists:employees,id'],
             'immediate_head_id' => ['nullable', 'exists:employees,id', 'different:employee_id'],
             'notice_date' => ['required', 'date'],
@@ -79,7 +90,12 @@ class OffboardingRequestController extends Controller
             'temporary_signatory_overrides' => ['nullable', 'array'],
             'temporary_signatory_overrides.*.template_id' => ['required', 'integer', 'exists:checklist_templates,id'],
             'temporary_signatory_overrides.*.replacement_employee_id' => ['required', 'integer', 'exists:employees,id'],
-        ]);
+        ];
+    }
+
+    public function store(Request $request): RedirectResponse
+    {
+        $validated = $request->validate($this->storeValidationRules());
 
         // Default to Parallel ('async') while the Approval Mode picker
         // stays commented out — see the note on the validation rule above.
@@ -126,25 +142,40 @@ class OffboardingRequestController extends Controller
 
         $temporarySignatoryOverrides = $this->resolveTemporarySignatoryOverrides($validated['temporary_signatory_overrides'] ?? [], $employee);
 
-        if ($temporarySignatoryOverrides instanceof RedirectResponse) {
-            return $temporarySignatoryOverrides;
+        if (is_string($temporarySignatoryOverrides)) {
+            return back()->withErrors(['temporary_signatory_overrides' => $temporarySignatoryOverrides])->withInput();
         }
 
-        // Fallback: if the admin didn't manually pick an Immediate Head,
-        // use the offboardee's Employee Master Group Head instead — the
-        // same "group's registered head" concept `Employee::departmentHead()`
-        // already uses for checklist template department heads, applied
-        // here to the per-request Immediate Head field. A manually-picked
-        // Immediate Head is never overridden (this only runs when the field
-        // came in empty), and an employee with no group (or a group with no
-        // registered head) simply gets no fallback, same as today.
-        if (empty($validated['immediate_head_id'])) {
-            $groupHead = $employee->employeeGroup?->groupHead;
+        // The New Request modal's own `checkSignatoryConflicts()`/
+        // `signatory-conflict-cards.blade.php` warning (shown the instant
+        // this offboardee is picked) was, until now, purely advisory — a
+        // click straight through to Submit with every conflict card still
+        // unresolved silently left the offboardee as Clearance Signatory of
+        // record on their own and/or other employees' still-open checklists
+        // (a real incident: EMP21016 ended up assigned as the Clearance
+        // Signatory on their OWN IT Checklist, plus 3 other open requests,
+        // because nothing blocked creation). Re-checked fresh here, against
+        // the live DB, rather than trusting whatever the client reported —
+        // a conflict already fixed via Permanent (a separate, already-
+        // committed `resolveSignatoryConflict()` call) naturally no longer
+        // appears, and one covered by a submitted Temporary override is
+        // allowed through since `notifyDepartmentHeads()`/`attachAndNotify()`
+        // below will apply it the moment this checklist's instance is
+        // created. Anything left over is a genuine, unresolved conflict and
+        // must block creation rather than silently producing another
+        // self/cross-assigned signatory.
+        $unresolvedConflicts = OffboardingRequestApprover::activeConflictsForEmployee($employee->id)
+            ->reject(fn (array $conflict) => array_key_exists($conflict['template']->id, $temporarySignatoryOverrides));
 
-            if ($groupHead && $groupHead->id !== $employee->id) {
-                $validated['immediate_head_id'] = $groupHead->id;
-            }
+        if ($unresolvedConflicts->isNotEmpty()) {
+            $checklistTitles = $unresolvedConflicts->pluck('template.title')->unique()->implode(', ');
+
+            return back()->withErrors([
+                'employee_id' => "{$employee->name} is currently the Clearance Signatory of record on the following checklist(s): {$checklistTitles}. Please assign a replacement Clearance Signatory (Permanent or Temporary) for each before creating this offboarding request.",
+            ])->withInput();
         }
+
+        $validated['immediate_head_id'] = $this->resolveImmediateHeadId($employee, $validated['immediate_head_id'] ?? null);
 
         // Separation Type — its title/description/Default Notice Period are
         // frozen onto this request right now, so a later edit or delete on
@@ -246,6 +277,94 @@ class OffboardingRequestController extends Controller
     }
 
     /**
+     * Fallback: if the admin didn't manually pick an Immediate Head, use
+     * the offboardee's Employee Master Group Head instead — the same
+     * "group's registered head" concept `Employee::departmentHead()`
+     * already uses for checklist template department heads, applied here
+     * to the per-request Immediate Head field. A manually-picked Immediate
+     * Head is never overridden (this only runs when the field came in
+     * empty), and an employee with no group (or a group with no registered
+     * head) simply gets no fallback, same as today. Shared between
+     * `store()` and `preview()` so the Review screen shows the exact same
+     * Immediate Head the real request would actually be created with.
+     */
+    private function resolveImmediateHeadId(Employee $employee, ?int $submittedImmediateHeadId): ?int
+    {
+        if (! empty($submittedImmediateHeadId)) {
+            return $submittedImmediateHeadId;
+        }
+
+        $groupHead = $employee->employeeGroup?->groupHead;
+
+        if ($groupHead && $groupHead->id !== $employee->id) {
+            return $groupHead->id;
+        }
+
+        return null;
+    }
+
+    /**
+     * Read-only "Review Offboarding Request" preview — called via fetch()
+     * from the New Offboarding Request modal when the admin clicks "Review
+     * Request", BEFORE anything is actually submitted. Validates with the
+     * exact same rules `store()` itself uses (`storeValidationRules()`) and
+     * resolves the Immediate Head/Temporary Signatory Overrides the exact
+     * same way `store()` does, so whatever this computes is guaranteed
+     * consistent with what a real submission would actually produce —
+     * never a separate, potentially-drifting calculation. Never writes to
+     * the database; `store()` remains the sole, authoritative place a
+     * request is actually created, and independently re-validates
+     * everything again at that point regardless of what this preview
+     * showed (the admin's own form inputs may have changed between the two
+     * calls).
+     */
+    public function preview(Request $request): JsonResponse
+    {
+        $validated = $request->validate($this->storeValidationRules());
+
+        $employee = Employee::findOrFail($validated['employee_id']);
+
+        $temporarySignatoryOverrides = $this->resolveTemporarySignatoryOverrides($validated['temporary_signatory_overrides'] ?? [], $employee);
+
+        if (is_string($temporarySignatoryOverrides)) {
+            return response()->json([
+                'message' => $temporarySignatoryOverrides,
+                'errors' => ['temporary_signatory_overrides' => [$temporarySignatoryOverrides]],
+            ], 422);
+        }
+
+        $immediateHeadId = $this->resolveImmediateHeadId($employee, $validated['immediate_head_id'] ?? null);
+
+        $preview = app(OffboardingRequestPreviewService::class)->preview($employee, $validated, $temporarySignatoryOverrides, $immediateHeadId);
+
+        return response()->json($preview);
+    }
+
+    /**
+     * Read-only data for the Offboardee detail view's "Scheduled Email
+     * Notifications" tab — real delivery status from the
+     * `EmailTemplateScheduleSend` ledger, not a guess. Gated twice: the
+     * `permission:offboarding-requests.view-scheduled-notifications`
+     * route middleware (see `routes/web.php`), and this request's own
+     * `isEligibleForScheduledEmailNotifications()` — both enforced here
+     * regardless of what the UI shows or hides, so a direct GET can never
+     * bypass either restriction. Never touches the database beyond reads —
+     * see `OffboardingRequestScheduledNotificationsService`'s own docblock.
+     */
+    public function scheduledEmailNotifications(OffboardingRequest $offboardingRequest): JsonResponse
+    {
+        abort_unless(
+            $offboardingRequest->isEligibleForScheduledEmailNotifications(),
+            403,
+            'Scheduled email notifications are not available for requests that are completed, finally approved, or retracted.'
+        );
+
+        return response()->json([
+            'notifications' => app(OffboardingRequestScheduledNotificationsService::class)->forRequest($offboardingRequest),
+        ]);
+    }
+
+    /**
      * Called via fetch() the moment an employee is selected on the New
      * Offboarding Request form — warns HR/Admin if that employee is
      * CURRENTLY the Clearance Signatory of record on one or more OTHER,
@@ -256,12 +375,23 @@ class OffboardingRequestController extends Controller
      *
      * Deliberately read-only and side-effect-free — this never attaches,
      * creates, or modifies anything; it only reports what already exists so
-     * the New Request modal can render a warning + one card per affected
-     * checklist before the request is even submitted.
+     * the New Request modal can render a warning + exactly ONE card per
+     * affected CHECKLIST (never one card per open instance of it) before
+     * the request is even submitted. An employee can head a checklist
+     * that's simultaneously open on several other people's offboarding
+     * requests at once — confirmed, real data: one HR/Admin department
+     * head ended up as the live Clearance Signatory on the same 3
+     * checklists across 4 different open requests at once, 12 instances
+     * total. Grouped here by `checklist_template_id` so the admin picks
+     * ONE replacement per checklist and `resolveSignatoryConflict()`
+     * applies it to every open instance in one action, rather than being
+     * shown (and having to individually click through) 12 nearly-identical
+     * cards for what is really only 3 decisions.
      */
     public function checkSignatoryConflicts(Employee $employee): JsonResponse
     {
-        $conflicts = OffboardingRequestApprover::activeConflictsForEmployee($employee->id);
+        $conflictsByTemplate = OffboardingRequestApprover::activeConflictsForEmployee($employee->id)
+            ->groupBy(fn (array $row) => $row['template']->id);
 
         // A Department Head's own `employee_group_id` very often points at
         // the SAME group they themselves head (confirmed against real data
@@ -297,76 +427,113 @@ class OffboardingRequestController extends Controller
             ->values();
 
         return response()->json([
-            'hasConflicts' => $conflicts->isNotEmpty(),
-            'conflicts' => $conflicts->map(fn (array $row) => [
-                'templateId' => $row['template']->id,
-                // Null when this card represents a template-level conflict
-                // with no currently-open instance to temporarily patch — the
-                // modal hides the Temporary option whenever this is null.
-                'approverId' => $row['approver']?->id,
-                'checklistTitle' => $row['template']->title,
-                'otherOffboardeeName' => $row['approver']?->offboardingRequest?->employee?->name,
-                'otherOffboardeeCode' => $row['approver']?->offboardingRequest?->employee?->employee_code,
-                'currentSignatoryId' => $employee->id,
-                'currentSignatoryName' => $employee->name,
-                'defaultReplacementId' => $defaultReplacement?->id,
-                'defaultReplacementLabel' => $defaultReplacement
-                    ? "{$defaultReplacement->name} ({$defaultReplacement->employee_code})"
-                    : null,
-            ])->values(),
+            'hasConflicts' => $conflictsByTemplate->isNotEmpty(),
+            'conflicts' => $conflictsByTemplate->map(function (Collection $rows) use ($employee, $defaultReplacement) {
+                $template = $rows->first()['template'];
+
+                // Every OTHER offboardee whose own still-open request has
+                // this employee as its Clearance Signatory on this exact
+                // checklist right now — shown so the admin knows the scope
+                // of what a single "Assign To" click here is about to fix.
+                // A template-only conflict (no open instance at all — this
+                // employee is still the template's configured default, but
+                // nothing currently open uses it) contributes none.
+                $affectedOffboardees = $rows->pluck('approver')->filter()
+                    ->map(fn ($approver) => [
+                        'name' => $approver->offboardingRequest?->employee?->name,
+                        'code' => $approver->offboardingRequest?->employee?->employee_code,
+                    ])
+                    ->filter(fn (array $o) => $o['name'])
+                    ->values();
+
+                return [
+                    // Unique per checklist, never per open instance — one
+                    // card per `checklist_template_id`, regardless of how
+                    // many other requests currently have it open.
+                    'key' => "template-{$template->id}",
+                    'templateId' => $template->id,
+                    'checklistTitle' => $template->title,
+                    'affectedOffboardees' => $affectedOffboardees,
+                    'openInstanceCount' => $affectedOffboardees->count(),
+                    'currentSignatoryId' => $employee->id,
+                    'currentSignatoryName' => $employee->name,
+                    'defaultReplacementId' => $defaultReplacement?->id,
+                    'defaultReplacementLabel' => $defaultReplacement
+                        ? "{$defaultReplacement->name} ({$defaultReplacement->employee_code})"
+                        : null,
+                ];
+            })->values(),
             'eligibleReplacements' => $eligibleReplacements,
         ]);
     }
 
     /**
      * Replaces the Clearance Signatory of record on `$checklistTemplate` —
-     * triggered from the "Assign To" button on a conflict card shown by
-     * `checkSignatoryConflicts()` above. Template-centric (not keyed on a
-     * single `OffboardingRequestApprover`) because a conflict can exist
-     * with NO currently-open instance at all — see
-     * `OffboardingRequestApprover::activeConflictsForEmployee()`'s own
-     * docblock for why both kinds of conflict matter.
-     *
-     * `offboarding_request_approver_id` (nullable): the specific open
-     * checklist instance this card represented, if any. Required when
-     * `assignment_type` is `temporary` — there's nothing instance-specific
-     * to temporarily patch otherwise. Optional for `permanent`.
+     * triggered from the single "Assign To" button on the one conflict card
+     * `checkSignatoryConflicts()` now shows per CHECKLIST (deduped — see
+     * that method's own docblock on why a conflicting employee can have
+     * several independently-open instances of the very same checklist at
+     * once, across several other people's requests). One click here
+     * resolves EVERY one of them in a single action, never just one at a
+     * time — that's the whole point of deduping the cards: an admin picks
+     * the new signatory for "IT Checklist" once, not once per other
+     * offboardee who happens to also have it open right now.
      *
      * `assignment_type`:
-     * - `temporary`: only the given `OffboardingRequestApprover` row
-     *   changes. The reusable `ChecklistTemplate` is left exactly as-is, so
-     *   every FUTURE offboarding request using it still gets the original
-     *   Department Head — matching `ChecklistTemplate.department_head_id`'s
-     *   existing semantics as the template's own frozen-at-attach-time
-     *   default (see `ChecklistApprovalNotifier::attachAndNotify()`).
-     * - `permanent`: updates `ChecklistTemplate.department_head_id`
-     *   directly, so every future request attaches to the new signatory
-     *   too — AND, if an open instance was also given, that instance's own
-     *   `employee_id` changes too, so the currently in-progress checklist
-     *   isn't left pointing at the departing employee either. Deliberately
-     *   written straight to the template's own column, never to
-     *   `EmployeeGroup.group_head_employee_id` — the group can be shared by
-     *   more than one template, and only THIS checklist's template should
-     *   change. Known, accepted limitation: if this same template is later
-     *   re-saved via the ordinary Edit Checklist Template form WITHOUT
-     *   changing its Employee Master Group, that form always re-derives
-     *   `department_head_id` fresh from the group's CURRENT head
-     *   (`ChecklistTemplateController::update()`) and will silently
-     *   overwrite this override — an existing behavior this change doesn't
-     *   touch, since altering it risks that unrelated, already-shipped
-     *   feature.
+     * - `temporary`: the reusable `ChecklistTemplate` itself, and every
+     *   already-open instance on another offboarding request, are left
+     *   exactly as-is — nothing server-side changes at all. In practice the
+     *   New Request modal's own "Temporary" button never even reaches this
+     *   endpoint (see `signatory-conflict-modal.blade.php`'s own
+     *   `submitAssignment()` — Temporary is a pure client-side choice,
+     *   recorded only into the form about to be submitted); this branch
+     *   exists purely as a defensive no-op should this endpoint ever be
+     *   called that way.
+     * - `permanent`: updates `ChecklistTemplate.department_head_id` so
+     *   every future request attaches to the new signatory too, AND every
+     *   CURRENTLY OPEN `OffboardingRequestApprover` instance of this exact
+     *   template still pointing at the departing employee (`expected_current_signatory_id`)
+     *   has its own `employee_id` moved to the replacement as well — not
+     *   just one pre-selected instance. Deliberately written straight to
+     *   the template's own column, never to `EmployeeGroup.group_head_employee_id`
+     *   — the group can be shared by more than one template, and only THIS
+     *   checklist's template should change. Known, accepted limitation: if
+     *   this same template is later re-saved via the ordinary Edit
+     *   Checklist Template form WITHOUT changing its Employee Master
+     *   Group, that form always re-derives `department_head_id` fresh from
+     *   the group's CURRENT head (`ChecklistTemplateController::update()`)
+     *   and will silently overwrite this override — an existing behavior
+     *   this change doesn't touch, since altering it risks that unrelated,
+     *   already-shipped feature.
      *
-     * Whenever an instance is involved, every active task-level
-     * `ChecklistItemAssignment` under it is cleared (superseded, never
-     * deleted) — unconditionally, including already-checked items. This is
-     * a deliberate departure from `reassignChecklist()`'s own "never touch
-     * a checked/held item" rule: there, the checklist's owner is unchanged
-     * and only day-to-day task work moves; here the owner themselves is
-     * being replaced because they're leaving, so every existing task
-     * assignment made under the OLD signatory's authority is cleared for
-     * the new one to re-delegate as they see fit. `ChecklistItemProgress`
-     * (completion/checked state) is a separate table with no assignee
-     * reference and is never touched by this method.
+     * Every active task-level `ChecklistItemAssignment` under each updated
+     * instance is cleared (superseded, never deleted) — unconditionally,
+     * including already-checked items. This is a deliberate departure from
+     * `reassignChecklist()`'s own "never touch a checked/held item" rule:
+     * there, the checklist's owner is unchanged and only day-to-day task
+     * work moves; here the owner themselves is being replaced because
+     * they're leaving, so every existing task assignment made under the
+     * OLD signatory's authority is cleared for the new one to re-delegate
+     * as they see fit. `ChecklistItemProgress` (completion/checked state)
+     * is a separate table with no assignee reference and is never touched.
+     *
+     * Also updates `ChecklistItem.signatory_id` — a SEPARATE, template-level
+     * per-item default assignee from `department_head_id` (configurable
+     * independently per item on the Checklist Template admin form) — for
+     * every item still pointing at the departing employee specifically,
+     * scoped to this one template. Without this, `effectiveSignatoryFor()`
+     * would fall straight back to that stale `signatory_id` the instant its
+     * `ChecklistItemAssignment` override is superseded above, silently
+     * leaving the departing employee as an item's effective signatory on an
+     * already-open, currently-active checklist. An item deliberately
+     * assigned to someone ELSE is never touched.
+     *
+     * Finally, `ChecklistApprovalNotifier::notifyReassignedSignatory()` is
+     * called once, after this method's own transaction commits, so every
+     * newly-reassigned signatory is actually told about their new
+     * responsibility (one email per affected open instance) — mirroring
+     * the same announcement a brand-new assignment already sends via
+     * `attachAndNotify()`/`notifyDepartmentHeadsOfNewRequest()`.
      */
     public function resolveSignatoryConflict(Request $request, ChecklistTemplate $checklistTemplate): JsonResponse
     {
@@ -374,22 +541,17 @@ class OffboardingRequestController extends Controller
             'replacement_employee_id' => ['required', 'integer', 'exists:employees,id'],
             'assignment_type' => ['required', Rule::in(['temporary', 'permanent'])],
             'expected_current_signatory_id' => ['required', 'integer', 'exists:employees,id'],
-            'offboarding_request_approver_id' => [
-                Rule::requiredIf(fn () => $request->input('assignment_type') === 'temporary'),
-                'nullable', 'integer', 'exists:offboarding_request_approvers,id',
-            ],
         ]);
 
         $replacementId = (int) $validated['replacement_employee_id'];
         $isPermanent = $validated['assignment_type'] === 'permanent';
-        $approverId = isset($validated['offboarding_request_approver_id']) ? (int) $validated['offboarding_request_approver_id'] : null;
         // Which employee the client believes is CURRENTLY the signatory on
         // this checklist — captured from the conflict card at the moment it
         // was rendered (see `checkSignatoryConflicts()`'s `currentSignatoryId`)
         // and round-tripped back here so a stale card (the conflict was
         // already resolved by someone else, in another tab, in the
         // meantime) can be positively detected inside the transaction below,
-        // rather than silently reassigning whoever the row happens to
+        // rather than silently reassigning whoever the rows happen to
         // belong to now.
         $expectedCurrentSignatoryId = (int) $validated['expected_current_signatory_id'];
 
@@ -401,7 +563,19 @@ class OffboardingRequestController extends Controller
 
         abort_unless($eligibleReplacementIds->contains($replacementId), 422, 'The selected employee is not an eligible Group Head.');
 
-        $result = DB::transaction(function () use ($checklistTemplate, $approverId, $replacementId, $isPermanent, $expectedCurrentSignatoryId, $request) {
+        if (! $isPermanent) {
+            // See this method's own docblock — the UI never actually
+            // reaches this branch, but a no-op "nothing to do" response
+            // keeps the endpoint well-defined if it ever is.
+            return response()->json([
+                'message' => 'No changes made.',
+                'templateId' => $checklistTemplate->id,
+                'affectedCount' => 0,
+                'newSignatoryName' => Employee::find($replacementId)?->name,
+            ]);
+        }
+
+        $result = DB::transaction(function () use ($checklistTemplate, $replacementId, $expectedCurrentSignatoryId, $request) {
             // Re-fetch and lock — the conflict shown to the client may be
             // stale (e.g. resolved a moment ago in another tab) by the time
             // this request actually runs.
@@ -411,74 +585,81 @@ class OffboardingRequestController extends Controller
                 return ['ok' => false, 'message' => 'This checklist is no longer active.'];
             }
 
-            $lockedApprover = null;
+            // Every currently-open (not yet approved, parent request still
+            // active) instance of this template still pointing at the
+            // expected departing employee — could be zero (a pure
+            // template-only self-conflict), one, or several at once (the
+            // exact scenario this whole redesign exists to fix in a single
+            // click instead of requiring one click per affected request).
+            $lockedApprovers = OffboardingRequestApprover::where('checklist_template_id', $lockedTemplate->id)
+                ->where('employee_id', $expectedCurrentSignatoryId)
+                ->where('status', '!=', 'approved')
+                ->whereHas('offboardingRequest', fn ($query) => $query->whereIn('status', ['pending', 'in_progress']))
+                ->with('offboardingRequest')
+                ->lockForUpdate()
+                ->get();
 
-            if ($approverId !== null) {
-                $lockedApprover = OffboardingRequestApprover::whereKey($approverId)->lockForUpdate()->first();
-
-                if (! $lockedApprover || $lockedApprover->checklist_template_id !== $lockedTemplate->id) {
-                    return ['ok' => false, 'message' => 'This checklist instance could not be found.'];
-                }
-
-                if ($lockedApprover->status === 'approved') {
-                    return ['ok' => false, 'message' => 'This checklist has already been actioned and can no longer be reassigned this way.'];
-                }
-
-                if ($lockedApprover->employee_id !== $expectedCurrentSignatoryId) {
-                    return ['ok' => false, 'message' => 'This checklist\'s Clearance Signatory has already changed since this page was loaded. Please refresh and try again.'];
-                }
-
-                $parentStatus = $lockedApprover->offboardingRequest?->status;
-
-                if (! in_array($parentStatus, ['pending', 'in_progress'], true)) {
-                    return ['ok' => false, 'message' => 'This offboarding request is no longer active.'];
-                }
-            } elseif ($lockedTemplate->department_head_id !== $expectedCurrentSignatoryId) {
-                // Template-only conflict (no open instance): the staleness
-                // check falls back to the template's own current signatory.
+            if ($lockedApprovers->isEmpty() && $lockedTemplate->department_head_id !== $expectedCurrentSignatoryId) {
+                // Nothing left to fix at all — every open instance already
+                // moved on and the template's own default no longer points
+                // at the expected employee either. The conflict shown to
+                // the client no longer exists.
                 return ['ok' => false, 'message' => 'This checklist\'s Clearance Signatory has already changed since this page was loaded. Please refresh and try again.'];
             }
 
-            $previousEmployeeId = $expectedCurrentSignatoryId;
+            $previousEmployee = Employee::find($expectedCurrentSignatoryId);
+            $replacementEmployee = Employee::find($replacementId);
+            $title = $lockedTemplate->title;
 
-            if ($lockedApprover) {
+            foreach ($lockedApprovers as $lockedApprover) {
                 $lockedApprover->update(['employee_id' => $replacementId]);
 
                 ChecklistItemAssignment::where('offboarding_request_approver_id', $lockedApprover->id)
                     ->where('status', 'active')
                     ->update(['status' => 'superseded', 'superseded_at' => now()]);
-            }
 
-            if ($isPermanent) {
-                $lockedTemplate->update(['department_head_id' => $replacementId]);
-            }
-
-            $previousEmployee = Employee::find($previousEmployeeId);
-            $replacementEmployee = Employee::find($replacementId);
-            $title = $lockedTemplate->title;
-            $typeLabel = $isPermanent ? 'Permanent' : 'Temporary';
-
-            if ($lockedApprover) {
                 $lockedApprover->offboardingRequest?->activities()->create([
                     'user_id' => $request->user()->id,
                     'offboarding_request_approver_id' => $lockedApprover->id,
                     'action' => 'clearance_signatory_replaced',
                     'status' => $lockedApprover->offboardingRequest->status,
-                    'comment' => "\"{$title}\" Clearance Signatory replaced ({$typeLabel}): {$previousEmployee?->name} \u{2192} {$replacementEmployee?->name}.",
+                    'comment' => "\"{$title}\" Clearance Signatory replaced (Permanent): {$previousEmployee?->name} \u{2192} {$replacementEmployee?->name}.",
                 ]);
             }
 
-            ActivityLog::record('clearance_signatory_replaced', 'Checklist', "\"{$title}\" Clearance Signatory replaced ({$typeLabel}) with {$replacementEmployee?->name}.", [
-                'subject_type' => $lockedApprover ? 'OffboardingRequestApprover' : 'ChecklistTemplate',
-                'subject_id' => $lockedApprover?->id ?? $lockedTemplate->id,
-                'old_values' => ['employee_id' => $previousEmployeeId],
-                'new_values' => ['employee_id' => $replacementId, 'assignment_type' => $isPermanent ? 'permanent' : 'temporary'],
+            $lockedTemplate->update(['department_head_id' => $replacementId]);
+
+            // The template's own per-item default signatories are a
+            // SEPARATE master-level setting from `department_head_id` (see
+            // `ChecklistItem.signatory_id`, configurable independently per
+            // item on the Checklist Template admin form) — and
+            // `effectiveSignatoryFor()` falls back to it the moment an
+            // item's per-request `ChecklistItemAssignment` override is gone
+            // (which the loop above just superseded for every affected
+            // approver). Left unfixed, any item still configured to the
+            // departing employee would silently remain their responsibility
+            // — on an ALREADY-OPEN, currently-active checklist, not just
+            // future ones. Scoped to exactly this template and exactly the
+            // departing employee, so an item deliberately assigned to
+            // someone ELSE is never touched.
+            $itemsUpdated = ChecklistItem::where('checklist_template_id', $lockedTemplate->id)
+                ->where('signatory_id', $expectedCurrentSignatoryId)
+                ->update(['signatory_id' => $replacementId]);
+
+            ActivityLog::record('clearance_signatory_replaced', 'Checklist', "\"{$title}\" Clearance Signatory replaced (Permanent) with {$replacementEmployee?->name}" . ($lockedApprovers->count() ? " (across {$lockedApprovers->count()} open offboarding request(s))" : '') . ($itemsUpdated ? ", {$itemsUpdated} checklist item default signatory(ies) updated to match" : '') . '.', [
+                'subject_type' => 'ChecklistTemplate',
+                'subject_id' => $lockedTemplate->id,
+                'old_values' => ['employee_id' => $expectedCurrentSignatoryId],
+                'new_values' => ['employee_id' => $replacementId, 'assignment_type' => 'permanent', 'affected_approver_ids' => $lockedApprovers->pluck('id')->all(), 'items_updated' => $itemsUpdated],
             ]);
 
             return [
                 'ok' => true,
-                'approverId' => $lockedApprover?->id,
+                'affectedCount' => $lockedApprovers->count(),
+                'itemsUpdated' => $itemsUpdated,
                 'newSignatoryName' => $replacementEmployee?->name,
+                'replacementEmployee' => $replacementEmployee,
+                'approvers' => $lockedApprovers,
             ];
         });
 
@@ -486,10 +667,21 @@ class OffboardingRequestController extends Controller
             return response()->json(['message' => $result['message']], 422);
         }
 
+        // Fired after the transaction has committed, never from inside it —
+        // this sends real emails over the network, and holding a DB
+        // transaction/row locks open for that would block other requests
+        // against these same rows for no reason (same convention `store()`'s
+        // own docblock documents for its notification step).
+        app(ChecklistApprovalNotifier::class)->notifyReassignedSignatory($result['approvers'], $result['replacementEmployee']);
+
+        $affectedSuffix = $result['affectedCount'] > 0
+            ? " ({$result['affectedCount']} open offboarding request(s) updated)"
+            : '';
+
         return response()->json([
-            'message' => "Clearance Signatory for \"{$checklistTemplate->title}\" reassigned to {$result['newSignatoryName']}.",
+            'message' => "Clearance Signatory for \"{$checklistTemplate->title}\" reassigned to {$result['newSignatoryName']}{$affectedSuffix}.",
             'templateId' => $checklistTemplate->id,
-            'approverId' => $result['approverId'],
+            'affectedCount' => $result['affectedCount'],
             'newSignatoryName' => $result['newSignatoryName'],
         ]);
     }
@@ -1115,6 +1307,27 @@ class OffboardingRequestController extends Controller
             // happen.
             app(ChecklistCompletionService::class)->checkRegularGeneralSignatoriesCompletion($offboardingRequest);
         }
+
+        // Eagerly fires every `event = 'creation'` schedule right now,
+        // rather than waiting for the next `app:send-email-template-schedules`
+        // tick — placed last since it depends on `approvers`/
+        // `generalSignatoryApprovals` rows that only exist once
+        // `attachAndNotify()`/`notifyGeneralSignatories()` above have run.
+        // Deliberately NOT every active schedule: Last Working
+        // Day/Clearance/Final Pay schedules still wait for the regular
+        // scheduler, exactly as today (none of those milestones are even
+        // knowable yet at this exact moment for Clearance/Final Pay, and
+        // LWD schedules have no reason to fire early). Known limitation —
+        // a creation-fired schedule whose own Active Checklist/General
+        // Signatory Selection targets a Secondary/Final-Pay tier resolves
+        // zero recipients here (those tiers aren't attached yet in Sync
+        // mode) and is still marked sent for this occurrence, same
+        // empty-recipients-still-marks-sent behavior every schedule type
+        // already has today — see `EmailTemplateScheduleDispatcher`'s own
+        // docblock. Queued rather than inline: the dispatcher sends
+        // synchronously (so its ledger reflects the real SMTP result),
+        // which must not block this HTTP request — see the job's docblock.
+        ProcessCreationEmailTemplateSchedules::dispatch($offboardingRequest->id);
     }
 
     /**
@@ -1203,7 +1416,18 @@ class OffboardingRequestController extends Controller
      * @param  array<int, array{template_id?: mixed, replacement_employee_id?: mixed}>  $rawOverrides
      * @return array<int, int>|RedirectResponse
      */
-    private function resolveTemporarySignatoryOverrides(array $rawOverrides, Employee $offboardee): array|RedirectResponse
+    /**
+     * Returns the resolved `[checklist_template_id => replacement_employee_id]`
+     * map on success, or a plain error MESSAGE string on failure — never a
+     * `RedirectResponse` itself, so both `store()` (which turns a string
+     * into `back()->withErrors(...)`) and `preview()` (which turns one into
+     * a JSON 422) can build their own appropriate response type from the
+     * same shared validation, instead of this method assuming one
+     * particular response shape.
+     *
+     * @return array<int, int>|string
+     */
+    private function resolveTemporarySignatoryOverrides(array $rawOverrides, Employee $offboardee): array|string
     {
         if (empty($rawOverrides)) {
             return [];
@@ -1224,9 +1448,7 @@ class OffboardingRequestController extends Controller
             }
 
             if ($replacementId === $offboardee->id || ! $eligibleReplacementIds->contains($replacementId)) {
-                return back()->withErrors([
-                    'temporary_signatory_overrides' => 'One of the selected replacement Clearance Signatories is no longer a valid, eligible Group Head. Please reselect it and try again.',
-                ])->withInput();
+                return 'One of the selected replacement Clearance Signatories is no longer a valid, eligible Group Head. Please reselect it and try again.';
             }
 
             $template = ChecklistTemplate::find($templateId);

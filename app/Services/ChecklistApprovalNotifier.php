@@ -3,7 +3,6 @@
 namespace App\Services;
 
 use App\Mail\ChecklistGroupApprovedMail;
-use App\Mail\ChecklistItemApproverAssignedMail;
 use App\Mail\ChecklistReadyForApprovalMail;
 use App\Mail\ChecklistSignatoryAnnouncementMail;
 use App\Models\ChecklistApprovalToken;
@@ -21,6 +20,7 @@ use App\Models\OffboardingRequestApprover;
 use App\Models\OffboardingRequestGeneralSignatory;
 use App\Models\User;
 use App\Notifications\ChecklistReadyForApprovalNotification;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
@@ -30,6 +30,9 @@ use Illuminate\Support\Str;
 
 class ChecklistApprovalNotifier
 {
+    public function __construct(private AutoLoginLinkService $autoLoginLinkService) {}
+
+
     /**
      * Fixed-name email template for the dedicated "a new offboarding
      * request needs your attention" notice sent to every Department Head —
@@ -102,6 +105,57 @@ class ChecklistApprovalNotifier
      *   matches "applies to this offboarding process only."
      * @return array<int, string> names of department heads actually emailed
      */
+
+    /**
+     * Resolves which employee WOULD be (or already is) this template's
+     * Clearance Signatory on `$offboardingRequest` — the exact same formula
+     * `attachAndNotify()`'s own loop uses, extracted as a pure, side-effect-
+     * free method so `OffboardingRequestPreviewService` can compute the
+     * identical answer for a not-yet-created request without writing
+     * anything. An Immediate Head checklist has no department head of its
+     * own — it's assigned exclusively to whichever Immediate Head is set on
+     * `$offboardingRequest` (frozen at creation time exactly like every
+     * other assignment). `$signatoryOverrides` is the same `[checklist_template_id
+     * => replacement_employee_id]` map `attachAndNotify()` itself takes —
+     * see its own docblock for what it represents.
+     *
+     * @param  array<int, int>  $signatoryOverrides
+     */
+    public function resolveChecklistSignatoryId(ChecklistTemplate $template, OffboardingRequest $offboardingRequest, array $signatoryOverrides = []): ?int
+    {
+        return $signatoryOverrides[$template->id]
+            ?? ($template->is_immediate_head_checklist
+                ? $offboardingRequest->immediate_head_id
+                : $template->department_head_id);
+    }
+
+    /**
+     * Computes the `due_at`/`clearance_signing_due_at` pair this template
+     * WOULD get (or already has) relative to `$lastWorkingDay` — the exact
+     * same formula `attachAndNotify()`'s own loop uses when it persists a
+     * new `OffboardingRequestApprover` row, extracted as a pure, side-
+     * effect-free method for the same reason as `resolveChecklistSignatoryId()`
+     * above (reused by `OffboardingRequestPreviewService`). A template with
+     * no `due_in_days` configured still gets a due date — it defaults to
+     * `$lastWorkingDay` itself (+0 days), never left blank. `clearance_signing_due_at`
+     * is purely additive: a template with no `clearance_signing_deadline_days`
+     * configured gets none at all (null), never defaulted to the Last
+     * Working Day the way `due_at` is.
+     *
+     * @return array{due_at: ?Carbon, clearance_signing_due_at: ?Carbon}
+     */
+    public function computeChecklistDueDates(ChecklistTemplate $template, ?Carbon $lastWorkingDay): array
+    {
+        return [
+            'due_at' => $lastWorkingDay
+                ? $lastWorkingDay->copy()->addDays($template->due_in_days ?? 0)->endOfDay()
+                : null,
+            'clearance_signing_due_at' => ($lastWorkingDay && $template->clearance_signing_deadline_days !== null)
+                ? $lastWorkingDay->copy()->addDays($template->clearance_signing_deadline_days)->endOfDay()
+                : null,
+        ];
+    }
+
     public function attachAndNotify(OffboardingRequest $offboardingRequest, Collection $templates, ?EmailTemplate $emailTemplate, string $creatorName = '', array $signatoryOverrides = []): array
     {
         if ($templates->isEmpty()) {
@@ -127,18 +181,7 @@ class ChecklistApprovalNotifier
         $newlyCreatedAccountEmployeeIds = [];
 
         foreach ($templates as $template) {
-            // An Immediate Head checklist has no department head of its own —
-            // it's assigned exclusively to whichever Immediate Head was
-            // picked on THIS specific offboarding request, frozen at
-            // creation time exactly like every other assignment here. If the
-            // request has no Immediate Head selected, the checklist stays
-            // attached (recorded above) but unassigned to anyone — same as
-            // today's behavior for a normal checklist with no department
-            // head configured.
-            $approverEmployeeId = $signatoryOverrides[$template->id]
-                ?? ($template->is_immediate_head_checklist
-                    ? $offboardingRequest->immediate_head_id
-                    : $template->department_head_id);
+            $approverEmployeeId = $this->resolveChecklistSignatoryId($template, $offboardingRequest, $signatoryOverrides);
 
             // A "Use Task Assignee as Clearance Signatory" checklist has NO
             // owner at all by design — its Task Assignees are themselves the
@@ -151,7 +194,7 @@ class ChecklistApprovalNotifier
                 continue;
             }
 
-            $dueAtBasisDate = $offboardingRequest->last_working_day;
+            $dueDates = $this->computeChecklistDueDates($template, $offboardingRequest->last_working_day);
 
             // A template with no `due_in_days` configured at all (several
             // fixed-name templates ship without one) still gets a due
@@ -173,9 +216,7 @@ class ChecklistApprovalNotifier
                     // would already read as overdue the instant its due
                     // date's calendar day BEGAN, a full day earlier than
                     // that label promises.
-                    'due_at' => $dueAtBasisDate
-                        ? $dueAtBasisDate->copy()->addDays($template->due_in_days ?? 0)->endOfDay()
-                        : null,
+                    'due_at' => $dueDates['due_at'],
                     // Clearance Signing Due Date — a separate, independent
                     // deadline from `due_at` above (see
                     // `ChecklistTemplate.clearance_signing_deadline_days`'s
@@ -184,9 +225,7 @@ class ChecklistApprovalNotifier
                     // Date at all (null) rather than defaulting to the Last
                     // Working Day itself — this field is purely additive,
                     // not something every checklist is assumed to need.
-                    'clearance_signing_due_at' => ($dueAtBasisDate && $template->clearance_signing_deadline_days !== null)
-                        ? $dueAtBasisDate->copy()->addDays($template->clearance_signing_deadline_days)->endOfDay()
-                        : null,
+                    'clearance_signing_due_at' => $dueDates['clearance_signing_due_at'],
                 ]
             );
 
@@ -213,12 +252,21 @@ class ChecklistApprovalNotifier
         }
 
         $offboardee = $offboardingRequest->employee;
-        $departmentHeads = $templates
-            ->map(fn (ChecklistTemplate $template) => $template->is_immediate_head_checklist
-                ? $offboardingRequest->immediateHead
-                : $template->departmentHead)
-            ->filter()
-            ->unique('id');
+        // Derived from `$assignmentByDepartmentHead`'s own keys — the
+        // actually-resolved approver id for each template (which already
+        // accounts for `$signatoryOverrides`) — rather than re-deriving via
+        // `$template->departmentHead`/`$offboardingRequest->immediateHead`.
+        // Those relations always resolve to the template's/request's live,
+        // UN-overridden default, so an overridden template would otherwise
+        // email the wrong (old) signatory here — exactly the bug
+        // `notifyDepartmentHeadsOfNewRequest()` below already guards
+        // against for this same batch; this keeps both in sync. Currently
+        // a defensive fix only: today's one call site that supplies
+        // `$signatoryOverrides` (`OffboardingRequestController::store()`)
+        // always passes a null `$emailTemplate`, which returns above before
+        // this code runs at all — but a future call site combining both
+        // must not silently misfire.
+        $departmentHeads = Employee::whereIn('id', array_keys($assignmentByDepartmentHead))->get();
         $notified = [];
 
         foreach ($departmentHeads as $approver) {
@@ -235,6 +283,10 @@ class ChecklistApprovalNotifier
                 $offboardee->employee_code,
                 $context['template']?->title,
                 $context['assignment']?->due_at?->format('M d, Y'),
+                // Signs this specific department head straight into their
+                // own session instead of the bare sign-in form — see
+                // AutoLoginLinkService's own docblock.
+                offboardingLinkUrl: $this->autoLoginLinkService->generate(User::findOrCreateApprover($approver)),
             );
 
             try {
@@ -374,6 +426,7 @@ class ChecklistApprovalNotifier
                 dateHired: $offboardee->date_of_joining?->format('M d, Y'),
                 separationDate: $offboardingRequest->last_working_day?->format('M d, Y'),
                 reason: ucfirst($offboardingRequest->reason),
+                offboardingLinkUrl: $this->autoLoginLinkService->generate(User::findOrCreateApprover($approver)),
             );
 
             try {
@@ -382,6 +435,90 @@ class ChecklistApprovalNotifier
                 Log::error('Failed to send offboarding request notification email.', [
                     'offboarding_request_id' => $offboardingRequest->id,
                     'recipient' => $approver->email,
+                    'exception' => $e->getMessage(),
+                ]);
+            }
+        }
+    }
+
+    /**
+     * Notifies an employee they've just become the Clearance Signatory of
+     * one or more ALREADY-OPEN checklist instances — the "Permanent"
+     * Clearance Signatory conflict resolution's own counterpart to the two
+     * methods above, for a live reassignment onto existing
+     * `OffboardingRequestApprover` rows rather than brand-new ones. Called
+     * by `OffboardingRequestController::resolveSignatoryConflict()` once,
+     * with every approver instance it just moved to `$newSignatory`, AFTER
+     * its own `DB::transaction()` has committed — never from inside it,
+     * matching every other "notifications fire outside the DB transaction"
+     * convention already used throughout this app (see
+     * `OffboardingRequestController::store()`'s own docblock).
+     *
+     * Takes the whole batch rather than one approver at a time because each
+     * one can belong to a DIFFERENT offboardee's own request (the exact
+     * scenario this whole feature exists for — one employee heading a
+     * checklist that's independently open on several other people's
+     * requests at once) — the shared "Offboarding Request Notification"
+     * template's own `offboardeeName`/`employeeNumber` placeholders are
+     * resolved per-approver, from that approver's own
+     * `offboardingRequest->employee`, not a single shared offboardee. One
+     * failed send never aborts the rest, same as every other send loop in
+     * this class.
+     *
+     * @param  Collection<int, OffboardingRequestApprover>  $approvers
+     */
+    public function notifyReassignedSignatory(Collection $approvers, Employee $newSignatory): void
+    {
+        if ($approvers->isEmpty()) {
+            return;
+        }
+
+        if (! $newSignatory->email || ! filter_var($newSignatory->email, FILTER_VALIDATE_EMAIL)) {
+            return;
+        }
+
+        $emailTemplate = EmailTemplate::where('is_active', true)
+            ->where('template_name', self::REQUEST_NOTIFICATION_TEMPLATE)
+            ->latest('updated_at')
+            ->first();
+
+        if (! $emailTemplate) {
+            Log::warning('No "'.self::REQUEST_NOTIFICATION_TEMPLATE.'" email template found — a reassigned Clearance Signatory was not notified.', [
+                'approver_ids' => $approvers->pluck('id')->all(),
+            ]);
+
+            return;
+        }
+
+        foreach ($approvers as $approver) {
+            $approver->loadMissing('offboardingRequest.employee', 'checklistTemplate');
+            $offboardingRequest = $approver->offboardingRequest;
+            $offboardee = $offboardingRequest?->employee;
+
+            if (! $offboardee) {
+                continue;
+            }
+
+            [$subject, $body] = $emailTemplate->render(
+                approverName: $newSignatory->name,
+                offboardeeName: $offboardee->name,
+                employeeNumber: $offboardee->employee_code,
+                checklistName: $approver->checklistTemplate?->title,
+                dueDate: $approver->due_at?->format('M d, Y'),
+                department: $offboardee->department,
+                position: $offboardee->designation,
+                dateHired: $offboardee->date_of_joining?->format('M d, Y'),
+                separationDate: $offboardingRequest->last_working_day?->format('M d, Y'),
+                reason: $offboardingRequest->reason ? ucfirst($offboardingRequest->reason) : null,
+                offboardingLinkUrl: $this->autoLoginLinkService->generate(User::findOrCreateApprover($newSignatory)),
+            );
+
+            try {
+                Mail::to($newSignatory->email)->cc($emailTemplate->ccRecipientEmails($newSignatory->email))->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
+            } catch (\Throwable $e) {
+                Log::error('Failed to send reassigned Clearance Signatory notification email.', [
+                    'offboarding_request_approver_id' => $approver->id,
+                    'recipient' => $newSignatory->email,
                     'exception' => $e->getMessage(),
                 ]);
             }
@@ -442,12 +579,12 @@ class ChecklistApprovalNotifier
             username: $isNewAccount ? $employeeUser->username : null,
             temporaryPassword: $isNewAccount ? $temporaryPassword : null,
             checklistSummary: $this->buildChecklistSummaryHtml($offboardingRequest->approvers),
-            // Only for a brand-new account — a returning employee's real,
-            // self-chosen password isn't known to the system, so there's
-            // nothing safe to pre-fill for them; they get the plain,
-            // generic sign-in link instead (the default when this is
-            // null). See `AuthController::autoFill()`.
-            offboardingLinkUrl: $isNewAccount ? route('login.auto-fill', $employeeUser->username) : null,
+            // Signs the offboardee straight into their own session — for
+            // either a brand-new OR a returning account, unlike the old
+            // `login.auto-fill` link this replaces, which only pre-filled
+            // credentials for a new account and still required typing them
+            // in manually either way.
+            offboardingLinkUrl: $this->autoLoginLinkService->generate($employeeUser),
         );
 
         try {
@@ -539,6 +676,25 @@ class ChecklistApprovalNotifier
      *
      * @param  Collection<int, GeneralSignatory>  $generalSignatories
      */
+
+    /**
+     * Computes the `due_at` this General Signatory tier WOULD get (or
+     * already has) relative to `$lastWorkingDay` — the exact same formula
+     * `notifyGeneralSignatories()`'s own loop uses when it persists a new
+     * `OffboardingRequestGeneralSignatory` row, extracted as a pure, side-
+     * effect-free method for the same reason as `resolveChecklistSignatoryId()`/
+     * `computeChecklistDueDates()` above (reused by
+     * `OffboardingRequestPreviewService`). Unlike a checklist, there's only
+     * ever this one due date — no separate Clearance Signing Due Date
+     * field for a General Signatory.
+     */
+    public function computeGeneralSignatoryDueAt(GeneralSignatory $generalSignatory, ?Carbon $lastWorkingDay): ?Carbon
+    {
+        return $generalSignatory->due_in_days !== null
+            ? $lastWorkingDay?->copy()->addDays($generalSignatory->due_in_days)->endOfDay()
+            : null;
+    }
+
     public function notifyGeneralSignatories(OffboardingRequest $offboardingRequest, Collection $generalSignatories): void
     {
         if ($generalSignatories->isEmpty()) {
@@ -562,9 +718,7 @@ class ChecklistApprovalNotifier
                     // `clearance_signing_due_at` above. Null (no deadline
                     // shown) when this General Signatory has none
                     // configured, same "purely additive" convention.
-                    'due_at' => $generalSignatory->due_in_days !== null
-                        ? $offboardingRequest->last_working_day->copy()->addDays($generalSignatory->due_in_days)->endOfDay()
-                        : null,
+                    'due_at' => $this->computeGeneralSignatoryDueAt($generalSignatory, $offboardingRequest->last_working_day),
                 ]
             );
         }
@@ -595,7 +749,7 @@ class ChecklistApprovalNotifier
                 ->whereHas('employees', fn ($q) => $q->where('status', 'active'))
                 ->exists();
 
-            User::findOrCreateGeneralSignatory($clearanceSignatory, $hasActiveGroupMembers);
+            $clearanceSignatoryUser = User::findOrCreateGeneralSignatory($clearanceSignatory, $hasActiveGroupMembers);
 
             if (! $emailTemplate || ! $clearanceSignatory->email || ! filter_var($clearanceSignatory->email, FILTER_VALIDATE_EMAIL)) {
                 continue;
@@ -624,6 +778,11 @@ class ChecklistApprovalNotifier
                 approveButton: $assignment && $assignment->status === 'pending'
                     ? $this->buildApproveButtonHtml($this->createGeneralSignatoryApprovalUrl($assignment))
                     : '',
+                // Separate from the one-click Approve button above — that
+                // one acts on just this assignment without ever logging
+                // anyone in; this signs the General Signatory into their
+                // own real session, for everything else they need to do.
+                offboardingLinkUrl: $this->autoLoginLinkService->generate($clearanceSignatoryUser),
             );
 
             try {
@@ -672,6 +831,11 @@ class ChecklistApprovalNotifier
         $offboardingRequest = $assignment->offboardingRequest;
         $offboardee = $offboardingRequest->employee;
 
+        // The account already exists by the time a RESEND happens (the
+        // original `notifyGeneralSignatories()` send already provisioned
+        // it) — a plain lookup, never a create, here.
+        $clearanceSignatoryUser = User::firstWhere('username', $clearanceSignatory->employee_code_digits);
+
         [$subject, $body] = $emailTemplate->render(
             approverName: $clearanceSignatory->name,
             offboardeeName: $offboardee->name,
@@ -685,6 +849,7 @@ class ChecklistApprovalNotifier
             approveButton: $assignment->status === 'pending'
                 ? $this->buildApproveButtonHtml($this->createGeneralSignatoryApprovalUrl($assignment))
                 : '',
+            offboardingLinkUrl: $clearanceSignatoryUser ? $this->autoLoginLinkService->generate($clearanceSignatoryUser) : null,
         );
 
         Mail::to($clearanceSignatory->email)->cc($emailTemplate->ccRecipientEmails($clearanceSignatory->email))->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
@@ -831,6 +996,7 @@ class ChecklistApprovalNotifier
             checklistProgress: "{$completedCount} of {$items->count()} items completed",
             remainingItems: $this->buildRemainingItemsHtml($assignment, $items, $progressByItemId),
             followUpSentAt: $followUp->sent_at->format('M d, Y g:i A'),
+            offboardingLinkUrl: $this->autoLoginLinkService->generate($recipient),
         );
 
         try {
@@ -903,9 +1069,33 @@ class ChecklistApprovalNotifier
      *      already existed before this whole attach operation began, and
      *      its credentials would never make it into the email.
      */
+    /**
+     * Fixed-name email template for the "you've been assigned checklist
+     * item(s)" notice sent to a Task Assignee — see `notifyItemApprovers()`
+     * below. Used by this class' own single call site; the 3 analogous
+     * sends in `ChecklistDelegationController` keep their own identical
+     * constant, matching that class' established per-class fixed-name
+     * template convention (see its own `HEAD_APPROVAL_TEMPLATE`) rather
+     * than sharing one constant across classes.
+     */
+    private const ITEM_ASSIGNED_TEMPLATE = 'Offboarding Checklist Assigned to You';
+
     private function notifyItemApprovers(OffboardingRequest $offboardingRequest, Collection $templates, array $assignmentByTemplateId = [], array $newlyCreatedAccountEmployeeIds = []): void
     {
         $offboardee = $offboardingRequest->employee;
+
+        $emailTemplate = EmailTemplate::where('is_active', true)
+            ->where('template_name', self::ITEM_ASSIGNED_TEMPLATE)
+            ->latest('updated_at')
+            ->first();
+
+        if (! $emailTemplate) {
+            Log::warning('No "'.self::ITEM_ASSIGNED_TEMPLATE.'" email template found — assigned Task Assignees were not emailed.', [
+                'offboarding_request_id' => $offboardingRequest->id,
+            ]);
+
+            return;
+        }
 
         /** @var array<int, array{employee: Employee, items: array<int, array{checklistTitle: string, itemTitle: string, dueAt: ?string}>}> $byApprover */
         $byApprover = [];
@@ -968,15 +1158,18 @@ class ChecklistApprovalNotifier
                 continue;
             }
 
+            [$subject, $body] = $emailTemplate->render(
+                approverName: $employee->name,
+                offboardeeName: $offboardee->name,
+                employeeNumber: $offboardee->employee_code,
+                checklistSummary: $this->buildAssignedItemsSummaryHtml($items),
+                username: $credentials['username'] ?? null,
+                temporaryPassword: $credentials['password'] ?? null,
+                offboardingLinkUrl: $this->autoLoginLinkService->generate($user),
+            );
+
             try {
-                Mail::to($employee->email)->send(new ChecklistItemApproverAssignedMail(
-                    approverName: $employee->name,
-                    offboardeeName: $offboardee->name,
-                    offboardeeEmployeeCode: $offboardee->employee_code,
-                    assignedItems: $items,
-                    approvalUrl: route('approvals.index'),
-                    credentials: $credentials,
-                ));
+                Mail::to($employee->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
             } catch (\Throwable $e) {
                 Log::error('Failed to send checklist item approver assignment email.', [
                     'offboarding_request_id' => $offboardingRequest->id,
@@ -985,6 +1178,38 @@ class ChecklistApprovalNotifier
                 ]);
             }
         }
+    }
+
+    /**
+     * An HTML table of exactly the items THIS recipient was assigned —
+     * Checklist / Checklist Item / Due Date — filling `{{checklist_summary}}`
+     * for the "Offboarding Checklist Assigned to You" template. Same
+     * inline-style convention as `buildChecklistSummaryHtml()` above and
+     * `OffboardingRequestApprover::itemsStatusTableHtml()`, each its own
+     * small, purpose-specific builder rather than one shared cross-class
+     * utility — this app's own established pattern for these near-identical
+     * tables.
+     *
+     * @param  array<int, array{checklistTitle: string, itemTitle: string, dueAt: ?string}>  $items
+     */
+    private function buildAssignedItemsSummaryHtml(array $items): string
+    {
+        $rows = collect($items)->map(function (array $item) {
+            return '<tr>'
+                .'<td style="padding:6px 10px;border:1px solid #e5e7eb;">'.e($item['checklistTitle']).'</td>'
+                .'<td style="padding:6px 10px;border:1px solid #e5e7eb;">'.e($item['itemTitle']).'</td>'
+                .'<td style="padding:6px 10px;border:1px solid #e5e7eb;">'.e($item['dueAt'] ?? '—').'</td>'
+                .'</tr>';
+        })->implode('');
+
+        return '<table style="width:100%;border-collapse:collapse;font-size:13px;">'
+            .'<tr>'
+            .'<th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:left;background:#f3f4f6;">Checklist</th>'
+            .'<th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:left;background:#f3f4f6;">Checklist Item</th>'
+            .'<th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:left;background:#f3f4f6;">Due Date</th>'
+            .'</tr>'
+            .$rows
+            .'</table>';
     }
 
     /**
@@ -1061,7 +1286,15 @@ class ChecklistApprovalNotifier
                 offboardeeName: $offboardee->name,
                 offboardeeEmployeeCode: $offboardee->employee_code,
                 checklists: $checklists,
-                approvalUrl: route('approvals.index'),
+                // Separate from `approveUrl` below (the existing one-click
+                // token-based action link, untouched) — this one is the
+                // plain "go look at your queue" link, now signing them in
+                // automatically instead of landing on the sign-in form.
+                // Falls back to the bare route only in the unlikely case
+                // this department head has no account yet at all.
+                approvalUrl: $departmentHead->user
+                    ? $this->autoLoginLinkService->generate($departmentHead->user)
+                    : route('approvals.index'),
                 approveUrl: route('approval.show', ['id' => $approvalToken->id, 'token' => $rawApprovalToken]),
             ));
         } catch (\Throwable $e) {

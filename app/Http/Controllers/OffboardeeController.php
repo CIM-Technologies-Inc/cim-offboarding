@@ -188,6 +188,17 @@ class OffboardeeController extends Controller
             'cancelOffboardingUrl' => $offboardingRequest
                 ? route('offboarding-requests.cancel', $offboardingRequest)
                 : null,
+            // Scheduled Email Notifications tab — same "generate the URL
+            // unconditionally, gate the button in the view" convention as
+            // every other action URL here. The route independently
+            // re-enforces both the `offboarding-requests.view-scheduled-notifications`
+            // permission and the request's own `isEligibleForScheduledEmailNotifications()`
+            // server-side, so exposing this URL to everyone here is never
+            // itself a privilege escalation — see
+            // `OffboardingRequestController::scheduledEmailNotifications()`.
+            'scheduledEmailNotificationsUrl' => $offboardingRequest
+                ? route('offboarding-requests.scheduled-email-notifications', $offboardingRequest)
+                : null,
             // Retraction history — read-only, shown only for a retracted
             // (`status === 'cancelled'`) request, in the space the Retract/
             // Extend buttons would otherwise occupy (see the card partial).
@@ -218,6 +229,16 @@ class OffboardeeController extends Controller
             // calls, so the button and the server can never disagree.
             'canRetractOffboarding' => ($offboardingRequest?->isBeforeLastWorkingDay() ?? false)
                 && ! ($offboardingRequest?->hasAnyApprovedChecklist() ?? false),
+            // Gates the new "Scheduled Email Notifications" tab's visibility
+            // — combines the permission check (so the tab button itself
+            // never renders for a user who lacks it, on top of the route's
+            // own middleware re-enforcing it) with the request's own
+            // `isEligibleForScheduledEmailNotifications()` (hidden once
+            // completed, finally approved, or retracted — see that
+            // method's own docblock). The two can never disagree with the
+            // backend's own guard since both read the exact same method.
+            'canViewScheduledEmailNotifications' => ($offboardingRequest?->isEligibleForScheduledEmailNotifications() ?? false)
+                && (auth()->user()?->can('offboarding-requests.view-scheduled-notifications') ?? false),
             // Extend Due (bulk, the ONLY Extend Due entry point — there is
             // no more per-checklist button) — same "generate the URL
             // unconditionally, gate the button in the view" convention as

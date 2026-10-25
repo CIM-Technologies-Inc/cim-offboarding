@@ -21,6 +21,8 @@ class EmailTemplateScheduleSend extends Model
         'email_sent_at',
         'system_sent_at',
         'failure_reason',
+        'recipient_log',
+        'attempts',
     ];
 
     protected function casts(): array
@@ -29,6 +31,8 @@ class EmailTemplateScheduleSend extends Model
             'scheduled_for' => 'date',
             'email_sent_at' => 'datetime',
             'system_sent_at' => 'datetime',
+            'recipient_log' => 'array',
+            'attempts' => 'integer',
         ];
     }
 

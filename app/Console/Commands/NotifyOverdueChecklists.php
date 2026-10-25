@@ -7,6 +7,7 @@ use App\Models\EmailTemplate;
 use App\Models\OffboardingRequestApprover;
 use App\Models\User;
 use App\Notifications\ChecklistOverdueNotification;
+use App\Services\AutoLoginLinkService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
@@ -149,6 +150,7 @@ class NotifyOverdueChecklists extends Command
         }
 
         $offboardee = $assignment->offboardingRequest->employee;
+        $departmentHeadUser = User::firstWhere('username', $departmentHead->employee_code_digits);
 
         [$subject, $body] = $emailTemplate->render(
             approverName: $departmentHead->name,
@@ -161,6 +163,7 @@ class NotifyOverdueChecklists extends Command
             daysOverdue: (string) $assignment->daysOverdue(),
             pendingItems: $assignment->itemsStatusTableHtml(),
             checklistStatus: $assignment->clearanceStatusLabel(),
+            offboardingLinkUrl: $departmentHeadUser ? app(AutoLoginLinkService::class)->generate($departmentHeadUser) : null,
         );
 
         try {

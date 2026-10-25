@@ -31,6 +31,7 @@ use App\Http\Controllers\SeparationTypeController;
 use App\Http\Controllers\LogController;
 use App\Http\Controllers\SmtpSettingController;
 use App\Http\Controllers\ImpersonationController;
+use App\Http\Controllers\AutoLoginController;
 
 // authentication pages
 Route::get('/signin', [AuthController::class, 'create'])->name('login');
@@ -85,6 +86,17 @@ Route::middleware('throttle:10,1')->group(function () {
     // Approval Request email — see FinalApprovalController's docblock.
     Route::get('/final-approval/{id}/{token}', [FinalApprovalController::class, 'showEmailApproval'])->name('final-approval.show');
     Route::post('/final-approval/{id}/{token}', [FinalApprovalController::class, 'confirmEmailApproval'])->name('final-approval.confirm');
+
+    // The general "log me in automatically" link embedded in offboarding
+    // emails that previously pointed straight at the sign-in form (the
+    // "{{offboarding_link}}" placeholder and the item-approver-assignment
+    // email's own link) — see AutoLoginController's docblock for how this
+    // differs from the three token families above (those act on one
+    // specific record via the token alone; this one establishes a real
+    // authenticated session). Same GET-show/POST-confirm shape, same
+    // throttle, for the same reasons.
+    Route::get('/auto-login/{id}/{token}', [AutoLoginController::class, 'show'])->name('auto-login.show');
+    Route::post('/auto-login/{id}/{token}', [AutoLoginController::class, 'confirm'])->name('auto-login.confirm');
 });
 
 Route::middleware(['auth', 'password.changed', 'account.active', 'no-cache'])->group(function () {
@@ -220,6 +232,11 @@ Route::middleware('permission:dashboard.view')->group(function () {
 // viewing).
 Route::middleware('permission:offboarding-requests.create')->group(function () {
     Route::post('/offboarding-requests', [OffboardingRequestController::class, 'store'])->name('offboarding-requests.store');
+    // Read-only "Review Offboarding Request" computation — called via
+    // fetch() when the admin clicks "Review Request", before anything is
+    // actually submitted. Same permission gate as `store()` itself, since
+    // it's the same form just not yet confirmed.
+    Route::post('/offboarding-requests/preview', [OffboardingRequestController::class, 'preview'])->name('offboarding-requests.preview');
     // Checked live (via fetch()) by the New Offboarding Request form the
     // moment an employee is selected, and resolved from the card it
     // renders — see `OffboardingRequestController::checkSignatoryConflicts()`/
@@ -387,6 +404,16 @@ Route::middleware('permission:offboarding-requests.reset')->group(function () {
 // dedicated permission, same reasoning as the reset action above.
 Route::middleware('permission:offboarding-requests.cancel')->group(function () {
     Route::post('/offboarding-requests/{offboardingRequest}/cancel', [OffboardingRequestController::class, 'cancel'])->name('offboarding-requests.cancel');
+});
+
+// Scheduled Email Notifications tab (Offboardee detail view) — read-only,
+// its own dedicated permission so it can be granted/revoked independently
+// of "offboardees.view". The controller action ALSO re-checks the
+// request's own `isEligibleForScheduledEmailNotifications()` regardless of
+// this permission, so a completed/finally-approved/retracted request's
+// notification data stays unreachable even for an authorized user.
+Route::middleware('permission:offboarding-requests.view-scheduled-notifications')->group(function () {
+    Route::get('/offboarding-requests/{offboardingRequest}/scheduled-email-notifications', [OffboardingRequestController::class, 'scheduledEmailNotifications'])->name('offboarding-requests.scheduled-email-notifications');
 });
 
 // Final Approval (Offboardee page) — emails the active Final Signatory to

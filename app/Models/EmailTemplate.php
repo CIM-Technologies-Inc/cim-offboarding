@@ -38,6 +38,7 @@ class EmailTemplate extends Model
         'Offboarding Request Cancelled',
         'Checklist Signatory Declined',
         'User Account Reactivation Notification',
+        'Offboarding Checklist Assigned to You',
     ];
 
     protected $fillable = [
@@ -70,9 +71,16 @@ class EmailTemplate extends Model
      * (and additive to) this template's own hardcoded system trigger, if it
      * has one — see `isSystemDefault()`.
      */
+    /**
+     * Ordered by `id` (creation order), never by computed day-offset — a
+     * newly-added schedule must always append at the end of the timeline,
+     * regardless of what day count it was configured with. See
+     * `workspace.blade.php`'s own `schedules` array, seeded straight from
+     * this relation.
+     */
     public function schedules(): HasMany
     {
-        return $this->hasMany(EmailTemplateSchedule::class);
+        return $this->hasMany(EmailTemplateSchedule::class)->orderBy('id');
     }
 
     /**
@@ -119,6 +127,38 @@ class EmailTemplate extends Model
             ->map(fn (string $email) => strtolower(trim($email)))
             ->unique()
             ->reject(fn (string $email) => $exclude && $email === $exclude)
+            ->values()
+            ->all();
+    }
+
+    /**
+     * Same CC list as `ccRecipientEmails()` above (individually-selected
+     * employees plus every current member of every selected group), but
+     * returning each employee's NAME instead of their email — for
+     * display-only contexts (e.g. the New Offboarding Request review
+     * screen) where showing an email address is less useful to an admin
+     * than showing who it belongs to. Sending still uses
+     * `ccRecipientEmails()`; this never touches `->cc()`.
+     *
+     * Deduped by employee id (an employee picked individually AND via a
+     * group is only listed once), NOT by email like `ccRecipientEmails()`
+     * is — that method collapses same-email recipients into one because
+     * an inbox only needs one copy of a sent email, but here every
+     * configured recipient is a distinct person the admin deliberately
+     * added and should be named, even if two employees happen to share an
+     * email address (e.g. placeholder data).
+     *
+     * @return array<int, string>
+     */
+    public function ccRecipientNames(?string $excludePrimaryEmail = null): array
+    {
+        $exclude = $excludePrimaryEmail ? strtolower(trim($excludePrimaryEmail)) : null;
+
+        return $this->recipientEmployees
+            ->merge($this->recipientGroups->flatMap(fn (EmployeeGroup $group) => $group->employees))
+            ->unique('id')
+            ->reject(fn (Employee $employee) => $exclude && $employee->email && strtolower(trim($employee->email)) === $exclude)
+            ->map(fn (Employee $employee) => $employee->name)
             ->values()
             ->all();
     }

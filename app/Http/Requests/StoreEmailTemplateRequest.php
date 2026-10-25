@@ -2,6 +2,9 @@
 
 namespace App\Http\Requests;
 
+use App\Models\EmailTemplate;
+use App\Rules\DistinctEmailTemplateSchedule;
+use App\Rules\ValidEmailTemplateScheduleTiming;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -15,7 +18,13 @@ class StoreEmailTemplateRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'template_name' => ['required', 'string', 'max:255'],
+            // A brand-new template can never legitimately reuse one of the
+            // app's reserved system names — those already exist as seeded
+            // rows, edited (not duplicated) via the existing template cards.
+            // Allowing a duplicate here would let a second, "Customizable"-
+            // labeled row with the same name silently compete for the same
+            // hardcoded `where('template_name', ...)` lookup elsewhere.
+            'template_name' => ['required', 'string', 'max:255', Rule::notIn(EmailTemplate::SYSTEM_TEMPLATE_NAMES)],
             'subject' => ['required', 'string', 'max:255'],
             'html_content' => ['nullable', 'string'],
             'is_default_announcement' => ['boolean'],
@@ -28,10 +37,26 @@ class StoreEmailTemplateRequest extends FormRequest
             // Email Notification Schedule Timeline — see `EmailTemplateSchedule`.
             'schedules' => ['nullable', 'array'],
             'schedules.*.id' => ['nullable', 'integer'],
-            'schedules.*.timing' => ['required_with:schedules', Rule::in(['before', 'after'])],
-            'schedules.*.days' => ['required_with:schedules', 'integer', 'min:0'],
+            'schedules.*.event' => ['required_with:schedules', Rule::in(['creation', 'last_working_day', 'clearance', 'final_pay'])],
+            'schedules.*.timing' => ['required_with:schedules', Rule::in(['before', 'after']), new ValidEmailTemplateScheduleTiming],
+            'schedules.*.days' => ['required_with:schedules', 'integer', 'min:0', new DistinctEmailTemplateSchedule],
+            // Only meaningful (and only persisted — see
+            // `EmailTemplateController::syncSchedules()`) when
+            // `event === 'clearance'`; still structurally validated
+            // whenever present so a tampered/stray value can't sneak in.
+            'schedules.*.clearance_signing_deadline_days' => ['nullable', 'integer', 'min:0'],
             'schedules.*.channel' => ['required_with:schedules', Rule::in(['email', 'system', 'email_and_system'])],
             'schedules.*._destroy' => ['nullable', 'boolean'],
+            // "Active Checklist Selection" / "Active General Signatory
+            // Selection" — per schedule. Empty/omitted means no selection
+            // (defaults to every checklist/General Signatory actually
+            // attached to each eligible request — see
+            // `SendEmailTemplateSchedules::resolveRecipients()`), never "no
+            // recipients at all".
+            'schedules.*.checklist_template_ids' => ['nullable', 'array'],
+            'schedules.*.checklist_template_ids.*' => ['integer', 'exists:checklist_templates,id'],
+            'schedules.*.general_signatory_ids' => ['nullable', 'array'],
+            'schedules.*.general_signatory_ids.*' => ['integer', 'exists:general_signatories,id'],
         ];
     }
 
@@ -41,5 +66,12 @@ class StoreEmailTemplateRequest extends FormRequest
             'is_default_announcement' => $this->boolean('is_default_announcement'),
             'is_default_reactivation' => $this->boolean('is_default_reactivation'),
         ]);
+    }
+
+    public function messages(): array
+    {
+        return [
+            'template_name.not_in' => 'That name is reserved for a Default System template and cannot be used here.',
+        ];
     }
 }

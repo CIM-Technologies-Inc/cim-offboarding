@@ -335,6 +335,29 @@ class OffboardingRequest extends Model
     }
 
     /**
+     * Whether the "Scheduled Email Notifications" tab (Offboardee request
+     * detail view) should be available for this request — true only while
+     * it's still actively processing. Deliberately NOT based on
+     * `displayStatus()` (the UI-facing label, which adds synthetic
+     * `overdue`/`in_progress` states on top of the raw column): a
+     * completed request, a retracted/cancelled request (`isReadOnly()`),
+     * and a request whose Final Approval has already been signed off
+     * (`finalApproval()->status === 'approved'`, which can happen BEFORE
+     * the main `status` column ever flips to `completed`) must all hide the
+     * tab. Used both as the backend's own enforcement (`OffboardingRequestController::
+     * scheduledEmailNotifications()`) and, via a flag computed from this
+     * same method, the UI's visibility switch — so the two can never
+     * disagree, same pattern `hasAnyApprovedChecklist()` above uses for the
+     * Retract button.
+     */
+    public function isEligibleForScheduledEmailNotifications(): bool
+    {
+        return ! $this->isReadOnly()
+            && $this->status !== 'completed'
+            && $this->finalApproval?->status !== 'approved';
+    }
+
+    /**
      * Per-request approval state for each attached General Signatory — the
      * General Signatory equivalent of `approvers()`. Backed by the very same
      * `offboarding_request_general_signatories` row `generalSignatories()`

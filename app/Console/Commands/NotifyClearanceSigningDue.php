@@ -6,7 +6,9 @@ use App\Mail\ChecklistSignatoryAnnouncementMail;
 use App\Models\EmailTemplate;
 use App\Models\OffboardingRequestApprover;
 use App\Models\OffboardingRequestGeneralSignatory;
+use App\Models\User;
 use App\Notifications\ClearanceSigningDueNotification;
+use App\Services\AutoLoginLinkService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
@@ -171,6 +173,8 @@ class NotifyClearanceSigningDue extends Command
             return;
         }
 
+        $signatoryUser = User::firstWhere('username', $signatory->employee_code_digits);
+
         [$subject, $body] = $emailTemplate->render(
             approverName: $signatory->name,
             offboardeeName: $offboardee->name,
@@ -179,6 +183,7 @@ class NotifyClearanceSigningDue extends Command
             dueDate: $dueAt,
             department: $offboardee->department,
             position: $offboardee->designation,
+            offboardingLinkUrl: $signatoryUser ? app(AutoLoginLinkService::class)->generate($signatoryUser) : null,
         );
 
         try {

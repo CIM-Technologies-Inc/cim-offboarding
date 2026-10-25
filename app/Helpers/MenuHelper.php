@@ -53,42 +53,6 @@ class MenuHelper
                 ],
             ],
             [
-                'icon' => 'calendar',
-                'name' => 'Scheduling',
-                'items' => [
-                    [
-                        'icon' => 'calendar',
-                        'name' => 'Calendar',
-                        'path' => '/calendar',
-                        'permission' => 'calendar.view',
-                    ],
-                ],
-            ],
-            [
-                'icon' => 'authentication',
-                'name' => 'User & Access Management',
-                'items' => [
-                    [
-                        'icon' => 'user-profile',
-                        'name' => 'User Profile',
-                        'path' => '/profile',
-                        'roles' => ['admin', 'approver', 'employee'],
-                    ],
-                    [
-                        'icon' => 'tables',
-                        'name' => 'Users',
-                        'path' => '/users',
-                        'permission' => 'users.view',
-                    ],
-                    [
-                        'icon' => 'authentication',
-                        'name' => 'Roles & Permissions',
-                        'path' => '/roles-permissions',
-                        'permission' => 'roles.view',
-                    ],
-                ],
-            ],
-            [
                 'icon' => 'offboardee',
                 'name' => 'Employee Management',
                 'items' => [
@@ -119,6 +83,18 @@ class MenuHelper
                 ],
             ],
             [
+                'icon' => 'calendar',
+                'name' => 'Scheduling',
+                'items' => [
+                    [
+                        'icon' => 'calendar',
+                        'name' => 'Calendar',
+                        'path' => '/calendar',
+                        'permission' => 'calendar.view',
+                    ],
+                ],
+            ],
+            [
                 'icon' => 'settings',
                 'name' => 'System Administration',
                 'items' => [
@@ -139,6 +115,30 @@ class MenuHelper
                         'name' => 'Mail Settings',
                         'path' => '/smtp-settings',
                         'permission' => 'smtp-settings.view',
+                    ],
+                ],
+            ],
+            [
+                'icon' => 'authentication',
+                'name' => 'User & Access Management',
+                'items' => [
+                    [
+                        'icon' => 'user-profile',
+                        'name' => 'User Profile',
+                        'path' => '/profile',
+                        'roles' => ['admin', 'approver', 'employee'],
+                    ],
+                    [
+                        'icon' => 'tables',
+                        'name' => 'Users',
+                        'path' => '/users',
+                        'permission' => 'users.view',
+                    ],
+                    [
+                        'icon' => 'authentication',
+                        'name' => 'Roles & Permissions',
+                        'path' => '/roles-permissions',
+                        'permission' => 'roles.view',
                     ],
                 ],
             ],

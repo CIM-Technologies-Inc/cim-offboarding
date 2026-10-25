@@ -41,28 +41,33 @@
         },
         // Permanent and Temporary are fundamentally different operations,
         // not two branches of the same POST:
-        // - Permanent still calls `resolveSignatoryConflict()` immediately
-        //   (updates `ChecklistTemplate.department_head_id` right now, plus
-        //   the live instance if `approverId` is present) — unchanged.
-        // - Temporary is a PURE client-side choice: there is nothing to
-        //   persist yet (no `OffboardingRequestApprover` row may even exist
-        //   — see signatory-conflict-cards.blade.php's own docblock on why
-        //   `approverId` can be null). It's recorded into the New Request
-        //   form's own `temporaryOverrides` state (a window event, same
+        // - Permanent calls `resolveSignatoryConflict()` immediately — it
+        //   updates `ChecklistTemplate.department_head_id` AND every
+        //   currently-open instance of this exact checklist still assigned
+        //   to the departing employee, across every other offboarding
+        //   request that has it open right now, all in this one action
+        //   (see that method's own docblock).
+        // - Temporary is a PURE client-side choice: nothing server-side
+        //   changes at all. It's recorded into the New Request form's own
+        //   `temporaryOverrides` state (a window event, same
         //   cross-component convention `setImmediateHeadFromEmployee`
         //   already uses) and only actually applied server-side when that
         //   form is submitted — see `OffboardingRequestController::store()`'s
-        //   `temporary_signatory_overrides` handling.
+        //   `temporary_signatory_overrides` handling. It covers ONLY the
+        //   checklist about to be attached to the NEW offboarding request
+        //   being created, never the other already-open instances shown on
+        //   this same card — those are only ever fixed by Permanent.
         async submitAssignment(type) {
             if (!this.selectedReplacementId || this.processing) {
                 return;
             }
             const typeLabel = type === 'permanent' ? 'Permanent' : 'Temporary';
+            const openCount = this.selected.openInstanceCount || 0;
             const description = type === 'permanent'
-                ? 'Updates the affected active checklist\'s Clearance Signatory to the selected Group Head. The new assignment will apply to future offboarding requests using this checklist. All task-level assignees on the affected checklist will be cleared as part of the reassignment.'
-                : 'Assigns the selected Group Head as the Clearance Signatory for this offboarding process only. The existing checklist template\'s default Clearance Signatory remains unchanged for future offboarding requests. All task-level assignees on the affected checklist will be cleared for this offboarding process.';
+                ? `Updates this checklist's Clearance Signatory to the selected Group Head going forward, and immediately moves it on ${openCount} currently open offboarding request(s) that have it open right now. All task-level assignees on each affected checklist will be cleared as part of the reassignment.`
+                : 'Assigns the selected Group Head as the Clearance Signatory for the checklist about to be attached to THIS offboarding request only. The existing checklist template\'s default Clearance Signatory remains unchanged for future offboarding requests, and any other already-open request currently using this checklist is not affected — use Permanent to fix those.';
+            const cardKey = this.selected.key;
             const templateId = this.selected.templateId;
-            const approverId = this.selected.approverId;
             const replacementId = this.selectedReplacementId;
             const replacementLabel = this.query;
             const checklistTitle = this.selected.checklistTitle;
@@ -85,7 +90,7 @@
                 }
 
                 window.dispatchEvent(new CustomEvent('close-signatory-conflict-modal'));
-                window.dispatchEvent(new CustomEvent('signatory-conflict-resolved', { detail: { templateId } }));
+                window.dispatchEvent(new CustomEvent('signatory-conflict-resolved', { detail: { key: cardKey } }));
                 window.dispatchEvent(new CustomEvent('signatory-temporary-override-added', {
                     detail: { templateId, replacementId, replacementLabel, checklistTitle },
                 }));
@@ -129,7 +134,6 @@
                                 replacement_employee_id: this.selectedReplacementId,
                                 assignment_type: type,
                                 expected_current_signatory_id: this.selected.currentSignatoryId,
-                                offboarding_request_approver_id: approverId,
                             }),
                         });
                         const data = await response.json().catch(() => ({}));
@@ -158,7 +162,7 @@
             // identical problem) and tells the cards partial to drop this
             // now-resolved conflict from its list, both via window events.
             window.dispatchEvent(new CustomEvent('close-signatory-conflict-modal'));
-            window.dispatchEvent(new CustomEvent('signatory-conflict-resolved', { detail: { templateId } }));
+            window.dispatchEvent(new CustomEvent('signatory-conflict-resolved', { detail: { key: cardKey } }));
 
             Swal.fire({
                 icon: 'success',
@@ -209,20 +213,15 @@
                     </p>
 
                     <div class="mt-5 space-y-3">
-                        {{-- Always available, regardless of whether this card
-                             represents an existing open checklist instance
-                             (`approverId` present) or a template-only
-                             conflict (`approverId` null — the employee is
-                             still a template's configured default signatory,
-                             but nothing currently open uses it). Either way,
-                             Temporary applies ONLY to the new offboarding
-                             request about to be created: see
-                             `OffboardingRequestController::store()`'s own
-                             `temporary_signatory_overrides` handling. --}}
+                        {{-- Temporary applies ONLY to the new offboarding
+                             request about to be created, never to the other
+                             already-open request(s) this card lists above:
+                             see `OffboardingRequestController::store()`'s
+                             own `temporary_signatory_overrides` handling. --}}
                         <div class="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 dark:border-gray-800 dark:bg-white/[0.03]">
                             <p class="text-sm font-medium text-gray-700 dark:text-gray-300">Temporary Assignment</p>
                             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                                Assigns the selected Group Head as the Clearance Signatory for this offboarding process only. The existing checklist template's default Clearance Signatory remains unchanged for future offboarding requests. All task-level assignees on the affected checklist will be cleared for this offboarding process.
+                                Assigns the selected Group Head as the Clearance Signatory for the checklist about to be attached to THIS offboarding request only. The existing checklist template's default Clearance Signatory remains unchanged, and any other already-open request currently using this checklist is not affected — use Permanent to fix those.
                             </p>
                             <button type="button" @click="submitAssignment('temporary')"
                                 :disabled="!selectedReplacementId || processing"
@@ -235,7 +234,7 @@
                         <div class="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 dark:border-gray-800 dark:bg-white/[0.03]">
                             <p class="text-sm font-medium text-gray-700 dark:text-gray-300">Permanent Assignment</p>
                             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                                Updates the affected active checklist's Clearance Signatory to the selected Group Head. The new assignment will apply to future offboarding requests using this checklist. All task-level assignees on the affected checklist will be cleared as part of the reassignment.
+                                Updates this checklist's Clearance Signatory to the selected Group Head going forward, AND immediately moves every currently open offboarding request that has it open right now (see the list above) — all in one action. All task-level assignees on each affected checklist will be cleared as part of the reassignment.
                             </p>
                             <button type="button" @click="submitAssignment('permanent')"
                                 :disabled="!selectedReplacementId || processing"

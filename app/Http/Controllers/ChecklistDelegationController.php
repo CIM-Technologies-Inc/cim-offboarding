@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers;
 
-use App\Mail\ChecklistItemApproverAssignedMail;
 use App\Mail\ChecklistSignatoryAnnouncementMail;
 use App\Models\ActivityLog;
 use App\Models\ChecklistDelegation;
@@ -13,6 +12,7 @@ use App\Models\Employee;
 use App\Models\OffboardingRequest;
 use App\Models\OffboardingRequestApprover;
 use App\Models\User;
+use App\Services\AutoLoginLinkService;
 use App\Services\ChecklistCompletionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -30,6 +30,16 @@ class ChecklistDelegationController extends Controller
      * rather than requiring this to be seeded. See `notifyPendingHeadApprovals()`.
      */
     private const HEAD_APPROVAL_TEMPLATE = 'Checklist Item Pending Head Approval';
+
+    /**
+     * Fixed-name email template for the "you've been assigned checklist
+     * item(s)" notice sent to a Task Assignee — used by all 3 of this
+     * class' own sends (`notifyDelegatedApprover()`, `notifyPoolAssignees()`,
+     * `notifyReassignedApprover()`). Mirrors `ChecklistApprovalNotifier`'s
+     * own identical constant for its single analogous call site — see that
+     * class' own docblock for why this isn't shared across classes.
+     */
+    private const ITEM_ASSIGNED_TEMPLATE = 'Offboarding Checklist Assigned to You';
 
     /**
      * The Department Head/primary approver delegates their checklist to
@@ -230,18 +240,31 @@ class ChecklistDelegationController extends Controller
             })
             ->all();
 
+        $emailTemplate = EmailTemplate::where('is_active', true)
+            ->where('template_name', self::ITEM_ASSIGNED_TEMPLATE)
+            ->latest('updated_at')
+            ->first();
+
+        if (! $emailTemplate) {
+            Log::warning('No "'.self::ITEM_ASSIGNED_TEMPLATE.'" email template found — delegated approver was not emailed.', [
+                'offboarding_request_id' => $offboardingRequest->id,
+            ]);
+
+            return;
+        }
+
+        [$subject, $body] = $emailTemplate->render(
+            approverName: $delegate->name,
+            offboardeeName: $offboardee->name,
+            employeeNumber: $offboardee->employee_code,
+            checklistSummary: $this->buildAssignedItemsSummaryHtml($assignedItems),
+            username: $isNewAccount ? $delegate->employee_code_digits : null,
+            temporaryPassword: $isNewAccount ? $delegate->employee_code_digits : null,
+            offboardingLinkUrl: app(AutoLoginLinkService::class)->generate(User::findOrCreateApprover($delegate)),
+        );
+
         try {
-            Mail::to($delegate->email)->send(new ChecklistItemApproverAssignedMail(
-                approverName: $delegate->name,
-                offboardeeName: $offboardee->name,
-                offboardeeEmployeeCode: $offboardee->employee_code,
-                assignedItems: $assignedItems,
-                approvalUrl: route('approvals.index'),
-                credentials: $isNewAccount ? [
-                    'username' => $delegate->employee_code_digits,
-                    'password' => $delegate->employee_code_digits,
-                ] : null,
-            ));
+            Mail::to($delegate->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
         } catch (\Throwable $e) {
             Log::error('Failed to send checklist delegation email.', [
                 'offboarding_request_id' => $offboardingRequest->id,
@@ -441,6 +464,19 @@ class ChecklistDelegationController extends Controller
     {
         $offboardee = $offboardingRequest->employee;
 
+        $emailTemplate = EmailTemplate::where('is_active', true)
+            ->where('template_name', self::ITEM_ASSIGNED_TEMPLATE)
+            ->latest('updated_at')
+            ->first();
+
+        if (! $emailTemplate) {
+            Log::warning('No "'.self::ITEM_ASSIGNED_TEMPLATE.'" email template found — pool assignees were not emailed.', [
+                'offboarding_request_id' => $offboardingRequest->id,
+            ]);
+
+            return;
+        }
+
         foreach ($assignedByEmployeeId as $entry) {
             $employee = $entry['employee'];
 
@@ -448,18 +484,18 @@ class ChecklistDelegationController extends Controller
                 continue;
             }
 
+            [$subject, $body] = $emailTemplate->render(
+                approverName: $employee->name,
+                offboardeeName: $offboardee->name,
+                employeeNumber: $offboardee->employee_code,
+                checklistSummary: $this->buildAssignedItemsSummaryHtml($entry['items']),
+                username: $entry['isNewAccount'] ? $employee->employee_code_digits : null,
+                temporaryPassword: $entry['isNewAccount'] ? $employee->employee_code_digits : null,
+                offboardingLinkUrl: app(AutoLoginLinkService::class)->generate(User::findOrCreateApprover($employee)),
+            );
+
             try {
-                Mail::to($employee->email)->send(new ChecklistItemApproverAssignedMail(
-                    approverName: $employee->name,
-                    offboardeeName: $offboardee->name,
-                    offboardeeEmployeeCode: $offboardee->employee_code,
-                    assignedItems: $entry['items'],
-                    approvalUrl: route('approvals.index'),
-                    credentials: $entry['isNewAccount'] ? [
-                        'username' => $employee->employee_code_digits,
-                        'password' => $employee->employee_code_digits,
-                    ] : null,
-                ));
+                Mail::to($employee->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
             } catch (\Throwable $e) {
                 Log::error('Failed to send checklist bulk assignment email.', [
                     'offboarding_request_id' => $offboardingRequest->id,
@@ -1035,22 +1071,35 @@ class ChecklistDelegationController extends Controller
 
         $offboardee = $offboardingRequestApprover->offboardingRequest->employee;
 
+        $emailTemplate = EmailTemplate::where('is_active', true)
+            ->where('template_name', self::ITEM_ASSIGNED_TEMPLATE)
+            ->latest('updated_at')
+            ->first();
+
+        if (! $emailTemplate) {
+            Log::warning('No "'.self::ITEM_ASSIGNED_TEMPLATE.'" email template found — reassigned approver was not emailed.', [
+                'offboarding_request_approver_id' => $offboardingRequestApprover->id,
+            ]);
+
+            return;
+        }
+
+        [$subject, $body] = $emailTemplate->render(
+            approverName: $newEmployee->name,
+            offboardeeName: $offboardee->name,
+            employeeNumber: $offboardee->employee_code,
+            checklistSummary: $this->buildAssignedItemsSummaryHtml([[
+                'checklistTitle' => $offboardingRequestApprover->checklistTemplate->title,
+                'itemTitle' => $checklistItem->title,
+                'dueAt' => $offboardingRequestApprover->due_at?->format('M d, Y'),
+            ]]),
+            username: $isNewAccount ? $newEmployee->employee_code_digits : null,
+            temporaryPassword: $isNewAccount ? $newEmployee->employee_code_digits : null,
+            offboardingLinkUrl: app(AutoLoginLinkService::class)->generate(User::findOrCreateApprover($newEmployee)),
+        );
+
         try {
-            Mail::to($newEmployee->email)->send(new ChecklistItemApproverAssignedMail(
-                approverName: $newEmployee->name,
-                offboardeeName: $offboardee->name,
-                offboardeeEmployeeCode: $offboardee->employee_code,
-                assignedItems: [[
-                    'checklistTitle' => $offboardingRequestApprover->checklistTemplate->title,
-                    'itemTitle' => $checklistItem->title,
-                    'dueAt' => $offboardingRequestApprover->due_at?->format('M d, Y'),
-                ]],
-                approvalUrl: route('approvals.index'),
-                credentials: $isNewAccount ? [
-                    'username' => $newEmployee->employee_code_digits,
-                    'password' => $newEmployee->employee_code_digits,
-                ] : null,
-            ));
+            Mail::to($newEmployee->email)->send(new ChecklistSignatoryAnnouncementMail($subject, $body));
         } catch (\Throwable $e) {
             Log::error('Failed to send checklist item reassignment email.', [
                 'offboarding_request_approver_id' => $offboardingRequestApprover->id,
@@ -1059,6 +1108,36 @@ class ChecklistDelegationController extends Controller
                 'exception' => $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * An HTML table of exactly the items the recipient was assigned —
+     * Checklist / Checklist Item / Due Date — filling `{{checklist_summary}}`
+     * for the "Offboarding Checklist Assigned to You" template. Shared
+     * across this class' 3 call sites; mirrors (but deliberately doesn't
+     * share code with) `ChecklistApprovalNotifier`'s own identical-shaped
+     * helper — see that class' own docblock for why.
+     *
+     * @param  array<int, array{checklistTitle: string, itemTitle: string, dueAt: ?string}>  $items
+     */
+    private function buildAssignedItemsSummaryHtml(array $items): string
+    {
+        $rows = collect($items)->map(function (array $item) {
+            return '<tr>'
+                .'<td style="padding:6px 10px;border:1px solid #e5e7eb;">'.e($item['checklistTitle']).'</td>'
+                .'<td style="padding:6px 10px;border:1px solid #e5e7eb;">'.e($item['itemTitle']).'</td>'
+                .'<td style="padding:6px 10px;border:1px solid #e5e7eb;">'.e($item['dueAt'] ?? '—').'</td>'
+                .'</tr>';
+        })->implode('');
+
+        return '<table style="width:100%;border-collapse:collapse;font-size:13px;">'
+            .'<tr>'
+            .'<th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:left;background:#f3f4f6;">Checklist</th>'
+            .'<th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:left;background:#f3f4f6;">Checklist Item</th>'
+            .'<th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:left;background:#f3f4f6;">Due Date</th>'
+            .'</tr>'
+            .$rows
+            .'</table>';
     }
 
     /**

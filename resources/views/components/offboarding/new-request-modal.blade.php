@@ -79,37 +79,19 @@
         <form class="flex flex-col" method="POST" action="{{ route('offboarding-requests.store') }}"
             x-data="offboardingRequestForm(@js(session('success')), @js($offboardingRequestHasErrors ? $errors->first() : null), {{ $offboardingRequestHasErrors ? 'true' : 'false' }})"
             @submit="if (!confirmed) {
+                // The Review Offboarding Request step (see reviewRequest()/
+                // confirmSubmit() in offboarding-request.js) is now the
+                // confirmation gate — it already sets `confirmed = true`
+                // before calling requestSubmit(), so a submit that reaches
+                // here with `confirmed` still false never went through
+                // Review (e.g. a stray native Enter-key submit) and is
+                // blocked outright rather than re-confirmed inline.
                 $event.preventDefault();
-                // Read straight off the Employee picker's own visible text
-                // input via `document` rather than through Alpine state —
-                // that field lives in a deeply nested x-data scope (the
-                // Employee picker's own island, see its surrounding
-                // comments), and this outer form-level handler can't reach
-                // into a descendant's state directly, only the DOM itself.
-                const rawName = document.getElementById('offboardeeNameInput')?.value ?? '';
-                const offboardeeName = rawName.replace(/\s*\([^)]*\)\s*$/, '').trim() || 'this employee';
-                Swal.fire({
-                    title: 'Create Offboarding Request?',
-                    text: `You are about to create an Offboarding Request for ${offboardeeName}. Please confirm that you want to proceed.`,
-                    icon: 'question',
-                    showCancelButton: true,
-                    confirmButtonText: 'Confirm',
-                    cancelButtonText: 'Cancel',
-                    confirmButtonColor: '#145a3a',
-                    cancelButtonColor: '#6b7280',
-                    reverseButtons: true,
-                }).then((result) => {
-                    if (result.isConfirmed) {
-                        confirmed = true;
-                        submitting = true;
-                        $el.requestSubmit();
-                    }
-                });
             } else {
                 submitting = true;
-            }"
+            }">
             @csrf
-            <div class="custom-scrollbar max-h-[45vh] overflow-y-auto p-2 sm:h-[458px] sm:max-h-none">
+            <div class="custom-scrollbar max-h-[45vh] overflow-y-auto p-2 sm:h-[458px] sm:max-h-none" x-show="!reviewing">
                 <div class="grid grid-cols-1 gap-x-6 gap-y-5 lg:grid-cols-2">
                     <div class="col-span-2 space-y-5"
                         x-data="{
@@ -734,16 +716,244 @@
 
                 </div>
             </div>
+
+            {{-- "Review Offboarding Request" — a content SWAP within this
+                 same modal/form (not a second stacked modal), shown once
+                 `reviewRequest()` (see offboarding-request.js) gets a
+                 successful response from the read-only preview endpoint.
+                 The form fields above are merely HIDDEN (`x-show`), never
+                 cleared or re-rendered, so Back to Edit always shows
+                 exactly what was already typed. Every value here comes
+                 straight from `OffboardingRequestController::preview()`'s
+                 own JSON — nothing is computed client-side. --}}
+            <div x-show="reviewing" x-cloak class="custom-scrollbar max-h-[55vh] overflow-y-auto p-2 sm:max-h-[520px]" x-data="{ expandedChecklist: null, expandedSchedules: true }">
+                <template x-if="reviewData">
+                    <div class="space-y-6">
+                        {{-- 1. Employee and Request Information --}}
+                        <div>
+                            <h5 class="mb-2 text-sm font-semibold text-gray-800 dark:text-white/90">Employee and Request Information</h5>
+                            <div class="grid grid-cols-1 gap-x-6 gap-y-2 rounded-lg border border-gray-200 p-4 text-sm sm:grid-cols-2 dark:border-gray-800">
+                                <div class="flex justify-between gap-2 sm:block">
+                                    <span class="text-gray-500 dark:text-gray-400">Employee Number</span>
+                                    <span class="block font-medium text-gray-800 dark:text-white/90" x-text="reviewData.employee.employee_number"></span>
+                                </div>
+                                <div class="flex justify-between gap-2 sm:block">
+                                    <span class="text-gray-500 dark:text-gray-400">Employee Name</span>
+                                    <span class="block font-medium text-gray-800 dark:text-white/90" x-text="reviewData.employee.employee_name"></span>
+                                </div>
+                                <div class="flex justify-between gap-2 sm:block">
+                                    <span class="text-gray-500 dark:text-gray-400">Department</span>
+                                    <span class="block font-medium text-gray-800 dark:text-white/90" x-text="reviewData.employee.department || '—'"></span>
+                                </div>
+                                <div class="flex justify-between gap-2 sm:block">
+                                    <span class="text-gray-500 dark:text-gray-400">Position</span>
+                                    <span class="block font-medium text-gray-800 dark:text-white/90" x-text="reviewData.employee.position || '—'"></span>
+                                </div>
+                                <div class="flex justify-between gap-2 sm:block">
+                                    <span class="text-gray-500 dark:text-gray-400">Separation Type</span>
+                                    <span class="block font-medium text-gray-800 dark:text-white/90" x-text="reviewData.employee.separation_type?.title || '—'"></span>
+                                </div>
+                                <div class="flex justify-between gap-2 sm:block">
+                                    <span class="text-gray-500 dark:text-gray-400">Request Creation Date</span>
+                                    <span class="block font-medium text-gray-800 dark:text-white/90" x-text="reviewData.employee.request_created_at"></span>
+                                </div>
+                                <div class="flex justify-between gap-2 sm:block">
+                                    <span class="text-gray-500 dark:text-gray-400">Last Working Day</span>
+                                    <span class="block font-medium text-gray-800 dark:text-white/90" x-text="reviewData.employee.last_working_day"></span>
+                                </div>
+                                <div class="flex justify-between gap-2 sm:block">
+                                    <span class="text-gray-500 dark:text-gray-400">Reason for Separation</span>
+                                    <span class="block font-medium text-gray-800 dark:text-white/90" x-text="reviewData.employee.reason || '—'"></span>
+                                </div>
+                                <div class="flex justify-between gap-2 sm:block">
+                                    <span class="text-gray-500 dark:text-gray-400">Immediate Head</span>
+                                    <span class="block font-medium text-gray-800 dark:text-white/90" x-text="reviewData.employee.immediate_head ? (reviewData.employee.immediate_head.name + ' (' + reviewData.employee.immediate_head.code + ')') : 'Not assigned'"></span>
+                                </div>
+                            </div>
+                        </div>
+
+                        {{-- 2 & 3. Checklist and Approval Assignments + Due Dates/Extensions
+                             (combined per card — each checklist's own due dates sit right
+                             alongside its assignments, with a dedicated due-date summary
+                             table underneath for a scannable at-a-glance view too). --}}
+                        <div>
+                            <h5 class="mb-2 text-sm font-semibold text-gray-800 dark:text-white/90">
+                                Checklist and Approval Assignments
+                                <span class="font-normal text-gray-400" x-text="'(' + reviewData.checklists.length + ')'"></span>
+                            </h5>
+                            <template x-if="!reviewData.checklists.length">
+                                <p class="rounded-lg border border-gray-200 p-4 text-sm text-gray-400 dark:border-gray-800">No applicable checklists were found for this employee's department.</p>
+                            </template>
+                            <div class="space-y-2">
+                                <template x-for="checklist in reviewData.checklists" :key="checklist.id">
+                                    <div class="rounded-lg border border-gray-200 dark:border-gray-800">
+                                        <button type="button" @click="expandedChecklist = expandedChecklist === checklist.id ? null : checklist.id"
+                                            class="flex w-full items-center justify-between gap-2 px-4 py-3 text-left">
+                                            <div class="min-w-0">
+                                                <p class="text-sm font-semibold text-gray-800 dark:text-white/90" x-text="checklist.title"></p>
+                                                <p class="mt-0.5 text-xs text-gray-400">
+                                                    <span x-show="checklist.is_immediate_head_checklist" class="mr-1 rounded-full bg-gray-100 px-2 py-0.5 text-gray-600 dark:bg-white/5 dark:text-gray-300">Immediate Head Checklist</span>
+                                                    <span x-show="checklist.use_task_assignee_as_signatory" class="mr-1 rounded-full bg-gray-100 px-2 py-0.5 text-gray-600 dark:bg-white/5 dark:text-gray-300">Use Task Assignee as Clearance Signatory</span>
+                                                    <span x-show="checklist.is_temporary_override" class="mr-1 rounded-full bg-amber-100 px-2 py-0.5 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">Temporary Reassignment</span>
+                                                    <span x-text="'Sequence: ' + checklist.sequence_type"></span>
+                                                </p>
+                                            </div>
+                                            <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" class="shrink-0 transition-transform" :class="expandedChecklist === checklist.id ? 'rotate-180' : ''">
+                                                <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                                            </svg>
+                                        </button>
+                                        <div x-show="expandedChecklist === checklist.id" x-cloak class="border-t border-gray-100 px-4 py-3 text-sm dark:border-gray-800">
+                                            <div class="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
+                                                <div>
+                                                    <span class="text-gray-500 dark:text-gray-400">Clearance Signatory</span>
+                                                    <span class="block font-medium text-gray-800 dark:text-white/90" x-text="checklist.signatory ? (checklist.signatory.name + ' (' + checklist.signatory.code + ')') : 'Unassigned'"></span>
+                                                </div>
+                                                <div>
+                                                    <span class="text-gray-500 dark:text-gray-400">Original Due Date</span>
+                                                    <span class="block font-medium text-gray-800 dark:text-white/90" x-text="checklist.due_at || '—'"></span>
+                                                </div>
+                                                <div>
+                                                    <span class="text-gray-500 dark:text-gray-400">Clearance Signing Deadline</span>
+                                                    <span class="block font-medium text-gray-800 dark:text-white/90" x-text="checklist.clearance_signing_due_at || 'No deadline configured'"></span>
+                                                </div>
+                                                <div>
+                                                    <span class="text-gray-500 dark:text-gray-400">Extended Due Date</span>
+                                                    <span class="block font-medium text-gray-800 dark:text-white/90">No extension applies — extensions can only be made after the request is created.</span>
+                                                </div>
+                                            </div>
+                                            <template x-if="checklist.task_assignees.length">
+                                                <div class="mt-3">
+                                                    <p class="mb-1 text-xs font-medium text-gray-500 dark:text-gray-400">Task Assignees</p>
+                                                    <ul class="space-y-1">
+                                                        <template x-for="(item, idx) in checklist.task_assignees" :key="idx">
+                                                            <li class="flex items-center justify-between gap-2 text-xs">
+                                                                <span class="text-gray-600 dark:text-gray-300" x-text="item.item_title"></span>
+                                                                <span class="text-gray-400" x-text="item.assignee_name || 'Unassigned'"></span>
+                                                            </li>
+                                                        </template>
+                                                    </ul>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+
+                        {{-- General Signatories --}}
+                        <div>
+                            <h5 class="mb-2 text-sm font-semibold text-gray-800 dark:text-white/90">
+                                General Signatories
+                                <span class="font-normal text-gray-400" x-text="'(' + reviewData.general_signatories.length + ')'"></span>
+                            </h5>
+                            <template x-if="!reviewData.general_signatories.length">
+                                <p class="rounded-lg border border-gray-200 p-4 text-sm text-gray-400 dark:border-gray-800">No applicable General Signatories.</p>
+                            </template>
+                            <div class="space-y-2">
+                                <template x-for="(gs, idx) in reviewData.general_signatories" :key="idx">
+                                    <div class="rounded-lg border border-gray-200 px-4 py-3 text-sm dark:border-gray-800">
+                                        <div class="flex flex-wrap items-center justify-between gap-2">
+                                            <span class="font-medium text-gray-800 dark:text-white/90" x-text="gs.clearance_signatory ? (gs.clearance_signatory.name + ' (' + gs.clearance_signatory.code + ')') : 'Unassigned'"></span>
+                                            <span class="text-xs text-gray-400" x-text="'Due: ' + (gs.due_at || '—')"></span>
+                                        </div>
+                                        <p class="mt-1 text-xs text-gray-400" x-text="gs.tasks.map((t) => t.title + (t.signatory_name ? ' — ' + t.signatory_name : '')).join(', ') || 'No tasks configured'"></p>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+
+                        {{-- Final Approver --}}
+                        <div class="rounded-lg border border-gray-200 px-4 py-3 text-sm dark:border-gray-800">
+                            <span class="text-gray-500 dark:text-gray-400">Final Approver</span>
+                            <span class="ml-2 font-medium text-gray-800 dark:text-white/90" x-text="reviewData.final_approver ? (reviewData.final_approver.name + ' (' + reviewData.final_approver.code + ')') : 'None configured'"></span>
+                        </div>
+
+                        {{-- 4. Scheduled Email Notifications --}}
+                        <div>
+                            <button type="button" @click="expandedSchedules = !expandedSchedules" class="mb-2 flex items-center gap-1.5 text-sm font-semibold text-gray-800 dark:text-white/90">
+                                Scheduled Email Notifications
+                                <span class="font-normal text-gray-400" x-text="'(' + reviewData.scheduled_notifications.length + ')'"></span>
+                                <svg width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" class="shrink-0 transition-transform" :class="expandedSchedules ? 'rotate-180' : ''">
+                                    <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                                </svg>
+                            </button>
+                            <div x-show="expandedSchedules" x-cloak>
+                                <template x-if="!reviewData.scheduled_notifications.length">
+                                    <p class="rounded-lg border border-gray-200 p-4 text-sm text-gray-400 dark:border-gray-800">No active, eligible email schedules apply.</p>
+                                </template>
+                                <div class="space-y-2">
+                                    <template x-for="(schedule, idx) in reviewData.scheduled_notifications" :key="idx">
+                                        <div class="rounded-lg border border-gray-200 px-4 py-3 text-sm dark:border-gray-800">
+                                            <div class="flex flex-wrap items-center justify-between gap-2">
+                                                <span class="font-medium text-gray-800 dark:text-white/90" x-text="schedule.template_name"></span>
+                                                <span class="rounded-full px-2 py-0.5 text-xs font-medium"
+                                                    :class="schedule.is_pending ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400' : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400'"
+                                                    x-text="schedule.is_pending ? 'Pending — milestone not yet determined' : schedule.scheduled_date"></span>
+                                            </div>
+                                            <p class="mt-1 text-xs text-gray-400">
+                                                <span x-text="schedule.days + ' day(s) ' + (schedule.timing === 'before' ? 'Before' : 'After') + ' ' + schedule.event_label"></span>
+                                                <span x-show="schedule.event === 'clearance'" x-text="' (' + schedule.clearance_signing_deadline_days + ' days after Last Working Day)'"></span>
+                                                · <span x-text="{ email: 'Email', system: 'System Notification', email_and_system: 'Email and System Notification' }[schedule.channel] ?? schedule.channel"></span>
+                                            </p>
+                                            <p class="mt-1 text-xs text-gray-400">
+                                                <span class="font-medium text-gray-500 dark:text-gray-300">Recipients:</span>
+                                                <span x-text="schedule.recipients.length ? schedule.recipients.map((r) => r.name).join(', ') : 'None resolved'"></span>
+                                            </p>
+                                            <p class="mt-1 text-xs text-gray-400" x-show="schedule.cc_recipients.length">
+                                                <span class="font-medium text-gray-500 dark:text-gray-300">CC:</span>
+                                                <span x-text="schedule.cc_recipients.join(', ')"></span>
+                                            </p>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                        </div>
+
+                        {{-- 5. Warnings and Validation Results --}}
+                        <div x-show="reviewData.warnings.length" x-cloak>
+                            <h5 class="mb-2 text-sm font-semibold text-gray-800 dark:text-white/90">Warnings and Validation Results</h5>
+                            <div class="space-y-2">
+                                <template x-for="(warning, idx) in reviewData.warnings" :key="idx">
+                                    <div class="flex items-start gap-2 rounded-lg border px-4 py-3 text-sm"
+                                        :class="warning.critical ? 'border-error-300 bg-error-50 text-error-700 dark:border-error-500/30 dark:bg-error-500/10 dark:text-error-400' : 'border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400'">
+                                        <span class="mt-0.5 shrink-0 text-xs font-semibold uppercase" x-text="warning.critical ? 'Critical' : 'Notice'"></span>
+                                        <span x-text="warning.message"></span>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+                </template>
+            </div>
+
             <div class="flex flex-wrap items-center gap-3 px-2 mt-6 lg:justify-end">
-                <button @click="open = false; resetForm()" type="button" :disabled="submitting"
-                    class="flex w-full justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03] sm:w-auto">
-                    Close
-                </button>
-                <button type="submit" :disabled="submitting" data-turbo-submits-with="Submitting..."
-                    class="flex w-full items-center justify-center gap-2 rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white hover:bg-[#0f4630] disabled:cursor-not-allowed disabled:opacity-70 sm:w-auto">
-                    <span x-show="submitting" class="h-4 w-4 animate-spin rounded-full border-2 border-solid border-white border-t-transparent"></span>
-                    <span x-text="submitting ? 'Submitting...' : 'Submit Request'"></span>
-                </button>
+                <template x-if="!reviewing">
+                    <div class="flex w-full flex-wrap items-center gap-3 lg:w-auto lg:justify-end">
+                        <button @click="open = false; resetForm()" type="button" :disabled="submitting"
+                            class="flex w-full justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03] sm:w-auto">
+                            Close
+                        </button>
+                        <button type="button" @click="reviewRequest($el.closest('form'), @js(route('offboarding-requests.preview')))" :disabled="reviewLoading"
+                            class="flex w-full items-center justify-center gap-2 rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white hover:bg-[#0f4630] disabled:cursor-not-allowed disabled:opacity-70 sm:w-auto">
+                            <span x-show="reviewLoading" class="h-4 w-4 animate-spin rounded-full border-2 border-solid border-white border-t-transparent"></span>
+                            <span x-text="reviewLoading ? 'Building Review...' : 'Review Request'"></span>
+                        </button>
+                    </div>
+                </template>
+                <template x-if="reviewing">
+                    <div class="flex w-full flex-wrap items-center gap-3 lg:w-auto lg:justify-end">
+                        <button type="button" @click="backToEdit()" :disabled="submitting"
+                            class="flex w-full justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03] sm:w-auto">
+                            Back to Edit
+                        </button>
+                        <button type="button" @click="confirmSubmit($el.closest('form'))" :disabled="submitting || hasCriticalWarnings()"
+                            :title="hasCriticalWarnings() ? 'Resolve the critical warning(s) above before submitting.' : ''"
+                            class="flex w-full items-center justify-center gap-2 rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white hover:bg-[#0f4630] disabled:cursor-not-allowed disabled:opacity-70 sm:w-auto">
+                            <span x-show="submitting" class="h-4 w-4 animate-spin rounded-full border-2 border-solid border-white border-t-transparent"></span>
+                            <span x-text="submitting ? 'Submitting...' : 'Submit Request'"></span>
+                        </button>
+                    </div>
+                </template>
             </div>
         </form>
     </div>
