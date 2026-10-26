@@ -45,14 +45,22 @@ Schedule::command('app:log-expired-sessions')->everyFiveMinutes();
 // still-active offboarding request. Daily is sufficient granularity since
 // the trigger is a calendar date, not a time-of-day deadline — same
 // scheduler-must-be-running caveat as the overdue-checklist job above.
-Schedule::command('app:send-email-template-schedules')->dailyAt('08:00')->withoutOverlapping(120)->onOneServer();
+// Both "N days before/after" jobs below run every 15 minutes from 08:00
+// rather than once at exactly 08:00: `schedule:run` only fires events due in
+// the minute it runs, so a single `dailyAt('08:00')` silently skipped the
+// whole day whenever the machine wasn't running the scheduler at that exact
+// minute (asleep, shut down, or on battery with the task's battery
+// restriction). Repeating is safe — both commands only send occurrences not
+// already recorded in their own ledger, under a lock — and the earliest send
+// time is still 08:00 on the due date; a late machine just catches up.
+Schedule::command('app:send-email-template-schedules')->everyFifteenMinutes()->between('08:00', '23:59')->withoutOverlapping(120)->onOneServer();
 
 // Per-task-item version of the same idea: sends each checklist item's own
 // scheduled Email and Notification template to that item's Task Assignee
 // once its "N days before/after Last Working Day" date is due. Staggered 10
 // minutes after the template-level job purely to avoid same-minute
 // contention.
-Schedule::command('app:send-scheduled-checklist-item-notifications')->dailyAt('08:10')->withoutOverlapping(120)->onOneServer();
+Schedule::command('app:send-scheduled-checklist-item-notifications')->everyFifteenMinutes()->between('08:00', '23:59')->withoutOverlapping(120)->onOneServer();
 
 // Per-CHECKLIST reminder — independent of both jobs above, and of every
 // other checklist on the same request: timed off THIS checklist's own

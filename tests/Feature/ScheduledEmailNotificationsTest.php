@@ -600,8 +600,8 @@ it('registers every time-driven notification command with overlap protection', f
     $events = collect(app(Schedule::class)->events());
 
     foreach ([
-        'app:send-email-template-schedules' => '0 8 * * *',
-        'app:send-scheduled-checklist-item-notifications' => '10 8 * * *',
+        'app:send-email-template-schedules' => '*/15 * * * *',
+        'app:send-scheduled-checklist-item-notifications' => '*/15 * * * *',
         'app:send-checklist-reminders' => '*/15 * * * *',
         'app:notify-overdue-checklists' => '*/5 * * * *',
         'app:notify-clearance-signing-due' => '*/5 * * * *',
@@ -755,3 +755,26 @@ it('shows Not Applicable (never Scheduled/Due) on the request tab once a request
 
     expect($rows[0]['status'])->toBe('not_applicable');
 })->with(['cancelled', 'completed']);
+
+it('renders the timeline editor\'s Alpine x-data as one intact attribute (no stray quotes breaking the HTML)', function () {
+    $template = schedTemplate();
+    schedSchedule([], $template);
+
+    $html = $this->actingAs(templateEditor())->get(route('email-templates.edit', $template))->assertOk()->getContent();
+
+    $dom = new DOMDocument;
+    libxml_use_internal_errors(true);
+    $dom->loadHTML($html);
+    libxml_clear_errors();
+
+    $timeline = collect(iterator_to_array((new DOMXPath($dom))->query('//*[@x-data]')))
+        ->map(fn (DOMElement $el) => $el->getAttribute('x-data'))
+        ->first(fn (string $xData) => str_contains($xData, 'timelineExpanded'));
+
+    expect($timeline)->not->toBeNull()
+        ->and($timeline)->toContain('validateDraft()')
+        ->and($timeline)->toContain('scheduleSignature(s)')
+        ->and($timeline)->toContain('removeSchedule(id)')
+        ->and($timeline)->toContain('scheduleRecipientSummary(s)')
+        ->and(trim($timeline))->toEndWith('}');
+});

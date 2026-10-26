@@ -296,7 +296,7 @@
                                 },
                                 // Mirrors the server-side rules on schedules.*: whole,
                                 // non-negative days (and Clearance deadline), no
-                                // "N days Before Creation" (ValidEmailTemplateScheduleTiming),
+                                // N days Before Creation (ValidEmailTemplateScheduleTiming),
                                 // and no exact duplicate of another schedule on this
                                 // template (DistinctEmailTemplateSchedule::signature()).
                                 validateDraft() {
