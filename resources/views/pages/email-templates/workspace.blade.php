@@ -193,7 +193,7 @@
                                     placeholder="Search employees by name, number, or department..."
                                     class="h-11 w-full rounded-xl border border-gray-300 bg-transparent px-4 py-2.5 text-sm text-gray-800 shadow-sm placeholder:text-gray-400 focus:border-[#145a3a]/50 focus:outline-hidden focus:ring-3 focus:ring-[#145a3a]/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30" />
                                 <div x-show="recipientDropdownOpen && (filteredEmployees().length || recipientEmployeeIds.length < allEmployees.length)" x-cloak
-                                    class="absolute z-10 mt-1 max-h-56 w-full overflow-y-auto rounded-xl border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-700 dark:bg-gray-900">
+                                    class="absolute z-50 mt-1 max-h-56 w-full overflow-y-auto rounded-xl border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-700 dark:bg-gray-900">
                                     <template x-if="recipientEmployeeIds.length < allEmployees.length">
                                         <button type="button" @click="selectAllEmployees()"
                                             class="flex w-full items-center gap-2 border-b border-gray-100 px-4 py-2 text-left text-sm font-medium text-[#145a3a] hover:bg-gray-50 dark:border-gray-800 dark:text-[#3aa876] dark:hover:bg-white/5">
