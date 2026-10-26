@@ -21,44 +21,39 @@
 </div>
 
 <script>
-    (() => {
-        const chartElement = document.querySelector('#offboardingStatusTrendChart');
-        if (!chartElement || typeof ApexCharts === 'undefined') return;
-
-        const chart = new ApexCharts(chartElement, {
-            series: [
-                { name: 'Initiated', data: @json($initiatedSeries) },
-                { name: 'Completed', data: @json($completedSeries) },
-            ],
-            legend: { show: true, position: 'top', horizontalAlign: 'left' },
-            colors: ['#145A3A', '#9CB9FF'],
-            chart: {
-                fontFamily: 'Outfit, sans-serif',
-                height: 310,
-                type: 'area',
-                toolbar: { show: false },
-            },
-            fill: {
-                gradient: { enabled: true, opacityFrom: 0.55, opacityTo: 0 },
-            },
-            stroke: { curve: 'straight', width: [2, 2] },
-            markers: { size: 0 },
-            grid: {
-                xaxis: { lines: { show: false } },
-                yaxis: { lines: { show: true } },
-            },
-            dataLabels: { enabled: false },
-            xaxis: {
-                type: 'category',
-                categories: @json($monthLabels),
-                axisBorder: { show: false },
-                axisTicks: { show: false },
-            },
-            yaxis: {
-                title: { style: { fontSize: '0px' } },
-            },
-        });
-
-        chart.render();
-    })();
+    // See `window.renderApexChart` in layouts/app.blade.php — waits for
+    // ApexCharts on a full page load instead of silently drawing nothing.
+    window.renderApexChart('#offboardingStatusTrendChart', {
+        series: [
+            { name: 'Initiated', data: @json($initiatedSeries) },
+            { name: 'Completed', data: @json($completedSeries) },
+        ],
+        legend: { show: true, position: 'top', horizontalAlign: 'left' },
+        colors: ['#145A3A', '#9CB9FF'],
+        chart: {
+            fontFamily: 'Outfit, sans-serif',
+            height: 310,
+            type: 'area',
+            toolbar: { show: false },
+        },
+        fill: {
+            gradient: { enabled: true, opacityFrom: 0.55, opacityTo: 0 },
+        },
+        stroke: { curve: 'straight', width: [2, 2] },
+        markers: { size: 0 },
+        grid: {
+            xaxis: { lines: { show: false } },
+            yaxis: { lines: { show: true } },
+        },
+        dataLabels: { enabled: false },
+        xaxis: {
+            type: 'category',
+            categories: @json($monthLabels),
+            axisBorder: { show: false },
+            axisTicks: { show: false },
+        },
+        yaxis: {
+            title: { style: { fontSize: '0px' } },
+        },
+    });
 </script>

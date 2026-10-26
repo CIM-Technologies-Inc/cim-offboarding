@@ -4,7 +4,52 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    {{-- Shared entry point for every page's inline ApexCharts script
+         (dashboard widgets, Reports). Those scripts sit in the body and run
+         as soon as they're parsed, but `window.ApexCharts` is only set by
+         the Vite bundle — a module script, which by spec runs AFTER the
+         whole document is parsed. On any full page load (sign-in, refresh,
+         an identity change) they used to find ApexCharts undefined and
+         silently draw nothing; only Turbo navigations, where the bundle is
+         already loaded, worked. A plain (non-module) inline script here runs
+         before the body, so the helper always exists: it renders right away
+         when ApexCharts is ready, otherwise on the first `turbo:load`
+         (fired by the bundle after it has set ApexCharts). Each chart's
+         element is cleared — and any instance this helper previously
+         rendered there destroyed — first, so a script re-run (e.g. Turbo
+         re-activating scripts when it restores a cached page) never stacks
+         a second chart on top of the first. --}}
+    <script>
+        window.renderApexChart = function (selector, options) {
+            var render = function () {
+                var el = document.querySelector(selector);
+                if (!el || typeof window.ApexCharts === 'undefined') return;
+                if (el._apexChart) { try { el._apexChart.destroy(); } catch (e) {} }
+                el.innerHTML = '';
+                el._apexChart = new window.ApexCharts(el, options);
+                el._apexChart.render();
+            };
+            if (typeof window.ApexCharts !== 'undefined') {
+                render();
+            } else {
+                document.addEventListener('turbo:load', render, { once: true });
+            }
+        };
+    </script>
     <meta name="csrf-token" content="{{ csrf_token() }}">
+    {{-- Who this page was rendered for: the signed-in user plus, during a
+         "Login As User" session, the impersonating admin. The header and
+         sidebar are `data-turbo-permanent` (kept as-is across Turbo
+         navigations), so after an in-page identity change — e.g. the
+         banner's "Return to My Account", a Turbo form submission — Turbo
+         would otherwise swap only the page body and leave the previous
+         account's name and menu in place, sending every sidebar click back
+         into that account. `data-turbo-track="reload"` makes Turbo do a
+         full page load whenever this value differs from the current page's,
+         so identity-specific chrome is always rebuilt for the new account.
+         Hashed so no raw user ids are exposed in the markup. --}}
+    <meta name="app-identity" data-turbo-track="reload"
+        content="{{ substr(hash_hmac('sha256', auth()->id().'|'.session('impersonator_id'), config('app.key')), 0, 16) }}">
 
     <title>{{ $title ?? 'Dashboard' }} | CIM Offboarding</title>
     <link rel="icon" type="image/svg+xml" href="{{ asset('images/logo/logo-icon.svg') }}">

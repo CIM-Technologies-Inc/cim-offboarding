@@ -57,42 +57,37 @@
 </div>
 
 <script>
-    (() => {
-        const chartElement = document.querySelector('#offboardingCompletionGauge');
-        if (!chartElement || typeof ApexCharts === 'undefined') return;
-
-        const chart = new ApexCharts(chartElement, {
-            series: [{{ (int) $completionRate }}],
-            colors: ['#145A3A'],
-            chart: {
-                fontFamily: 'Outfit, sans-serif',
-                type: 'radialBar',
-                height: 330,
-                sparkline: { enabled: true },
-            },
-            plotOptions: {
-                radialBar: {
-                    startAngle: -90,
-                    endAngle: 90,
-                    hollow: { size: '80%' },
-                    track: { background: '#E4E7EC', strokeWidth: '100%', margin: 5 },
-                    dataLabels: {
-                        name: { show: false },
-                        value: {
-                            fontSize: '36px',
-                            fontWeight: '600',
-                            offsetY: 60,
-                            color: '#1D2939',
-                            formatter: (val) => val + '%',
-                        },
+    // See `window.renderApexChart` in layouts/app.blade.php — waits for
+    // ApexCharts on a full page load instead of silently drawing nothing.
+    window.renderApexChart('#offboardingCompletionGauge', {
+        series: [{{ (int) $completionRate }}],
+        colors: ['#145A3A'],
+        chart: {
+            fontFamily: 'Outfit, sans-serif',
+            type: 'radialBar',
+            height: 330,
+            sparkline: { enabled: true },
+        },
+        plotOptions: {
+            radialBar: {
+                startAngle: -90,
+                endAngle: 90,
+                hollow: { size: '80%' },
+                track: { background: '#E4E7EC', strokeWidth: '100%', margin: 5 },
+                dataLabels: {
+                    name: { show: false },
+                    value: {
+                        fontSize: '36px',
+                        fontWeight: '600',
+                        offsetY: 60,
+                        color: '#1D2939',
+                        formatter: (val) => val + '%',
                     },
                 },
             },
-            fill: { type: 'solid', colors: ['#145A3A'] },
-            stroke: { lineCap: 'round' },
-            labels: ['Completion Rate'],
-        });
-
-        chart.render();
-    })();
+        },
+        fill: { type: 'solid', colors: ['#145A3A'] },
+        stroke: { lineCap: 'round' },
+        labels: ['Completion Rate'],
+    });
 </script>

@@ -16,47 +16,42 @@
 </div>
 
 <script>
-    (() => {
-        const chartElement = document.querySelector('#offboardingMonthlyChart');
-        if (!chartElement || typeof ApexCharts === 'undefined') return;
-
-        const chart = new ApexCharts(chartElement, {
-            series: [{
-                name: 'Requests',
-                data: @json($initiatedSeries),
-            }],
-            colors: ['#145A3A'],
-            chart: {
-                fontFamily: 'Outfit, sans-serif',
-                type: 'bar',
-                height: 180,
-                toolbar: { show: false },
+    // See `window.renderApexChart` in layouts/app.blade.php — waits for
+    // ApexCharts on a full page load instead of silently drawing nothing.
+    window.renderApexChart('#offboardingMonthlyChart', {
+        series: [{
+            name: 'Requests',
+            data: @json($initiatedSeries),
+        }],
+        colors: ['#145A3A'],
+        chart: {
+            fontFamily: 'Outfit, sans-serif',
+            type: 'bar',
+            height: 180,
+            toolbar: { show: false },
+        },
+        plotOptions: {
+            bar: {
+                horizontal: false,
+                columnWidth: '39%',
+                borderRadius: 5,
+                borderRadiusApplication: 'end',
             },
-            plotOptions: {
-                bar: {
-                    horizontal: false,
-                    columnWidth: '39%',
-                    borderRadius: 5,
-                    borderRadiusApplication: 'end',
-                },
-            },
-            dataLabels: { enabled: false },
-            stroke: { show: true, width: 4, colors: ['transparent'] },
-            xaxis: {
-                categories: @json($monthLabels),
-                axisBorder: { show: false },
-                axisTicks: { show: false },
-            },
-            legend: { show: false },
-            yaxis: { title: false },
-            grid: { yaxis: { lines: { show: true } } },
-            fill: { opacity: 1 },
-            tooltip: {
-                x: { show: false },
-                y: { formatter: (val) => val + ' requests' },
-            },
-        });
-
-        chart.render();
-    })();
+        },
+        dataLabels: { enabled: false },
+        stroke: { show: true, width: 4, colors: ['transparent'] },
+        xaxis: {
+            categories: @json($monthLabels),
+            axisBorder: { show: false },
+            axisTicks: { show: false },
+        },
+        legend: { show: false },
+        yaxis: { title: false },
+        grid: { yaxis: { lines: { show: true } } },
+        fill: { opacity: 1 },
+        tooltip: {
+            x: { show: false },
+            y: { formatter: (val) => val + ' requests' },
+        },
+    });
 </script>

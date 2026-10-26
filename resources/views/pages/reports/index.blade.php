@@ -273,21 +273,21 @@
 
     <script>
         (() => {
-            const breakdownEl = document.querySelector('#reportStatusBreakdownChart');
-            if (breakdownEl && typeof ApexCharts !== 'undefined') {
-                new ApexCharts(breakdownEl, {
+            // See `window.renderApexChart` in layouts/app.blade.php — waits for
+            // ApexCharts on a full page load instead of silently drawing nothing.
+            {
+                window.renderApexChart('#reportStatusBreakdownChart', {
                     series: [{{ $summary['completed'] }}, {{ $summary['pending_in_progress'] }}, {{ $summary['overdue'] }}],
                     labels: ['Completed', 'Pending / In Progress', 'Overdue'],
                     colors: ['#145A3A', '#9CB9FF', '#F97316'],
                     chart: { type: 'donut', height: 280, fontFamily: 'Outfit, sans-serif' },
                     legend: { position: 'bottom' },
                     dataLabels: { enabled: true },
-                }).render();
+                });
             }
 
-            const rateEl = document.querySelector('#reportCompletionRateChart');
-            if (rateEl && typeof ApexCharts !== 'undefined') {
-                new ApexCharts(rateEl, {
+            {
+                window.renderApexChart('#reportCompletionRateChart', {
                     series: [{ name: 'Completion Rate (%)', data: @json($rows->pluck('completion_rate')->values()) }],
                     chart: { type: 'bar', height: 280, fontFamily: 'Outfit, sans-serif', toolbar: { show: false } },
                     colors: ['#145A3A'],
@@ -295,7 +295,7 @@
                     dataLabels: { enabled: false },
                     xaxis: { categories: @json($rows->pluck('separation_type')->values()) },
                     yaxis: { max: 100, title: { text: '%' } },
-                }).render();
+                });
             }
         })();
     </script>
