@@ -58,6 +58,12 @@ class UpdateEmailTemplateRequest extends FormRequest
             // whenever present so a tampered/stray value can't sneak in.
             'schedules.*.clearance_signing_deadline_days' => ['nullable', 'integer', 'min:0'],
             'schedules.*.channel' => ['required_with:schedules', Rule::in(['email', 'system', 'email_and_system'])],
+            // "Repeat" — after its first occurrence the schedule fires again
+            // every `repeat_interval_days` (see EmailTemplateScheduleDispatcher::dueOccurrence()).
+            // The interval is required, and must be at least 1 day, only
+            // while Repeat is on.
+            'schedules.*.repeat_enabled' => ['nullable', 'boolean'],
+            'schedules.*.repeat_interval_days' => ['nullable', 'required_if_accepted:schedules.*.repeat_enabled', 'integer', 'min:1', 'max:365'],
             'schedules.*._destroy' => ['nullable', 'boolean'],
             // "Active Checklist Selection" / "Active General Signatory
             // Selection" — per schedule. Empty/omitted means no selection

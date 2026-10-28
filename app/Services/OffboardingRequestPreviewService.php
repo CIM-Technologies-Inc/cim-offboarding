@@ -161,6 +161,15 @@ class OffboardingRequestPreviewService
                 ] : null,
                 'is_temporary_override' => array_key_exists($template->id, $signatoryOverrides),
                 'due_at' => $dueDates['due_at']?->format('M d, Y g:i A'),
+                // Review-step display: the Original Due Date is always the
+                // offboardee's Last Working Day; the Extended Due Date is
+                // that plus this checklist's configured "Due Date Extension
+                // (Days)" (`due_in_days`) — the same date `due_at` above
+                // resolves to — or null (shown as "No extension applies")
+                // when the checklist has no extension configured.
+                'original_due_at' => $lastWorkingDay->copy()->endOfDay()->format('M d, Y g:i A'),
+                'due_date_extension_days' => $template->due_in_days ?: null,
+                'extended_due_at' => $template->due_in_days ? $dueDates['due_at']?->format('M d, Y g:i A') : null,
                 'clearance_signing_due_at' => $dueDates['clearance_signing_due_at']?->format('M d, Y g:i A'),
                 'task_assignees' => $taskAssignees,
             ];
@@ -254,28 +263,53 @@ class OffboardingRequestPreviewService
             ->with('emailTemplate', 'checklistTemplates:id', 'generalSignatories:id')
             ->get();
 
-        return $schedules->map(function (EmailTemplateSchedule $schedule) use ($shadowRequest) {
-            $scheduledDate = $this->emailTemplateScheduleDispatcher->computeScheduledDate($schedule, $shadowRequest);
-            $recipients = $this->emailTemplateScheduleDispatcher->resolveRecipients($schedule, $shadowRequest);
-            $emailTemplate = $schedule->emailTemplate;
+        return $schedules->flatMap(function (EmailTemplateSchedule $schedule) use ($shadowRequest) {
+            if ($schedule->event !== 'clearance') {
+                return [$this->scheduledNotificationRow($schedule, $shadowRequest, null, null)];
+            }
 
-            return [
-                'template_name' => $emailTemplate?->template_name,
-                'event' => $schedule->event,
-                'event_label' => EmailTemplateSchedule::EVENT_LABELS[$schedule->event] ?? $schedule->event,
-                'timing' => $schedule->timing,
-                'days' => $schedule->days,
-                'clearance_signing_deadline_days' => $schedule->event === 'clearance' ? $schedule->clearance_signing_deadline_days : null,
-                'scheduled_date' => $scheduledDate?->format('M d, Y'),
-                'is_pending' => $scheduledDate === null,
-                'channel' => $schedule->channel,
-                'recipients' => $recipients->map(fn (Employee $recipient) => [
-                    'name' => $recipient->name,
-                    'email' => $recipient->email,
-                ])->values()->all(),
-                'cc_recipients' => $emailTemplate ? $emailTemplate->ccRecipientNames() : [],
-            ];
+            // Clearance Due Date: one row per checklist deadline group (each
+            // checklist's own Clearance Signing Deadline), exactly as the
+            // real scheduler will send them.
+            $groups = $this->emailTemplateScheduleDispatcher->clearanceDeadlineGroups($schedule, $shadowRequest);
+
+            if ($groups === []) {
+                return [$this->scheduledNotificationRow($schedule, $shadowRequest, null, [])];
+            }
+
+            return collect($groups)->map(fn (array $ids, int $days) => $this->scheduledNotificationRow($schedule, $shadowRequest, $days, $ids))->values()->all();
         })->values()->all();
+    }
+
+    /**
+     * @param  array<int, int>|null  $checklistTemplateIds  null = not a Clearance Due Date row; [] = Clearance Due Date with no checklist deadline configured.
+     * @return array<string, mixed>
+     */
+    private function scheduledNotificationRow(EmailTemplateSchedule $schedule, OffboardingRequest $shadowRequest, ?int $clearanceDeadlineDays, ?array $checklistTemplateIds): array
+    {
+        $scheduledDate = $this->emailTemplateScheduleDispatcher->computeScheduledDate($schedule, $shadowRequest, $clearanceDeadlineDays);
+        $recipients = $this->emailTemplateScheduleDispatcher->resolveRecipients($schedule, $shadowRequest, $checklistTemplateIds);
+        $emailTemplate = $schedule->emailTemplate;
+
+        return [
+            'template_name' => $emailTemplate?->template_name,
+            'event' => $schedule->event,
+            'event_label' => EmailTemplateSchedule::EVENT_LABELS[$schedule->event] ?? $schedule->event,
+            'timing' => $schedule->timing,
+            'days' => $schedule->days,
+            'clearance_signing_deadline_days' => $clearanceDeadlineDays,
+            'checklist_titles' => $clearanceDeadlineDays !== null
+                ? $shadowRequest->approvers->whereIn('checklist_template_id', $checklistTemplateIds)->map(fn ($approver) => $approver->checklistTemplate?->title)->filter()->unique()->implode(', ')
+                : null,
+            'scheduled_date' => $scheduledDate?->format('M d, Y'),
+            'is_pending' => $scheduledDate === null,
+            'channel' => $schedule->channel,
+            'recipients' => $recipients->map(fn (Employee $recipient) => [
+                'name' => $recipient->name,
+                'email' => $recipient->email,
+            ])->values()->all(),
+            'cc_recipients' => $emailTemplate ? $emailTemplate->ccRecipientNames() : [],
+        ];
     }
 
     /**

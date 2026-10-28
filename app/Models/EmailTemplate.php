@@ -443,7 +443,14 @@ class EmailTemplate extends Model
             // auto-fill URL instead (see `AuthController::autoFill()`) so
             // the offboardee doesn't have to retype the username/password
             // this same email already shows them in plain text.
-            'offboarding_link' => '<a href="' . ($offboardingLinkUrl ?? route('login')) . '">CIM Offboarding</a>',
+            //
+            // Rendered as a dark green button — same inline styling as the
+            // one-click Approve button (see
+            // `ChecklistApprovalNotifier::buildApproveButtonHtml()`), inline
+            // because email clients strip `<style>` blocks. A bare `<a>`
+            // (no wrapping `<p>`), since every template already puts this
+            // token inside its own paragraph.
+            'offboarding_link' => '<a href="' . e($offboardingLinkUrl ?? route('login')) . '" style="display:inline-block;background-color:#145a3a;color:#ffffff;text-decoration:none;padding:12px 24px;border-radius:8px;font-weight:bold;">CIM Offboarding</a>',
             'approver' => $approverName,
             'offboardee' => $offboardeeName,
             'employee' => $creatorName,

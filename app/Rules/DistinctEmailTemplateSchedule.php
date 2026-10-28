@@ -11,7 +11,8 @@ use Illuminate\Support\Arr;
  * Applied to `schedules.*.days`: rejects a schedule row that is an exact
  * duplicate of an earlier (not-removed) row on the same template — same
  * event, same effective timing, same days, same Clearance deadline, same
- * channel and same checklist / General Signatory selection. Two such rows
+ * channel, same Repeat setting and same checklist / General Signatory
+ * selection. Two such rows
  * resolve to the same recipients on the same date, so each would send its
  * own copy of the same email. Rows differing in any of those (e.g. one
  * Email and one System Notification, or different selections) are
@@ -73,8 +74,8 @@ class DistinctEmailTemplateSchedule implements DataAwareRule, ValidationRule
             $event,
             $days === 0 ? 'on' : ($row['timing'] ?? null),
             $days,
-            $event === 'clearance' ? (int) ($row['clearance_signing_deadline_days'] ?? 19) : null,
             $row['channel'] ?? null,
+            ! empty($row['repeat_enabled']) ? (int) ($row['repeat_interval_days'] ?? 0) : null,
             $ids($row['checklist_template_ids'] ?? []),
             $ids($row['general_signatory_ids'] ?? []),
         ]);

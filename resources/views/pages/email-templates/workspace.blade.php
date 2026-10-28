@@ -103,7 +103,7 @@
                                 recipientQuery: '',
                                 recipientDropdownOpen: false,
                                 groupsExpanded: false,
-                                allEmployees: @js($employees->map(fn ($e) => ['id' => (string) $e->id, 'name' => $e->name, 'code' => $e->employee_code, 'department' => $e->department])),
+                                allEmployees: @js($employees->map(fn ($e) => ['id' => (string) $e->id, 'name' => $e->name, 'code' => $e->employee_code, 'email' => $e->email, 'department' => $e->department])),
                                 allGroups: @js($employeeGroups->map(fn ($g) => ['id' => (string) $g['id'], 'name' => $g['name'], 'employeeIds' => collect($g['employeeIds'])->map(fn ($id) => (string) $id)->all()])),
                                 groupMemberIds() {
                                     return this.recipientGroupIds.flatMap((gid) => {
@@ -111,25 +111,83 @@
                                         return g ? g.employeeIds : [];
                                     });
                                 },
-                                filteredEmployees() {
+                                // Search: a query naming a department (its exact name, a whole
+                                // word of it like Finance, or its initials typed in capitals
+                                // like HR) shows ONLY that department's employees. Exact name
+                                // wins over partial matches (Services vs Information Services).
+                                // Any other query matches name, employee code, email and
+                                // department; every word must match somewhere, so first +
+                                // last name finds someone even with a middle name between.
+                                departmentStopWords: ['and', 'of', 'the', '&'],
+                                departments() {
+                                    return [...new Set(this.allEmployees.map((e) => e.department).filter(Boolean))];
+                                },
+                                departmentInitials(department) {
+                                    return department.split(/\s+/).filter((w) => w && !this.departmentStopWords.includes(w.toLowerCase())).map((w) => w[0]).join('').toUpperCase();
+                                },
+                                matchedDepartments() {
+                                    const raw = this.recipientQuery.trim();
+                                    const q = raw.toLowerCase();
+                                    if (!q) return [];
+                                    const all = this.departments();
+                                    const exact = all.filter((d) => d.toLowerCase() === q);
+                                    if (exact.length) return exact;
+                                    const byWord = q.length >= 3 && !this.departmentStopWords.includes(q)
+                                        ? all.filter((d) => d.toLowerCase().split(/\s+/).includes(q))
+                                        : [];
+                                    if (byWord.length) return byWord;
+                                    return raw.length >= 2 && /^[A-Z]+$/.test(raw)
+                                        ? all.filter((d) => this.departmentInitials(d) === raw)
+                                        : [];
+                                },
+                                matchingEmployees() {
                                     const q = this.recipientQuery.trim().toLowerCase();
-                                    const covered = new Set([...this.recipientEmployeeIds, ...this.groupMemberIds()]);
-                                    return this.allEmployees.filter((e) => !covered.has(e.id) &&
-                                        (!q || e.name.toLowerCase().includes(q) || (e.code || '').toLowerCase().includes(q) || (e.department || '').toLowerCase().includes(q)));
+                                    if (!q) return this.allEmployees;
+                                    const departments = this.matchedDepartments();
+                                    if (departments.length) return this.allEmployees.filter((e) => departments.includes(e.department));
+                                    const words = q.split(/\s+/);
+                                    return this.allEmployees.filter((e) => {
+                                        const haystack = [e.name, e.code, e.email, e.department].filter(Boolean).join(' ').toLowerCase();
+                                        return words.every((w) => haystack.includes(w));
+                                    });
                                 },
-                                addRecipientEmployee(id) {
-                                    if (!this.recipientEmployeeIds.includes(id)) this.recipientEmployeeIds.push(id);
-                                    this.recipientQuery = '';
-                                    this.recipientDropdownOpen = false;
+                                // The group (if any) already covering this employee — such an
+                                // employee is shown checked but can't be added again, so the
+                                // same person is never listed twice.
+                                coveringGroupName(id) {
+                                    const g = this.allGroups.find((g) => this.recipientGroupIds.includes(g.id) && g.employeeIds.includes(id));
+                                    return g ? g.name : null;
                                 },
-                                selectAllEmployees() {
-                                    this.recipientEmployeeIds = this.allEmployees.map((e) => e.id);
-                                    // Every group is now fully redundant since its members are
-                                    // already covered individually, same don't-double-represent
-                                    // rule toggleRecipientGroup() already applies the other way.
-                                    this.recipientGroupIds = [];
-                                    this.recipientQuery = '';
-                                    this.recipientDropdownOpen = false;
+                                isRecipientSelected(id) {
+                                    return this.recipientEmployeeIds.includes(id) || this.coveringGroupName(id) !== null;
+                                },
+                                toggleRecipientEmployee(id) {
+                                    if (this.recipientEmployeeIds.includes(id)) {
+                                        this.removeRecipientEmployee(id);
+                                    } else if (this.coveringGroupName(id) === null) {
+                                        this.recipientEmployeeIds.push(id);
+                                    }
+                                },
+                                // Select All / Deselect All act ONLY on the employees the current
+                                // search shows; selections outside it are never touched.
+                                allMatchingSelected() {
+                                    const matches = this.matchingEmployees();
+                                    return matches.length > 0 && matches.every((e) => this.isRecipientSelected(e.id));
+                                },
+                                selectAllMatching() {
+                                    const toAdd = this.matchingEmployees().map((e) => e.id).filter((id) => !this.isRecipientSelected(id));
+                                    this.recipientEmployeeIds = [...this.recipientEmployeeIds, ...toAdd];
+                                },
+                                deselectAllMatching() {
+                                    const ids = new Set(this.matchingEmployees().map((e) => e.id));
+                                    this.recipientEmployeeIds = this.recipientEmployeeIds.filter((id) => !ids.has(id));
+                                },
+                                matchSummary() {
+                                    const count = this.matchingEmployees().length;
+                                    const noun = count === 1 ? ' employee' : ' employees';
+                                    const departments = this.matchedDepartments();
+                                    if (departments.length) return 'Department: ' + departments.join(', ') + ' · ' + count + noun;
+                                    return this.recipientQuery.trim() ? count + ' matching' + noun : 'All ' + count + noun;
                                 },
                                 removeRecipientEmployee(id) {
                                     this.recipientEmployeeIds = this.recipientEmployeeIds.filter((x) => x !== id);
@@ -160,7 +218,7 @@
                             }">
                             <div class="mb-1.5 flex items-center justify-between">
                                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-400">
-                                    Recipients / CC
+                                    Recipients
                                 </label>
                                 <button type="button" @click="deselectAllRecipients()"
                                     x-show="recipientEmployeeIds.length || recipientGroupIds.length" x-cloak
@@ -188,27 +246,40 @@
                                 </template>
                             </div>
 
-                            <div class="relative" @click.outside="recipientDropdownOpen = false">
-                                <input type="text" x-model="recipientQuery" @focus="recipientDropdownOpen = true"
-                                    placeholder="Search employees by name, number, or department..."
+                            <div class="relative" @click.outside="recipientDropdownOpen = false" @keydown.escape="recipientDropdownOpen = false"
+                                x-init="$watch('recipientDropdownOpen', (open) => { if (!open) recipientQuery = '' })">
+                                <input type="text" x-model="recipientQuery" @focus="recipientDropdownOpen = true" @click="recipientDropdownOpen = true" @input="recipientDropdownOpen = true"
+                                    placeholder="Search by name, employee code, email, or department (e.g. HR)..."
                                     class="h-11 w-full rounded-xl border border-gray-300 bg-transparent px-4 py-2.5 text-sm text-gray-800 shadow-sm placeholder:text-gray-400 focus:border-[#145a3a]/50 focus:outline-hidden focus:ring-3 focus:ring-[#145a3a]/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30" />
-                                <div x-show="recipientDropdownOpen && (filteredEmployees().length || recipientEmployeeIds.length < allEmployees.length)" x-cloak
-                                    class="absolute z-50 mt-1 max-h-56 w-full overflow-y-auto rounded-xl border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-700 dark:bg-gray-900">
-                                    <template x-if="recipientEmployeeIds.length < allEmployees.length">
-                                        <button type="button" @click="selectAllEmployees()"
-                                            class="flex w-full items-center gap-2 border-b border-gray-100 px-4 py-2 text-left text-sm font-medium text-[#145a3a] hover:bg-gray-50 dark:border-gray-800 dark:text-[#3aa876] dark:hover:bg-white/5">
-                                            <svg width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" class="shrink-0">
-                                                <path d="M16.6667 5L7.50001 14.1667L3.33334 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-                                            </svg>
-                                            <span>All <span class="font-normal text-gray-400">— select every employee</span></span>
+                                {{-- Closes after each tick/untick and after Select All / Deselect
+                                     All. Whenever it closes (for any reason) the search box is
+                                     cleared — only the search text; selected recipients stay —
+                                     so the next search starts fresh. --}}
+                                <div x-show="recipientDropdownOpen" x-cloak
+                                    class="absolute z-50 mt-1 max-h-72 w-full overflow-y-auto rounded-xl border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-700 dark:bg-gray-900">
+                                    <div class="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-gray-100 bg-white px-4 py-2 dark:border-gray-800 dark:bg-gray-900">
+                                        <span class="truncate text-xs text-gray-500 dark:text-gray-400" x-text="matchSummary()"></span>
+                                        <template x-if="matchingEmployees().length">
+                                            <button type="button" @click="allMatchingSelected() ? deselectAllMatching() : selectAllMatching(); recipientDropdownOpen = false"
+                                                class="shrink-0 text-xs font-semibold text-[#145a3a] hover:underline dark:text-[#3aa876]"
+                                                x-text="allMatchingSelected() ? 'Deselect All' : 'Select All'"></button>
+                                        </template>
+                                    </div>
+                                    <template x-for="employee in matchingEmployees()" :key="employee.id">
+                                        <button type="button" @click="toggleRecipientEmployee(employee.id); recipientDropdownOpen = false"
+                                            :disabled="coveringGroupName(employee.id) !== null"
+                                            class="flex w-full items-start gap-3 px-4 py-2 text-left text-sm hover:bg-gray-50 disabled:cursor-default disabled:opacity-60 dark:hover:bg-white/5">
+                                            <input type="checkbox" tabindex="-1" :checked="isRecipientSelected(employee.id)"
+                                                class="pointer-events-none mt-0.5 h-4 w-4 shrink-0 rounded border-gray-300 text-[#145a3a] accent-[#145a3a] dark:border-gray-700" />
+                                            <span class="min-w-0">
+                                                <span class="block text-gray-800 dark:text-white/90" x-text="employee.name + (employee.code ? ' (' + employee.code + ')' : '')"></span>
+                                                <span class="block truncate text-xs text-gray-400" x-text="[employee.department, employee.email].filter(Boolean).join(' · ')"></span>
+                                                <span x-show="coveringGroupName(employee.id)" class="block text-xs text-blue-600 dark:text-blue-400" x-text="'Included via group ' + coveringGroupName(employee.id)"></span>
+                                            </span>
                                         </button>
                                     </template>
-                                    <template x-for="employee in filteredEmployees()" :key="employee.id">
-                                        <button type="button" @click="addRecipientEmployee(employee.id)"
-                                            class="flex w-full flex-col items-start px-4 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-white/5">
-                                            <span class="text-gray-800 dark:text-white/90" x-text="employee.name + (employee.code ? ' (' + employee.code + ')' : '')"></span>
-                                            <span class="text-xs text-gray-400" x-text="employee.department"></span>
-                                        </button>
+                                    <template x-if="!matchingEmployees().length">
+                                        <p class="px-4 py-3 text-sm text-gray-400" x-text="'No employees match ' + recipientQuery.trim() + '.'"></p>
                                     </template>
                                 </div>
                             </div>
@@ -258,14 +329,12 @@
                                     'id' => $s->id, 'event' => $s->event, 'timing' => $s->timing, 'days' => $s->days,
                                     'clearanceSigningDeadlineDays' => $s->clearance_signing_deadline_days,
                                     'channel' => $s->channel,
+                                    'repeatEnabled' => (bool) $s->repeat_enabled,
+                                    'repeatIntervalDays' => $s->repeat_interval_days,
                                     'checklistTemplateIds' => $s->checklistTemplates->pluck('id')->all(),
                                     'generalSignatoryIds' => $s->generalSignatories->pluck('id')->all(),
                                 ])->values()->all() ?? []),
                                 allChecklistTemplates: @js($activeChecklistTemplates->map(fn ($c) => ['id' => $c->id, 'title' => $c->title])),
-                                allGeneralSignatories: @js($activeGeneralSignatories->map(fn ($g) => [
-                                    'id' => $g->id,
-                                    'label' => ($g->clearanceSignatory?->name ?? 'Unassigned') . ($g->clearanceSignatory?->employee_code ? ' (' . $g->clearanceSignatory->employee_code . ')' : ''),
-                                ])),
                                 addingSchedule: false,
                                 editingId: null,
                                 draftEvent: 'last_working_day',
@@ -273,6 +342,8 @@
                                 draftDays: 7,
                                 draftClearanceSigningDeadlineDays: 19,
                                 draftChannel: 'email',
+                                draftRepeat: false,
+                                draftRepeatEvery: '',
                                 draftChecklistTemplateIds: [],
                                 draftGeneralSignatoryIds: [],
                                 draftError: '',
@@ -291,6 +362,8 @@
                                     this.draftDays = 7;
                                     this.draftClearanceSigningDeadlineDays = 19;
                                     this.draftChannel = 'email';
+                                    this.draftRepeat = false;
+                                    this.draftRepeatEvery = '';
                                     this.draftChecklistTemplateIds = [];
                                     this.draftGeneralSignatoryIds = [];
                                 },
@@ -304,15 +377,16 @@
                                     if (!isWhole(this.draftDays)) {
                                         return 'Number of Days must be a whole number of 0 or more.';
                                     }
-                                    if (this.draftEvent === 'clearance' && !isWhole(this.draftClearanceSigningDeadlineDays)) {
-                                        return 'Clearance Signing Deadline must be a whole number of 0 or more.';
-                                    }
                                     if (this.draftEvent === 'creation' && this.draftTiming === 'before' && Number(this.draftDays) > 0) {
                                         return 'A Creation schedule can only be sent on or after the request is created — choose After.';
+                                    }
+                                    if (this.draftRepeat && !(isWhole(this.draftRepeatEvery) && Number(this.draftRepeatEvery) >= 1 && Number(this.draftRepeatEvery) <= 365)) {
+                                        return 'Repeat Every (Days) must be a whole number from 1 to 365.';
                                     }
                                     const draft = {
                                         event: this.draftEvent, timing: this.draftTiming, days: this.draftDays,
                                         clearanceSigningDeadlineDays: this.draftClearanceSigningDeadlineDays, channel: this.draftChannel,
+                                        repeatEnabled: this.draftRepeat, repeatIntervalDays: this.draftRepeatEvery,
                                         checklistTemplateIds: this.draftChecklistTemplateIds, generalSignatoryIds: this.draftGeneralSignatoryIds,
                                     };
                                     if (this.schedules.some((s) => s.id !== this.editingId && this.scheduleSignature(s) === this.scheduleSignature(draft))) {
@@ -325,8 +399,8 @@
                                     const ids = (list) => [...new Set((list || []).map(Number))].sort((a, b) => a - b);
                                     return JSON.stringify([
                                         s.event, days === 0 ? 'on' : s.timing, days,
-                                        s.event === 'clearance' ? Number(s.clearanceSigningDeadlineDays ?? 19) : null,
-                                        s.channel, ids(s.checklistTemplateIds), ids(s.generalSignatoryIds),
+                                        s.channel, s.repeatEnabled ? Number(s.repeatIntervalDays) : null,
+                                        ids(s.checklistTemplateIds), ids(s.generalSignatoryIds),
                                     ]);
                                 },
                                 addSchedule() {
@@ -336,6 +410,8 @@
                                         id: this.nextLocalId--, event: this.draftEvent, timing: this.draftTiming, days: this.draftDays,
                                         clearanceSigningDeadlineDays: this.draftEvent === 'clearance' ? this.draftClearanceSigningDeadlineDays : null,
                                         channel: this.draftChannel,
+                                        repeatEnabled: this.draftRepeat,
+                                        repeatIntervalDays: this.draftRepeat ? Number(this.draftRepeatEvery) : null,
                                         checklistTemplateIds: [...this.draftChecklistTemplateIds],
                                         generalSignatoryIds: [...this.draftGeneralSignatoryIds],
                                     });
@@ -354,6 +430,8 @@
                                     // none yet (e.g. a pre-this-feature row).
                                     this.draftClearanceSigningDeadlineDays = s.clearanceSigningDeadlineDays ?? 19;
                                     this.draftChannel = s.channel;
+                                    this.draftRepeat = !!s.repeatEnabled;
+                                    this.draftRepeatEvery = s.repeatEnabled ? s.repeatIntervalDays : '';
                                     this.draftChecklistTemplateIds = [...s.checklistTemplateIds];
                                     this.draftGeneralSignatoryIds = [...s.generalSignatoryIds];
                                 },
@@ -367,6 +445,8 @@
                                         s.days = this.draftDays;
                                         s.clearanceSigningDeadlineDays = this.draftEvent === 'clearance' ? this.draftClearanceSigningDeadlineDays : null;
                                         s.channel = this.draftChannel;
+                                        s.repeatEnabled = this.draftRepeat;
+                                        s.repeatIntervalDays = this.draftRepeat ? Number(this.draftRepeatEvery) : null;
                                         s.checklistTemplateIds = [...this.draftChecklistTemplateIds];
                                         s.generalSignatoryIds = [...this.draftGeneralSignatoryIds];
                                     }
@@ -378,36 +458,8 @@
                                     this.schedules = this.schedules.filter((s) => s.id !== id);
                                     if (this.editingId === id) this.resetDraft();
                                 },
-                                toggleDraftChecklist(id) {
-                                    this.draftChecklistTemplateIds = this.draftChecklistTemplateIds.includes(id)
-                                        ? this.draftChecklistTemplateIds.filter((x) => x !== id)
-                                        : [...this.draftChecklistTemplateIds, id];
-                                },
-                                toggleDraftGeneralSignatory(id) {
-                                    this.draftGeneralSignatoryIds = this.draftGeneralSignatoryIds.includes(id)
-                                        ? this.draftGeneralSignatoryIds.filter((x) => x !== id)
-                                        : [...this.draftGeneralSignatoryIds, id];
-                                },
-                                // Master checkbox behavior: checked (every item already
-                                // selected) -> unchecking it clears the list; otherwise
-                                // (none or only some selected) -> checking it selects
-                                // every item. Matches the Select All Pending My Approval
-                                // checkbox pattern already used elsewhere on this
-                                // checklist modal, just scoped to this one draft list.
-                                allDraftChecklistsSelected() {
-                                    return this.allChecklistTemplates.length > 0 && this.draftChecklistTemplateIds.length === this.allChecklistTemplates.length;
-                                },
-                                toggleAllDraftChecklists() {
-                                    this.draftChecklistTemplateIds = this.allDraftChecklistsSelected() ? [] : this.allChecklistTemplates.map((c) => c.id);
-                                },
-                                allDraftGeneralSignatoriesSelected() {
-                                    return this.allGeneralSignatories.length > 0 && this.draftGeneralSignatoryIds.length === this.allGeneralSignatories.length;
-                                },
-                                toggleAllDraftGeneralSignatories() {
-                                    this.draftGeneralSignatoryIds = this.allDraftGeneralSignatoriesSelected() ? [] : this.allGeneralSignatories.map((g) => g.id);
-                                },
                                 // Mirrors EmailTemplateSchedule::EVENT_LABELS/label() exactly.
-                                eventLabels: { creation: 'Creation', last_working_day: 'Last Working Day', clearance: 'Clearance', final_pay: 'Final Pay' },
+                                eventLabels: { creation: 'Creation', last_working_day: 'Last Working Day', clearance: 'Clearance Due Date', final_pay: 'Final Pay' },
                                 scheduleLabel(s) {
                                     const eventLabel = this.eventLabels[s.event] ?? s.event;
                                     let base;
@@ -418,8 +470,8 @@
                                         const timingLabel = s.timing === 'before' ? 'Before' : 'After';
                                         base = s.days + ' ' + unit + ' ' + timingLabel + ' ' + eventLabel;
                                     }
-                                    if (s.event === 'clearance' && s.clearanceSigningDeadlineDays !== null && s.clearanceSigningDeadlineDays !== undefined) {
-                                        base += ' (' + s.clearanceSigningDeadlineDays + ' days after Last Working Day)';
+                                    if (s.repeatEnabled && Number(s.repeatIntervalDays) >= 1) {
+                                        base += ', repeating every ' + (Number(s.repeatIntervalDays) === 1 ? 'day' : s.repeatIntervalDays + ' days');
                                     }
                                     return base;
                                 },
@@ -464,7 +516,7 @@
                             }">
                             <button type="button" @click="timelineExpanded = !timelineExpanded"
                                 class="flex items-center gap-1.5 text-sm font-medium text-gray-700 dark:text-gray-400">
-                                <span>Email Notification Schedule Timeline</span>
+                                <span>Schedule Email Notification</span>
                                 <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"
                                     class="shrink-0 transition-transform duration-200" :class="timelineExpanded ? 'rotate-180' : ''">
                                     <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
@@ -563,10 +615,11 @@
                                                 <input type="hidden" :name="'schedules[' + s.id + '][event]'" :value="s.event" />
                                                 <input type="hidden" :name="'schedules[' + s.id + '][timing]'" :value="s.timing" />
                                                 <input type="hidden" :name="'schedules[' + s.id + '][days]'" :value="s.days" />
-                                                <template x-if="s.event === 'clearance'">
-                                                    <input type="hidden" :name="'schedules[' + s.id + '][clearance_signing_deadline_days]'" :value="s.clearanceSigningDeadlineDays" />
-                                                </template>
                                                 <input type="hidden" :name="'schedules[' + s.id + '][channel]'" :value="s.channel" />
+                                                <input type="hidden" :name="'schedules[' + s.id + '][repeat_enabled]'" :value="s.repeatEnabled ? 1 : 0" />
+                                                <template x-if="s.repeatEnabled">
+                                                    <input type="hidden" :name="'schedules[' + s.id + '][repeat_interval_days]'" :value="s.repeatIntervalDays" />
+                                                </template>
                                                 <template x-for="cid in s.checklistTemplateIds" :key="'sched-' + s.id + '-checklist-' + cid">
                                                     <input type="hidden" :name="'schedules[' + s.id + '][checklist_template_ids][]'" :value="cid" />
                                                 </template>
@@ -598,7 +651,7 @@
                                                     + Add Schedule
                                                 </button>
 
-                                                <div x-show="addingSchedule || editingId !== null" x-cloak class="grid grid-cols-3 gap-2 rounded-lg border border-gray-200 p-3 dark:border-gray-800">
+                                                <div x-show="addingSchedule || editingId !== null" x-cloak class="grid grid-cols-2 gap-3 rounded-lg border border-gray-200 p-3 dark:border-gray-800">
                                                     <div>
                                                         <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">Number of Days</label>
                                                         <input type="number" min="0" step="1" x-model.number="draftDays"
@@ -610,7 +663,7 @@
                                                             class="h-9 w-full rounded-lg border border-gray-300 bg-transparent px-2 text-xs text-gray-800 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90">
                                                             <option value="creation">Creation</option>
                                                             <option value="last_working_day">Last Working Day</option>
-                                                            <option value="clearance">Clearance</option>
+                                                            <option value="clearance">Clearance Due Date</option>
                                                             <option value="final_pay">Final Pay</option>
                                                         </select>
                                                     </div>
@@ -622,13 +675,13 @@
                                                             <option value="after">After</option>
                                                         </select>
                                                     </div>
-                                                    <div x-show="draftEvent === 'clearance'" x-cloak class="col-span-3 sm:col-span-1">
+                                                    <!-- <div x-show="draftEvent === 'clearance'" x-cloak class="col-span-3 sm:col-span-1">
                                                         <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
                                                             Clearance Signing Deadline (Days After LWD)
                                                         </label>
                                                         <input type="number" min="0" step="1" x-model.number="draftClearanceSigningDeadlineDays"
                                                             class="h-9 w-full rounded-lg border border-gray-300 bg-transparent px-2 text-xs text-gray-800 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90" />
-                                                    </div>
+                                                    </div> -->
                                                     <div>
                                                         <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">Channel</label>
                                                         <select x-model="draftChannel"
@@ -638,62 +691,21 @@
                                                             <option value="email_and_system">Email and System Notification</option>
                                                         </select>
                                                     </div>
-                                                    <p x-show="draftError" x-cloak class="col-span-3 text-xs text-error-500" x-text="draftError"></p>
-                                                    <p class="col-span-3 text-xs text-gray-400" x-text="scheduleLabel({ event: draftEvent, timing: draftTiming, days: draftDays, clearanceSigningDeadlineDays: draftEvent === 'clearance' ? draftClearanceSigningDeadlineDays : null })"></p>
-                                                    <div class="col-span-3">
-                                                        <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
-                                                            Active Checklist Selection
-                                                            <span class="font-normal text-gray-400">— leave empty to include every checklist attached to each request</span>
+                                                    <p x-show="draftError" x-cloak class="col-span-full text-xs text-error-500" x-text="draftError"></p>
+                                                    <p class="col-span-full text-xs text-gray-400" x-text="scheduleLabel({ event: draftEvent, timing: draftTiming, days: draftDays, clearanceSigningDeadlineDays: draftEvent === 'clearance' ? draftClearanceSigningDeadlineDays : null, repeatEnabled: draftRepeat, repeatIntervalDays: draftRepeatEvery })"></p>
+                                                    <div class="col-span-full grid grid-cols-2 gap-3">
+                                                        <label class="col-span-full flex cursor-pointer items-center gap-2 text-xs font-medium text-gray-700 dark:text-gray-300">
+                                                            <input type="checkbox" x-model="draftRepeat"
+                                                                class="h-4 w-4 rounded border-gray-300 text-[#145a3a] accent-[#145a3a] focus:ring-[#145a3a]/40 dark:border-gray-700" />
+                                                            <span>Repeat</span>
                                                         </label>
-                                                        <p x-show="draftEvent === 'creation'" x-cloak class="mb-1 text-xs text-warning-600 dark:text-warning-400">
-                                                            Note: a Secondary or Final Pay checklist isn't attached to a request yet at creation time — selecting one here means this schedule will find no recipient for it when it fires.
-                                                        </p>
-                                                        <div class="max-h-36 space-y-1 overflow-y-auto rounded-lg border border-gray-200 p-2 dark:border-gray-800">
-                                                            <label class="flex cursor-pointer items-center gap-2 rounded-md border-b border-gray-100 px-1.5 py-1 text-xs font-medium text-gray-700 dark:border-gray-800 dark:text-gray-300"
-                                                                x-show="allChecklistTemplates.length">
-                                                                <input type="checkbox" :checked="allDraftChecklistsSelected()" @change="toggleAllDraftChecklists()"
-                                                                    x-effect="$el.indeterminate = draftChecklistTemplateIds.length > 0 && !allDraftChecklistsSelected()"
-                                                                    class="h-3.5 w-3.5 rounded border-gray-300 text-[#145a3a] accent-[#145a3a] focus:ring-[#145a3a]/40 dark:border-gray-700" />
-                                                                <span>Select All</span>
-                                                            </label>
-                                                            <template x-for="c in allChecklistTemplates" :key="'draft-checklist-' + c.id">
-                                                                <label class="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-xs text-gray-700 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-white/5">
-                                                                    <input type="checkbox" :checked="draftChecklistTemplateIds.includes(c.id)" @change="toggleDraftChecklist(c.id)"
-                                                                        class="h-3.5 w-3.5 rounded border-gray-300 text-[#145a3a] accent-[#145a3a] focus:ring-[#145a3a]/40 dark:border-gray-700" />
-                                                                    <span x-text="c.title"></span>
-                                                                </label>
-                                                            </template>
-                                                            <template x-if="!allChecklistTemplates.length">
-                                                                <p class="px-1.5 py-1 text-xs text-gray-400">No active checklists.</p>
-                                                            </template>
+                                                        <div x-show="draftRepeat" x-cloak>
+                                                            <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">Repeat Every (Days)</label>
+                                                            <input type="number" min="1" max="365" step="1" x-model.number="draftRepeatEvery" placeholder="e.g. 2"
+                                                                class="h-9 w-full rounded-lg border border-gray-300 bg-transparent px-2 text-xs text-gray-800 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90" />
                                                         </div>
                                                     </div>
-                                                    <div class="col-span-3">
-                                                        <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
-                                                            Active Department Signatory Selection
-                                                            <span class="font-normal text-gray-400">— leave empty to include every Department Signatory attached to each request</span>
-                                                        </label>
-                                                        <div class="max-h-36 space-y-1 overflow-y-auto rounded-lg border border-gray-200 p-2 dark:border-gray-800">
-                                                            <label class="flex cursor-pointer items-center gap-2 rounded-md border-b border-gray-100 px-1.5 py-1 text-xs font-medium text-gray-700 dark:border-gray-800 dark:text-gray-300"
-                                                                x-show="allGeneralSignatories.length">
-                                                                <input type="checkbox" :checked="allDraftGeneralSignatoriesSelected()" @change="toggleAllDraftGeneralSignatories()"
-                                                                    x-effect="$el.indeterminate = draftGeneralSignatoryIds.length > 0 && !allDraftGeneralSignatoriesSelected()"
-                                                                    class="h-3.5 w-3.5 rounded border-gray-300 text-[#145a3a] accent-[#145a3a] focus:ring-[#145a3a]/40 dark:border-gray-700" />
-                                                                <span>Select All</span>
-                                                            </label>
-                                                            <template x-for="g in allGeneralSignatories" :key="'draft-gs-' + g.id">
-                                                                <label class="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-xs text-gray-700 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-white/5">
-                                                                    <input type="checkbox" :checked="draftGeneralSignatoryIds.includes(g.id)" @change="toggleDraftGeneralSignatory(g.id)"
-                                                                        class="h-3.5 w-3.5 rounded border-gray-300 text-[#145a3a] accent-[#145a3a] focus:ring-[#145a3a]/40 dark:border-gray-700" />
-                                                                    <span x-text="g.label"></span>
-                                                                </label>
-                                                            </template>
-                                                            <template x-if="!allGeneralSignatories.length">
-                                                                <p class="px-1.5 py-1 text-xs text-gray-400">No active General Signatories.</p>
-                                                            </template>
-                                                        </div>
-                                                    </div>
-                                                    <div class="col-span-3 flex justify-end gap-2">
+                                                    <div class="col-span-full flex justify-end gap-2">
                                                         <button type="button" @click="resetDraft()"
                                                             class="rounded-md px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-white/5">
                                                             Cancel
@@ -794,7 +806,7 @@
                                                     [$brace('employee_number'), "The offboardee's employee ID/code."],
                                                     [$brace('checklist_name'), "The title of the checklist this email concerns."],
                                                     [$brace('due_date'), "The checklist's current due date."],
-                                                    [$brace('offboarding_link'), "A clickable \"CIM Offboarding\" link to the sign-in page."],
+                                                    [$brace('offboarding_link'), "A dark green \"CIM Offboarding\" button linking to the sign-in page."],
                                                 ],
                                             ],
                                             [

@@ -8,7 +8,6 @@ use App\Models\ChecklistTemplate;
 use App\Models\Employee;
 use App\Models\EmailTemplate;
 use App\Models\EmployeeGroup;
-use App\Models\GeneralSignatory;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -166,13 +165,13 @@ class EmailTemplateController extends Controller
             // on the right simply ignores the extra keys.
             'employees' => Employee::orderBy('name')->get(['id', 'name', 'department', 'employee_code', 'email']),
             'employeeGroups' => $this->recipientGroupOptions(),
-            // "Active Checklist Selection" / "Active General Signatory
-            // Selection" pickers on each schedule — see
-            // `EmailTemplateSchedule::checklistTemplates()`/`generalSignatories()`.
+            // Checklist titles for each schedule's recipient summary line on
+            // the timeline (`scheduleRecipientSummary()`). The per-schedule
+            // Active Checklist / Department Signatory Selection pickers were
+            // removed from the editor; a selection already saved on an
+            // existing schedule is still carried through unchanged (see the
+            // hidden `schedules[...]` inputs) so its recipients don't change.
             'activeChecklistTemplates' => ChecklistTemplate::where('is_active', true)->orderBy('title')->get(['id', 'title']),
-            'activeGeneralSignatories' => GeneralSignatory::where('is_active', true)
-                ->with('clearanceSignatory:id,name,employee_code')
-                ->get(),
         ]);
     }
 
@@ -303,18 +302,15 @@ class EmailTemplateController extends Controller
                 'event' => $row['event'],
                 'timing' => $row['timing'],
                 'days' => $row['days'],
-                // Only meaningful for `event = 'clearance'` — locked to
-                // null server-side for every other event even though the
-                // UI already hides the field, mirroring this controller's
-                // own server-side defense of `template_name` for system
-                // templates elsewhere in this class. Prevents a stale
-                // value surviving a switch away from Clearance and silently
-                // reapplying if the admin switches back without
-                // re-entering it.
-                'clearance_signing_deadline_days' => $row['event'] === 'clearance'
-                    ? ($row['clearance_signing_deadline_days'] ?? 19)
-                    : null,
+                // No longer used: a Clearance Due Date schedule follows each
+                // checklist's own Clearance Signing Deadline instead (see
+                // EmailTemplateScheduleDispatcher::clearanceDeadlineGroups()).
+                'clearance_signing_deadline_days' => null,
                 'channel' => $row['channel'],
+                // Interval stored only while Repeat is on, so a stale value
+                // can never silently reapply after Repeat is switched off.
+                'repeat_enabled' => ! empty($row['repeat_enabled']),
+                'repeat_interval_days' => ! empty($row['repeat_enabled']) ? (int) $row['repeat_interval_days'] : null,
             ];
 
             // "Active Checklist Selection" / "Active General Signatory

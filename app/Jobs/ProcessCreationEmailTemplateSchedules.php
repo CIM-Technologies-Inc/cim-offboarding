@@ -41,6 +41,7 @@ class ProcessCreationEmailTemplateSchedules implements ShouldQueue
         $request = OffboardingRequest::with([
             'employee',
             'approvers.employee',
+            'approvers.checklistTemplate',
             'generalSignatoryApprovals.generalSignatory.clearanceSignatory',
         ])->find($this->offboardingRequestId);
 

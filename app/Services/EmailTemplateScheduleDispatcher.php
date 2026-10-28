@@ -31,13 +31,18 @@ use Illuminate\Support\Facades\Notification;
  * caller resolves an occurrence first marks it `'sent'`, so the two can
  * never double-send the same one.
  *
- * The `clearance` event's own `EmailTemplateSchedule.clearance_signing_deadline_days`
- * is a DELIBERATELY SEPARATE, per-schedule setting from the pre-existing
- * `ChecklistTemplate.clearance_signing_deadline_days` (which drives the
- * unrelated, already-shipped `NotifyClearanceSigningDue` command). Both
- * default to 19 days and both compute off the same `last_working_day`, but
- * they are two independent systems by design — this class never reads from
- * or writes to the checklist-template-level one.
+ * The `clearance` event ("Clearance Due Date") is timed from each
+ * checklist's own Clearance Due Date: the request's Last Working Day plus
+ * that checklist template's CURRENT `clearance_signing_deadline_days` (the
+ * same setting `NotifyClearanceSigningDue` uses). Checklists on a request
+ * can have different deadlines, so a clearance schedule resolves one
+ * occurrence per distinct deadline, each sent only to the Clearance
+ * Signatories of the checklists sharing that deadline — see
+ * `clearanceDeadlineGroups()` / `dueOccurrences()`. Nothing falls back to a
+ * fixed number of days: a checklist with no deadline configured simply has
+ * no Clearance Due Date. (The old per-schedule
+ * `EmailTemplateSchedule.clearance_signing_deadline_days` is no longer
+ * used.)
  */
 class EmailTemplateScheduleDispatcher
 {
@@ -63,6 +68,7 @@ class EmailTemplateScheduleDispatcher
             ->with([
                 'employee',
                 'approvers.employee',
+                'approvers.checklistTemplate',
                 'generalSignatoryApprovals.generalSignatory.clearanceSignatory',
             ])
             ->get();
@@ -104,12 +110,32 @@ class EmailTemplateScheduleDispatcher
             return true;
         }
 
-        $scheduledDate = $this->computeScheduledDate($schedule, $request);
+        // The occurrence due right now: the schedule's initial date for a
+        // one-time schedule, or — with Repeat on — the latest repeat
+        // occurrence that has come due, within the schedule's stopping
+        // window. Each occurrence has its own ledger row (keyed by its date
+        // in `scheduled_for`) and its own lock below, so every repeat is
+        // sent once and only once.
+        //
+        // A Clearance Due Date schedule can have several occurrences due on
+        // different dates (one per distinct checklist deadline); each is its
+        // own ledger row, lock and recipient set.
+        $processed = false;
 
-        if ($scheduledDate === null || $scheduledDate->isFuture()) {
-            return false;
+        foreach ($this->dueOccurrences($schedule, $request) as $date => $checklistTemplateIds) {
+            if ($this->processOccurrence($schedule, $request, Carbon::parse($date), $checklistTemplateIds)) {
+                $processed = true;
+            }
         }
 
+        return $processed;
+    }
+
+    /**
+     * @param  array<int, int>|null  $checklistTemplateIds  Restricts recipients to these checklists' signatories (Clearance Due Date occurrences); null = the schedule's normal recipients.
+     */
+    private function processOccurrence(EmailTemplateSchedule $schedule, OffboardingRequest $request, Carbon $scheduledDate, ?array $checklistTemplateIds): bool
+    {
         // Only one process may work on a given occurrence at a time — the
         // daily sweep, the eager at-creation job, and any duplicate
         // `schedule:run` invocation (e.g. two OS-level scheduler tasks
@@ -141,7 +167,7 @@ class EmailTemplateScheduleDispatcher
                 return false;
             }
 
-            $this->sendForRequest($schedule, $request, $scheduledDate, $existing);
+            $this->sendForRequest($schedule, $request, $scheduledDate, $existing, $checklistTemplateIds);
         } finally {
             $lock->release();
         }
@@ -177,17 +203,37 @@ class EmailTemplateScheduleDispatcher
      * wanted for a Final Pay schedule before any Final Pay checklist could
      * possibly exist yet.
      */
-    public function computeScheduledDate(EmailTemplateSchedule $schedule, OffboardingRequest $request): ?Carbon
+    public function computeScheduledDate(EmailTemplateSchedule $schedule, OffboardingRequest $request, ?int $clearanceDeadlineDays = null): ?Carbon
+    {
+        $referenceDate = $this->referenceDate($schedule, $request, $clearanceDeadlineDays);
+
+        if (! $referenceDate) {
+            return null;
+        }
+
+        return $schedule->timing === 'before'
+            ? $referenceDate->subDays($schedule->days)
+            : $referenceDate->addDays($schedule->days);
+    }
+
+    /**
+     * The event date a schedule is timed from (request creation, Last
+     * Working Day, Clearance Due Date or Final Pay deadline), normalized to
+     * the start of its calendar day — or null while that milestone doesn't
+     * exist for this request yet. For the Clearance Due Date the caller
+     * passes the checklist deadline being evaluated (see
+     * `clearanceDeadlineGroups()`); without one there is no date.
+     */
+    public function referenceDate(EmailTemplateSchedule $schedule, OffboardingRequest $request, ?int $clearanceDeadlineDays = null): ?Carbon
     {
         $referenceDate = match ($schedule->event) {
             'creation' => $request->created_at,
             'last_working_day' => $request->last_working_day,
-            // A brand-new, per-SCHEDULE setting (default 19, admin-editable
-            // per Timeline schedule) — deliberately independent of the
-            // pre-existing per-CHECKLIST-TEMPLATE `clearance_signing_deadline_days`
-            // that already drives `NotifyClearanceSigningDue`; see this
-            // class's own docblock.
-            'clearance' => $request->last_working_day?->copy()->addDays($schedule->clearance_signing_deadline_days ?? 19),
+            // Clearance Due Date = Last Working Day + the checklist's
+            // configured Clearance Signing Deadline (never a fixed default).
+            'clearance' => $clearanceDeadlineDays !== null
+                ? $request->last_working_day?->copy()->addDays($clearanceDeadlineDays)
+                : null,
             'final_pay' => $this->finalPayReferenceDate($request),
             default => null,
         };
@@ -203,11 +249,191 @@ class EmailTemplateScheduleDispatcher
         // 15:45) or a Final Pay `due_at` (always 23:59:59) — stays "in the
         // future" through that whole day, so the daily 08:00 sweep only
         // picked it up the following day.
-        $referenceDate = $referenceDate->copy()->startOfDay();
+        return $referenceDate->copy()->startOfDay();
+    }
 
-        return $schedule->timing === 'before'
-            ? $referenceDate->subDays($schedule->days)
-            : $referenceDate->addDays($schedule->days);
+    /**
+     * Repeat occurrences: the initial date (`computeScheduledDate()`), then
+     * every `repeat_interval_days` after it.
+     *
+     * Stopping window: a "Before" schedule (with at least 1 day) only
+     * repeats while still BEFORE its event — no occurrence on or after the
+     * event date, and nothing at all is sent once that date is reached
+     * (e.g. 7 days before LWD every 2 days → 7, 5, 3, 1 days before).
+     * "After" schedules — and 0-day ("On" the event) ones, where before and
+     * after are the same day — keep repeating with no end date; they stop
+     * only when the request does: completed requests are excluded from
+     * `processSchedule()`'s sweep, and a cancelled/retracted request is
+     * recorded and skipped at the top of `processForRequest()`.
+     *
+     * Everything is recomputed from the request's live dates on every run,
+     * so a Last Working Day change or an edited schedule moves future
+     * occurrences automatically.
+     */
+    private function repeatCutoff(EmailTemplateSchedule $schedule, OffboardingRequest $request, ?int $clearanceDeadlineDays = null): ?Carbon
+    {
+        return $schedule->timing === 'before' && $schedule->days > 0
+            ? $this->referenceDate($schedule, $request, $clearanceDeadlineDays)
+            : null;
+    }
+
+    /**
+     * The most recent occurrence on or before `$today` (and inside the
+     * stopping window), whether or not it is still sendable — null when the
+     * schedule hasn't started yet or its milestone doesn't exist.
+     */
+    public function latestOccurrence(EmailTemplateSchedule $schedule, OffboardingRequest $request, ?Carbon $today = null, ?int $clearanceDeadlineDays = null): ?Carbon
+    {
+        $initial = $this->computeScheduledDate($schedule, $request, $clearanceDeadlineDays);
+        $today = ($today ?? now())->copy()->startOfDay();
+
+        if ($initial === null || $initial->gt($today)) {
+            return null;
+        }
+
+        $interval = $schedule->repeatsEvery();
+
+        if ($interval === null) {
+            return $initial;
+        }
+
+        $cutoff = $this->repeatCutoff($schedule, $request, $clearanceDeadlineDays);
+        $limit = $cutoff !== null && $cutoff->copy()->subDay()->lt($today) ? $cutoff->copy()->subDay() : $today;
+
+        if ($initial->gt($limit)) {
+            return null;
+        }
+
+        $steps = intdiv((int) round($initial->diffInDays($limit, true)), $interval);
+
+        return $initial->copy()->addDays($steps * $interval);
+    }
+
+    /**
+     * The occurrence to send right now, or null if none is due. One-time
+     * schedules: the initial date once it has arrived (a late scheduler
+     * still sends it). Repeating schedules: the latest occurrence that has
+     * come due — earlier ones missed while the scheduler wasn't running are
+     * superseded rather than sent in a burst — and, for a "Before"
+     * schedule, only while its event date hasn't been reached.
+     */
+    public function dueOccurrence(EmailTemplateSchedule $schedule, OffboardingRequest $request, ?Carbon $today = null, ?int $clearanceDeadlineDays = null): ?Carbon
+    {
+        $today = ($today ?? now())->copy()->startOfDay();
+        $latest = $this->latestOccurrence($schedule, $request, $today, $clearanceDeadlineDays);
+
+        if ($latest === null) {
+            return null;
+        }
+
+        $cutoff = $schedule->repeatsEvery() !== null ? $this->repeatCutoff($schedule, $request, $clearanceDeadlineDays) : null;
+
+        return $cutoff !== null && $today->gte($cutoff) ? null : $latest;
+    }
+
+    /**
+     * The next occurrence strictly after `$today`, or null when there is
+     * none (a one-time schedule already past, or a repeating "Before"
+     * schedule that has reached its event date).
+     */
+    public function nextOccurrence(EmailTemplateSchedule $schedule, OffboardingRequest $request, ?Carbon $today = null, ?int $clearanceDeadlineDays = null): ?Carbon
+    {
+        $initial = $this->computeScheduledDate($schedule, $request, $clearanceDeadlineDays);
+        $today = ($today ?? now())->copy()->startOfDay();
+
+        if ($initial === null) {
+            return null;
+        }
+
+        if ($initial->gt($today)) {
+            return $initial;
+        }
+
+        $interval = $schedule->repeatsEvery();
+
+        if ($interval === null) {
+            return null;
+        }
+
+        $steps = intdiv((int) round($initial->diffInDays($today, true)), $interval) + 1;
+        $next = $initial->copy()->addDays($steps * $interval);
+        $cutoff = $this->repeatCutoff($schedule, $request, $clearanceDeadlineDays);
+
+        return $cutoff !== null && $next->gte($cutoff) ? null : $next;
+    }
+
+    /**
+     * Clearance Due Date groups for this request: every active checklist
+     * template attached to it (narrowed to the schedule's saved checklist
+     * selection, if it has one) that has a Clearance Signing Deadline
+     * configured, grouped by that deadline — `[deadline days => [checklist
+     * template ids]]`, read live from each template so an admin's change to
+     * a deadline applies to every later calculation. General Signatories
+     * have no Clearance Signing Deadline, so they never appear here; a
+     * schedule whose only saved selection is General Signatories has no
+     * clearance occurrences at all.
+     *
+     * @return array<int, array<int, int>>
+     */
+    public function clearanceDeadlineGroups(EmailTemplateSchedule $schedule, OffboardingRequest $request): array
+    {
+        $selectedChecklistIds = $schedule->checklistTemplates->pluck('id');
+
+        if ($selectedChecklistIds->isEmpty() && $schedule->generalSignatories->isNotEmpty()) {
+            return [];
+        }
+
+        $groups = [];
+
+        foreach ($request->approvers as $approver) {
+            $template = $approver->checklistTemplate;
+
+            if (! $template || ! $template->is_active || $template->clearance_signing_deadline_days === null) {
+                continue;
+            }
+
+            if ($selectedChecklistIds->isNotEmpty() && ! $selectedChecklistIds->contains($template->id)) {
+                continue;
+            }
+
+            $groups[$template->clearance_signing_deadline_days][] = $template->id;
+        }
+
+        ksort($groups);
+
+        return array_map(fn (array $ids) => array_values(array_unique($ids)), $groups);
+    }
+
+    /**
+     * Every occurrence due right now, as `[Y-m-d => checklist template ids
+     * | null]`. Non-clearance schedules: at most one, for their normal
+     * recipients (null). Clearance Due Date schedules: one per checklist
+     * deadline group that has an occurrence due; groups whose occurrences
+     * fall on the same date are merged into one send to all of them.
+     *
+     * @return array<string, array<int, int>|null>
+     */
+    public function dueOccurrences(EmailTemplateSchedule $schedule, OffboardingRequest $request, ?Carbon $today = null): array
+    {
+        if ($schedule->event !== 'clearance') {
+            $due = $this->dueOccurrence($schedule, $request, $today);
+
+            return $due ? [$due->toDateString() => null] : [];
+        }
+
+        $occurrences = [];
+
+        foreach ($this->clearanceDeadlineGroups($schedule, $request) as $deadlineDays => $checklistTemplateIds) {
+            $due = $this->dueOccurrence($schedule, $request, $today, $deadlineDays);
+
+            if ($due) {
+                $occurrences[$due->toDateString()] = array_values(array_unique(array_merge($occurrences[$due->toDateString()] ?? [], $checklistTemplateIds)));
+            }
+        }
+
+        ksort($occurrences);
+
+        return $occurrences;
     }
 
     /**
@@ -244,10 +470,10 @@ class EmailTemplateScheduleDispatcher
      * only re-sends to whoever didn't get it, never to everyone again. The
      * occurrence is `'sent'` only once every channel fully succeeded.
      */
-    private function sendForRequest(EmailTemplateSchedule $schedule, OffboardingRequest $request, Carbon $scheduledDate, ?EmailTemplateScheduleSend $existing): void
+    private function sendForRequest(EmailTemplateSchedule $schedule, OffboardingRequest $request, Carbon $scheduledDate, ?EmailTemplateScheduleSend $existing, ?array $checklistTemplateIds = null): void
     {
         $template = $schedule->emailTemplate;
-        $recipients = $this->resolveRecipients($schedule, $request);
+        $recipients = $this->resolveRecipients($schedule, $request, $checklistTemplateIds);
 
         $recipientLog = collect($existing?->recipient_log ?? [])->keyBy('key');
         $emailSentAt = $existing?->email_sent_at;
@@ -344,8 +570,18 @@ class EmailTemplateScheduleDispatcher
      *
      * @return Collection<int, Employee>
      */
-    public function resolveRecipients(EmailTemplateSchedule $schedule, OffboardingRequest $request): Collection
+    public function resolveRecipients(EmailTemplateSchedule $schedule, OffboardingRequest $request, ?array $onlyChecklistTemplateIds = null): Collection
     {
+        // A Clearance Due Date occurrence goes only to the Clearance
+        // Signatories of the checklists it was computed for.
+        if ($onlyChecklistTemplateIds !== null) {
+            return $request->approvers
+                ->whereIn('checklist_template_id', $onlyChecklistTemplateIds)
+                ->map(fn ($approver) => $approver->employee)
+                ->filter()
+                ->unique('id');
+        }
+
         $selectedChecklistIds = $schedule->checklistTemplates->pluck('id');
         $selectedGeneralSignatoryIds = $schedule->generalSignatories->pluck('id');
         $hasAnySelection = $selectedChecklistIds->isNotEmpty() || $selectedGeneralSignatoryIds->isNotEmpty();

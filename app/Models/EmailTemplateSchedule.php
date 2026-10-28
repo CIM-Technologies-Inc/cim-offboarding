@@ -22,6 +22,8 @@ class EmailTemplateSchedule extends Model
         'days',
         'clearance_signing_deadline_days',
         'channel',
+        'repeat_enabled',
+        'repeat_interval_days',
         'is_active',
         'created_by',
     ];
@@ -32,6 +34,8 @@ class EmailTemplateSchedule extends Model
             'days' => 'integer',
             'clearance_signing_deadline_days' => 'integer',
             'is_active' => 'boolean',
+            'repeat_enabled' => 'boolean',
+            'repeat_interval_days' => 'integer',
         ];
     }
 
@@ -77,7 +81,7 @@ class EmailTemplateSchedule extends Model
     public const EVENT_LABELS = [
         'creation' => 'Creation',
         'last_working_day' => 'Last Working Day',
-        'clearance' => 'Clearance',
+        'clearance' => 'Clearance Due Date',
         'final_pay' => 'Final Pay',
     ];
 
@@ -90,6 +94,16 @@ class EmailTemplateSchedule extends Model
      * literal "{days} days {Timing} {Event}" template, not a departure from
      * it.
      */
+    /**
+     * The repeat interval in days when Repeat is on (and has a valid
+     * interval), otherwise null — the one place every caller checks whether
+     * this schedule recurs.
+     */
+    public function repeatsEvery(): ?int
+    {
+        return $this->repeat_enabled && $this->repeat_interval_days > 0 ? $this->repeat_interval_days : null;
+    }
+
     public function label(): string
     {
         $eventLabel = self::EVENT_LABELS[$this->event] ?? $this->event;
@@ -102,8 +116,9 @@ class EmailTemplateSchedule extends Model
             $base = "{$this->days} {$unit} {$timingLabel} {$eventLabel}";
         }
 
-        if ($this->event === 'clearance' && $this->clearance_signing_deadline_days !== null) {
-            $base .= " ({$this->clearance_signing_deadline_days} days after Last Working Day)";
+        if ($this->repeatsEvery() !== null) {
+            $every = $this->repeatsEvery() === 1 ? 'day' : "{$this->repeatsEvery()} days";
+            $base .= ", repeating every {$every}";
         }
 
         return $base;

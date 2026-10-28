@@ -795,7 +795,7 @@
                                                     <span x-show="checklist.is_immediate_head_checklist" class="mr-1 rounded-full bg-gray-100 px-2 py-0.5 text-gray-600 dark:bg-white/5 dark:text-gray-300">Immediate Head Checklist</span>
                                                     <span x-show="checklist.use_task_assignee_as_signatory" class="mr-1 rounded-full bg-gray-100 px-2 py-0.5 text-gray-600 dark:bg-white/5 dark:text-gray-300">Use Task Assignee as Clearance Signatory</span>
                                                     <span x-show="checklist.is_temporary_override" class="mr-1 rounded-full bg-amber-100 px-2 py-0.5 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">Temporary Reassignment</span>
-                                                    <span x-text="'Sequence: ' + checklist.sequence_type"></span>
+                                                    <!-- <span x-text="'Sequence: ' + checklist.sequence_type"></span> -->
                                                 </p>
                                             </div>
                                             <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" class="shrink-0 transition-transform" :class="expandedChecklist === checklist.id ? 'rotate-180' : ''">
@@ -810,7 +810,7 @@
                                                 </div>
                                                 <div>
                                                     <span class="text-gray-500 dark:text-gray-400">Original Due Date</span>
-                                                    <span class="block font-medium text-gray-800 dark:text-white/90" x-text="checklist.due_at || '—'"></span>
+                                                    <span class="block font-medium text-gray-800 dark:text-white/90" x-text="checklist.original_due_at || '—'"></span>
                                                 </div>
                                                 <div>
                                                     <span class="text-gray-500 dark:text-gray-400">Clearance Signing Deadline</span>
@@ -818,7 +818,10 @@
                                                 </div>
                                                 <div>
                                                     <span class="text-gray-500 dark:text-gray-400">Extended Due Date</span>
-                                                    <span class="block font-medium text-gray-800 dark:text-white/90">No extension applies — extensions can only be made after the request is created.</span>
+                                                    <span class="block font-medium text-gray-800 dark:text-white/90"
+                                                        x-text="checklist.extended_due_at
+                                                            ? checklist.extended_due_at + ' (+' + checklist.due_date_extension_days + (checklist.due_date_extension_days === 1 ? ' day)' : ' days)')
+                                                            : 'No extension applies'"></span>
                                                 </div>
                                             </div>
                                             <template x-if="checklist.task_assignees.length">
@@ -888,11 +891,11 @@
                                                 <span class="font-medium text-gray-800 dark:text-white/90" x-text="schedule.template_name"></span>
                                                 <span class="rounded-full px-2 py-0.5 text-xs font-medium"
                                                     :class="schedule.is_pending ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400' : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400'"
-                                                    x-text="schedule.is_pending ? 'Pending — milestone not yet determined' : schedule.scheduled_date"></span>
+                                                    x-text="schedule.is_pending ? 'Pending — To Be Scheduled by System' : schedule.scheduled_date"></span>
                                             </div>
                                             <p class="mt-1 text-xs text-gray-400">
                                                 <span x-text="schedule.days + ' day(s) ' + (schedule.timing === 'before' ? 'Before' : 'After') + ' ' + schedule.event_label"></span>
-                                                <span x-show="schedule.event === 'clearance'" x-text="' (' + schedule.clearance_signing_deadline_days + ' days after Last Working Day)'"></span>
+                                                <span x-show="schedule.event === 'clearance' && schedule.clearance_signing_deadline_days !== null" x-text="' — ' + schedule.checklist_titles + ' (due ' + schedule.clearance_signing_deadline_days + ' days after Last Working Day)'"></span>
                                                 · <span x-text="{ email: 'Email', system: 'System Notification', email_and_system: 'Email and System Notification' }[schedule.channel] ?? schedule.channel"></span>
                                             </p>
                                             <p class="mt-1 text-xs text-gray-400">

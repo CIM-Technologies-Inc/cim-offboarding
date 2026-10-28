@@ -66,9 +66,9 @@ function schedRequest(array $attributes = []): OffboardingRequest
     ], $attributes));
 }
 
-function schedChecklist(string $title, bool $finalPay = false): ChecklistTemplate
+function schedChecklist(string $title, bool $finalPay = false, ?int $clearanceDeadlineDays = 19): ChecklistTemplate
 {
-    return ChecklistTemplate::forceCreate(['title' => $title, 'is_final_pay_checklist' => $finalPay]);
+    return ChecklistTemplate::forceCreate(['title' => $title, 'is_final_pay_checklist' => $finalPay, 'clearance_signing_deadline_days' => $clearanceDeadlineDays]);
 }
 
 function schedApprover(OffboardingRequest $request, ChecklistTemplate $checklist, Employee $signatory, array $attributes = []): OffboardingRequestApprover
@@ -147,14 +147,6 @@ it('handles month-end and leap-year boundaries', function () {
     expect($dispatcher->computeScheduledDate(schedSchedule(['timing' => 'after', 'days' => 1]), schedRequest(['last_working_day' => '2028-02-28']))->toDateString())->toBe('2028-02-29')
         ->and($dispatcher->computeScheduledDate(schedSchedule(['timing' => 'before', 'days' => 1]), schedRequest(['last_working_day' => '2027-03-01']))->toDateString())->toBe('2027-02-28')
         ->and($dispatcher->computeScheduledDate(schedSchedule(['timing' => 'after', 'days' => 1]), schedRequest(['last_working_day' => '2026-12-31']))->toDateString())->toBe('2027-01-01');
-});
-
-it('uses the schedule\'s own configured clearance signing deadline, not a hardcoded one', function () {
-    $request = schedRequest(['last_working_day' => '2026-10-31']);
-    $dispatcher = app(EmailTemplateScheduleDispatcher::class);
-
-    expect($dispatcher->computeScheduledDate(schedSchedule(['event' => 'clearance', 'timing' => 'before', 'days' => 2, 'clearance_signing_deadline_days' => 10]), $request)->toDateString())->toBe('2026-11-08')
-        ->and($dispatcher->computeScheduledDate(schedSchedule(['event' => 'clearance', 'timing' => 'before', 'days' => 2, 'clearance_signing_deadline_days' => 19]), $request)->toDateString())->toBe('2026-11-17');
 });
 
 it('uses the latest Final Pay checklist due date as the Final Pay reference, and nothing before one exists', function () {
@@ -777,4 +769,411 @@ it('renders the timeline editor\'s Alpine x-data as one intact attribute (no str
         ->and($timeline)->toContain('removeSchedule(id)')
         ->and($timeline)->toContain('scheduleRecipientSummary(s)')
         ->and(trim($timeline))->toEndWith('}');
+});
+
+it('no longer shows the Active Checklist / Department Signatory Selection pickers in the schedule editor', function () {
+    $template = schedTemplate();
+    schedSchedule([], $template);
+
+    $this->actingAs(templateEditor())->get(route('email-templates.edit', $template))
+        ->assertOk()
+        ->assertDontSee('Active Checklist Selection')
+        ->assertDontSee('Active Department Signatory Selection')
+        ->assertSee('Number of Days')
+        ->assertSee('Save Schedule');
+});
+
+it('keeps an existing schedule\'s saved selection when the template is saved, and new schedules target everyone applicable', function () {
+    $template = schedTemplate();
+    $checklist = schedChecklist('IT');
+    $existing = schedSchedule(['days' => 7], $template);
+    $existing->checklistTemplates()->sync([$checklist->id]);
+
+    // Exactly what the editor posts: the existing row carries its saved
+    // selection via hidden inputs; a newly added row has none.
+    $this->actingAs(templateEditor())->put(route('email-templates.update', $template), [
+        'template_name' => $template->template_name,
+        'subject' => $template->subject,
+        'schedules' => [
+            $existing->id => ['id' => $existing->id, 'event' => 'last_working_day', 'timing' => 'before', 'days' => 10, 'channel' => 'email', 'checklist_template_ids' => [$checklist->id]],
+            '-1' => ['event' => 'final_pay', 'timing' => 'before', 'days' => 2, 'channel' => 'email_and_system'],
+        ],
+    ])->assertSessionHasNoErrors();
+
+    $existing->refresh();
+    $new = EmailTemplateSchedule::where('email_template_id', $template->id)->where('id', '!=', $existing->id)->first();
+
+    expect($existing->days)->toBe(10)
+        ->and($existing->checklistTemplates->pluck('id')->all())->toBe([$checklist->id])
+        ->and($new->event)->toBe('final_pay')
+        ->and($new->channel)->toBe('email_and_system')
+        ->and($new->checklistTemplates)->toHaveCount(0)
+        ->and($new->generalSignatories)->toHaveCount(0);
+});
+
+it('saves picker recipients once each (even if an id is submitted twice) and CCs them when the template sends', function () {
+    $template = schedTemplate();
+    $hrOne = schedEmployee(['department' => 'Human Resources', 'email' => 'hr.one@example.test']);
+    $hrTwo = schedEmployee(['department' => 'Human Resources', 'email' => 'hr.two@example.test']);
+
+    $this->actingAs(templateEditor())->put(route('email-templates.update', $template), [
+        'template_name' => $template->template_name,
+        'subject' => $template->subject,
+        'recipient_employee_ids' => [$hrOne->id, $hrTwo->id, $hrOne->id],
+    ])->assertSessionHasNoErrors();
+
+    expect($template->fresh()->recipientEmployees->pluck('id')->sort()->values()->all())->toBe(collect([$hrOne->id, $hrTwo->id])->sort()->values()->all());
+
+    $request = schedRequest();
+    schedApprover($request, schedChecklist('IT'), schedEmployee(['email' => 'it@example.test']));
+    schedSchedule([], $template);
+    $this->travelTo(Carbon::parse('2026-10-24 08:00:00'));
+    runScheduler();
+
+    expect(RecordingTransport::$messages)->toHaveCount(1)
+        ->and(RecordingTransport::$messages[0]['to'])->toBe(['it@example.test'])
+        ->and(RecordingTransport::$messages[0]['cc'])->toEqualCanonicalizing(['hr.one@example.test', 'hr.two@example.test']);
+});
+
+it('gives the recipient picker every searchable field (name, code, email, department)', function () {
+    $template = schedTemplate();
+    schedEmployee(['name' => 'Searchable Person', 'employee_code' => 'EMP77777', 'email' => 'search.me@example.test', 'department' => 'Information Services']);
+
+    $this->actingAs(templateEditor())->get(route('email-templates.edit', $template))
+        ->assertOk()
+        ->assertSee('Search by name, employee code, email, or department', false)
+        ->assertSee('search.me@example.test', false)
+        ->assertSee('EMP77777', false)
+        ->assertSee('selectAllMatching()', false);
+});
+
+// ---------------------------------------------------------------------
+// Repeat
+// ---------------------------------------------------------------------
+
+/** Runs the scheduler once (or `$timesPerDay` times) every day from $from to $to; returns the dates an email actually went out. */
+function runDaily(string $from, string $to, int $timesPerDay = 1, ?Closure $beforeDay = null): array
+{
+    $sentOn = [];
+    for ($day = Carbon::parse($from); $day->lte(Carbon::parse($to)); $day->addDay()) {
+        $beforeDay?->__invoke($day->copy());
+        test()->travelTo($day->copy()->setTime(8, 0));
+        $before = count(RecordingTransport::$messages);
+        foreach (range(1, $timesPerDay) as $i) {
+            runScheduler();
+        }
+        if (count(RecordingTransport::$messages) > $before) {
+            $sentOn[$day->toDateString()] = count(RecordingTransport::$messages) - $before;
+        }
+    }
+
+    return $sentOn;
+}
+
+function repeatFixture(array $schedule, array $request = []): array
+{
+    $r = schedRequest(array_merge(['last_working_day' => '2026-10-31'], $request));
+    schedApprover($r, schedChecklist('IT'), schedEmployee(['email' => 'it@example.test']));
+
+    return [$r, schedSchedule($schedule)];
+}
+
+it('Example 1 — 7 days Before LWD, repeating every 2 days: sends 7, 5, 3, 1 days before, never on or after the LWD', function () {
+    [, $schedule] = repeatFixture(['timing' => 'before', 'days' => 7, 'repeat_enabled' => true, 'repeat_interval_days' => 2]);
+
+    $sent = runDaily('2026-10-20', '2026-11-06', timesPerDay: 2);
+
+    expect($sent)->toBe(['2026-10-24' => 1, '2026-10-26' => 1, '2026-10-28' => 1, '2026-10-30' => 1])
+        ->and(sendsFor($schedule)->pluck('scheduled_for')->map->toDateString()->sort()->values()->all())
+        ->toBe(['2026-10-24', '2026-10-26', '2026-10-28', '2026-10-30']);
+});
+
+it('Example 2 — 7 days After LWD, repeating every 2 days: 7, 9, 11, 13… after, until the request is completed', function () {
+    [$request] = repeatFixture(['timing' => 'after', 'days' => 7, 'repeat_enabled' => true, 'repeat_interval_days' => 2]);
+
+    $sent = runDaily('2026-11-01', '2026-11-20', beforeDay: function (Carbon $day) use ($request) {
+        if ($day->toDateString() === '2026-11-14') {
+            $request->update(['status' => 'completed', 'completed_at' => $day]);
+        }
+    });
+
+    expect(array_keys($sent))->toBe(['2026-11-07', '2026-11-09', '2026-11-11', '2026-11-13']);
+});
+
+it('repeats daily and at longer intervals, always computed from the saved configuration', function (array $config, array $expected) {
+    repeatFixture($config + ['repeat_enabled' => true]);
+
+    expect(array_keys(runDaily('2026-10-15', '2026-11-12')))->toBe($expected);
+})->with([
+    'every day, 4 before LWD' => [['timing' => 'before', 'days' => 4, 'repeat_interval_days' => 1], ['2026-10-27', '2026-10-28', '2026-10-29', '2026-10-30']],
+    'every 5 days, 12 before LWD' => [['timing' => 'before', 'days' => 12, 'repeat_interval_days' => 5], ['2026-10-19', '2026-10-24', '2026-10-29']],
+    'every 4 days, 3 after LWD' => [['timing' => 'after', 'days' => 3, 'repeat_interval_days' => 4], ['2026-11-03', '2026-11-07', '2026-11-11']],
+    'every 3 days, On LWD (0 days) keeps going after' => [['timing' => 'before', 'days' => 0, 'repeat_interval_days' => 3], ['2026-10-31', '2026-11-03', '2026-11-06', '2026-11-09', '2026-11-12']],
+    'every 7 days, 9 before Clearance (19 after LWD)' => [['event' => 'clearance', 'clearance_signing_deadline_days' => 19, 'timing' => 'before', 'days' => 9, 'repeat_interval_days' => 7], ['2026-11-10']],
+]);
+
+it('with Repeat off sends only the original one-time notification', function () {
+    [, $schedule] = repeatFixture(['timing' => 'before', 'days' => 7, 'repeat_enabled' => false, 'repeat_interval_days' => null]);
+
+    expect(array_keys(runDaily('2026-10-20', '2026-11-10', timesPerDay: 3)))->toBe(['2026-10-24'])
+        ->and(sendsFor($schedule))->toHaveCount(1);
+});
+
+it('recalculates future repeats when the Last Working Day is extended', function () {
+    [$request] = repeatFixture(['timing' => 'before', 'days' => 7, 'repeat_enabled' => true, 'repeat_interval_days' => 2]);
+
+    $sent = runDaily('2026-10-20', '2026-11-16', beforeDay: function (Carbon $day) use ($request) {
+        if ($day->toDateString() === '2026-10-27') {
+            $request->update(['last_working_day' => '2026-11-15']);
+        }
+    });
+
+    // 24th and 26th from the old LWD; then 7 before the new LWD (Nov 8), every 2 days, stopping before Nov 15.
+    expect(array_keys($sent))->toBe(['2026-10-24', '2026-10-26', '2026-11-08', '2026-11-10', '2026-11-12', '2026-11-14']);
+});
+
+it('stops repeating once the request is cancelled/retracted', function () {
+    [$request, $schedule] = repeatFixture(['timing' => 'after', 'days' => 0, 'repeat_enabled' => true, 'repeat_interval_days' => 1]);
+
+    $sent = runDaily('2026-10-31', '2026-11-08', beforeDay: function (Carbon $day) use ($request) {
+        if ($day->toDateString() === '2026-11-03') {
+            $request->update(['status' => 'cancelled']);
+        }
+    });
+
+    expect(array_keys($sent))->toBe(['2026-10-31', '2026-11-01', '2026-11-02'])
+        ->and(sendsFor($schedule)->where('status', 'cancelled'))->toHaveCount(1);
+});
+
+it('after scheduler downtime sends only the latest due repeat, not a burst of missed ones', function () {
+    [, $schedule] = repeatFixture(['timing' => 'before', 'days' => 7, 'repeat_enabled' => true, 'repeat_interval_days' => 2]);
+
+    $this->travelTo(Carbon::parse('2026-10-29 08:00'));
+    runScheduler();
+    runScheduler();
+
+    expect(RecordingTransport::$messages)->toHaveCount(1)
+        ->and(sendsFor($schedule)->first()->scheduled_for->toDateString())->toBe('2026-10-28');
+});
+
+it('sends nothing for a Before repeat once its event date is reached, even if a repeat was missed', function () {
+    repeatFixture(['timing' => 'before', 'days' => 7, 'repeat_enabled' => true, 'repeat_interval_days' => 2]);
+
+    $this->travelTo(Carbon::parse('2026-10-31 08:00'));
+    runScheduler();
+    $this->travelTo(Carbon::parse('2026-11-02 08:00'));
+    runScheduler();
+
+    expect(RecordingTransport::$messages)->toBeEmpty();
+});
+
+it('sends each repeat on every configured channel exactly once', function () {
+    $schedule = channelFixture('email_and_system');
+    $schedule->update(['repeat_enabled' => true, 'repeat_interval_days' => 2]);
+
+    runDaily('2026-10-24', '2026-10-27', timesPerDay: 2);
+
+    expect(RecordingTransport::$messages)->toHaveCount(2)
+        ->and(DB::table('notifications')->count())->toBe(2)
+        ->and(sendsFor($schedule)->pluck('status')->unique()->values()->all())->toBe(['sent']);
+});
+
+it('labels repeating schedules and reports the next repeat on the request tab', function () {
+    [$request, $schedule] = repeatFixture(['timing' => 'before', 'days' => 7, 'repeat_enabled' => true, 'repeat_interval_days' => 2]);
+
+    expect($schedule->label())->toBe('7 days Before Last Working Day, repeating every 2 days')
+        ->and(schedSchedule(['days' => 3, 'repeat_enabled' => true, 'repeat_interval_days' => 1])->label())->toBe('3 days Before Last Working Day, repeating every day');
+
+    $this->travelTo(Carbon::parse('2026-10-24 09:00'));
+    runScheduler();
+    $row = collect(app(App\Services\OffboardingRequestScheduledNotificationsService::class)->forRequest($request))->firstWhere('label', $schedule->label());
+
+    expect($row['status'])->toBe('sent')
+        ->and($row['scheduled_date'])->toBe('Oct 24, 2026')
+        ->and($row['note'])->toContain('next on Oct 26, 2026');
+});
+
+it('saves and restores the Repeat setting, and clears the interval when Repeat is off', function () {
+    $template = schedTemplate();
+
+    $this->actingAs(templateEditor())->put(route('email-templates.update', $template), [
+        'template_name' => $template->template_name,
+        'subject' => $template->subject,
+        'schedules' => [
+            '-1' => ['event' => 'last_working_day', 'timing' => 'before', 'days' => 7, 'channel' => 'email', 'repeat_enabled' => '1', 'repeat_interval_days' => '2'],
+            '-2' => ['event' => 'last_working_day', 'timing' => 'after', 'days' => 3, 'channel' => 'email', 'repeat_enabled' => '0', 'repeat_interval_days' => '5'],
+        ],
+    ])->assertSessionHasNoErrors();
+
+    $saved = EmailTemplateSchedule::where('email_template_id', $template->id)->orderBy('id')->get();
+    expect($saved->map(fn ($s) => [$s->repeat_enabled, $s->repeat_interval_days])->all())->toBe([[true, 2], [false, null]]);
+
+    $this->get(route('email-templates.edit', $template))->assertOk()
+        ->assertSee('Repeat Every (Days)')
+        ->assertSee('repeatEnabled', false);
+});
+
+it('validates the repeat interval only when Repeat is on', function (array $row, bool $passes) {
+    $validator = scheduleValidation([['event' => 'last_working_day', 'timing' => 'before', 'days' => 7, 'channel' => 'email'] + $row]);
+
+    expect($validator->passes())->toBe($passes);
+    if (! $passes) {
+        expect($validator->errors()->keys())->toContain('schedules.0.repeat_interval_days');
+    }
+})->with([
+    'repeat on, interval 1' => [['repeat_enabled' => '1', 'repeat_interval_days' => 1], true],
+    'repeat on, interval 30' => [['repeat_enabled' => '1', 'repeat_interval_days' => 30], true],
+    'repeat on, no interval' => [['repeat_enabled' => '1'], false],
+    'repeat on, interval 0' => [['repeat_enabled' => '1', 'repeat_interval_days' => 0], false],
+    'repeat on, negative' => [['repeat_enabled' => '1', 'repeat_interval_days' => -2], false],
+    'repeat on, fractional' => [['repeat_enabled' => '1', 'repeat_interval_days' => 1.5], false],
+    'repeat off, no interval' => [['repeat_enabled' => '0'], true],
+    'repeat absent (existing forms)' => [[], true],
+]);
+
+// ---------------------------------------------------------------------
+// Clearance Due Date (each checklist's own Clearance Signing Deadline)
+// ---------------------------------------------------------------------
+
+/** Runs the scheduler daily (twice a day) and returns [date => sorted To addresses] for every day something was sent. */
+function clearanceRun(string $from, string $to, ?Closure $beforeDay = null): array
+{
+    $sent = [];
+    for ($day = Carbon::parse($from); $day->lte(Carbon::parse($to)); $day->addDay()) {
+        $beforeDay?->__invoke($day->copy());
+        test()->travelTo($day->copy()->setTime(8, 0));
+        $before = count(RecordingTransport::$messages);
+        runScheduler();
+        runScheduler();
+        $new = array_slice(RecordingTransport::$messages, $before);
+        if ($new) {
+            $addresses = array_merge(...array_map(fn ($m) => $m['to'], $new));
+            sort($addresses);
+            $sent[$day->toDateString()] = $addresses;
+        }
+    }
+
+    return $sent;
+}
+
+function clearanceRequest(array $checklists): OffboardingRequest
+{
+    $request = schedRequest(['last_working_day' => '2026-10-31']);
+    foreach ($checklists as $title => [$deadline, $email]) {
+        schedApprover($request, schedChecklist($title, false, $deadline), schedEmployee(['email' => $email]));
+    }
+
+    return $request;
+}
+
+it('Example A — 7 days Before Clearance Due Date (deadline 19) sends 12 days after LWD', function () {
+    clearanceRequest(['IT' => [19, 'it@example.test']]);
+    schedSchedule(['event' => 'clearance', 'timing' => 'before', 'days' => 7]);
+
+    expect(clearanceRun('2026-11-01', '2026-11-30'))->toBe(['2026-11-12' => ['it@example.test']]);
+});
+
+it('Example B — 7 days After Clearance Due Date (deadline 19) sends 26 days after LWD', function () {
+    clearanceRequest(['IT' => [19, 'it@example.test']]);
+    schedSchedule(['event' => 'clearance', 'timing' => 'after', 'days' => 7]);
+
+    expect(clearanceRun('2026-11-01', '2026-11-30'))->toBe(['2026-11-26' => ['it@example.test']]);
+});
+
+it('follows a changed Clearance Signing Deadline (19 → 25) instead of a fixed 19 days', function () {
+    clearanceRequest(['IT' => [19, 'it@example.test']]);
+    schedSchedule(['event' => 'clearance', 'timing' => 'before', 'days' => 7]);
+    ChecklistTemplate::where('title', 'IT')->update(['clearance_signing_deadline_days' => 25]);
+
+    // Clearance Due Date = Oct 31 + 25 = Nov 25; 7 days before = Nov 18.
+    expect(clearanceRun('2026-11-01', '2026-11-30'))->toBe(['2026-11-18' => ['it@example.test']]);
+});
+
+it('handles different deadlines per checklist, emailing each signatory on their own checklist\'s date', function () {
+    clearanceRequest([
+        'IT' => [19, 'it@example.test'],
+        'HR' => [15, 'hr@example.test'],
+        'Finance' => [21, 'finance@example.test'],
+        'Admin' => [19, 'admin@example.test'],
+    ]);
+    schedSchedule(['event' => 'clearance', 'timing' => 'before', 'days' => 7]);
+
+    expect(clearanceRun('2026-11-01', '2026-11-30'))->toBe([
+        '2026-11-08' => ['hr@example.test'],                          // 15 - 7 = LWD + 8
+        '2026-11-12' => ['admin@example.test', 'it@example.test'],    // 19 - 7 = LWD + 12 (same deadline → one send)
+        '2026-11-14' => ['finance@example.test'],                     // 21 - 7 = LWD + 14
+    ]);
+});
+
+it('repeats from each checklist\'s Clearance Due Date and stops before it (Before)', function () {
+    clearanceRequest(['IT' => [19, 'it@example.test']]);
+    schedSchedule(['event' => 'clearance', 'timing' => 'before', 'days' => 7, 'repeat_enabled' => true, 'repeat_interval_days' => 2]);
+
+    // Due Nov 19 → Nov 12, 14, 16, 18; nothing on/after Nov 19.
+    expect(array_keys(clearanceRun('2026-11-01', '2026-11-30')))->toBe(['2026-11-12', '2026-11-14', '2026-11-16', '2026-11-18']);
+});
+
+it('stops Clearance Due Date repeats when the request is completed', function () {
+    $request = clearanceRequest(['IT' => [19, 'it@example.test']]);
+    schedSchedule(['event' => 'clearance', 'timing' => 'after', 'days' => 0, 'repeat_enabled' => true, 'repeat_interval_days' => 3]);
+
+    $sent = clearanceRun('2026-11-15', '2026-12-05', function (Carbon $day) use ($request) {
+        if ($day->toDateString() === '2026-11-26') {
+            $request->update(['status' => 'completed', 'completed_at' => $day]);
+        }
+    });
+
+    expect(array_keys($sent))->toBe(['2026-11-19', '2026-11-22', '2026-11-25']);
+});
+
+it('sends nothing for checklists with no deadline configured or that are inactive, and never to General Signatories', function () {
+    $request = clearanceRequest(['No Deadline' => [null, 'none@example.test'], 'Retired' => [10, 'retired@example.test'], 'IT' => [19, 'it@example.test']]);
+    ChecklistTemplate::where('title', 'Retired')->update(['is_active' => false]);
+    schedGeneralSignatory($request, schedEmployee(['email' => 'general@example.test']));
+    schedSchedule(['event' => 'clearance', 'timing' => 'before', 'days' => 0]);
+
+    expect(clearanceRun('2026-11-01', '2026-11-30'))->toBe(['2026-11-19' => ['it@example.test']]);
+});
+
+it('respects a saved checklist selection on a Clearance Due Date schedule', function () {
+    clearanceRequest(['IT' => [19, 'it@example.test'], 'HR' => [15, 'hr@example.test']]);
+    $schedule = schedSchedule(['event' => 'clearance', 'timing' => 'before', 'days' => 7]);
+    $schedule->checklistTemplates()->sync([ChecklistTemplate::where('title', 'HR')->value('id')]);
+
+    expect(clearanceRun('2026-11-01', '2026-11-30'))->toBe(['2026-11-08' => ['hr@example.test']]);
+});
+
+it('labels the event "Clearance Due Date" and lists one row per deadline on the request tab', function () {
+    $request = clearanceRequest(['IT' => [19, 'it@example.test'], 'HR' => [15, 'hr@example.test']]);
+    $schedule = schedSchedule(['event' => 'clearance', 'timing' => 'before', 'days' => 7]);
+
+    expect($schedule->label())->toBe('7 days Before Clearance Due Date');
+
+    $rows = collect(app(App\Services\OffboardingRequestScheduledNotificationsService::class)->forRequest($request))
+        ->where('event', 'clearance')->values();
+
+    expect($rows)->toHaveCount(2)
+        ->and($rows->pluck('scheduled_date')->all())->toBe(['Nov 08, 2026', 'Nov 12, 2026'])
+        ->and($rows[0]['label'])->toBe('7 days Before Clearance Due Date — HR (due 15 days after Last Working Day)')
+        ->and($rows[0]['recipients'][0]['email'])->toBe('hr@example.test')
+        ->and($rows[1]['recipients'][0]['email'])->toBe('it@example.test');
+});
+
+it('shows "Clearance Due Date" in the editor and keeps the event when an existing schedule is saved again', function () {
+    $template = schedTemplate();
+    $schedule = schedSchedule(['event' => 'clearance', 'timing' => 'after', 'days' => 7], $template);
+
+    $this->actingAs(templateEditor())->get(route('email-templates.edit', $template))
+        ->assertOk()
+        ->assertSee('<option value="clearance">Clearance Due Date</option>', false)
+        ->assertDontSee('<option value="clearance">Clearance</option>', false);
+
+    $this->put(route('email-templates.update', $template), [
+        'template_name' => $template->template_name,
+        'subject' => $template->subject,
+        'schedules' => [$schedule->id => ['id' => $schedule->id, 'event' => 'clearance', 'timing' => 'after', 'days' => 9, 'channel' => 'email', 'repeat_enabled' => '0']],
+    ])->assertSessionHasNoErrors();
+
+    $schedule->refresh();
+    expect([$schedule->event, $schedule->timing, $schedule->days, $schedule->clearance_signing_deadline_days])->toBe(['clearance', 'after', 9, null]);
 });

@@ -38,6 +38,7 @@ class OffboardingRequestScheduledNotificationsService
         $request->loadMissing([
             'employee',
             'approvers.employee',
+            'approvers.checklistTemplate',
             'generalSignatoryApprovals.generalSignatory.clearanceSignatory',
         ]);
 
@@ -46,38 +47,83 @@ class OffboardingRequestScheduledNotificationsService
             ->with(['emailTemplate', 'checklistTemplates:id', 'generalSignatories:id'])
             ->get();
 
-        return $schedules->map(function (EmailTemplateSchedule $schedule) use ($request) {
-            $scheduledDate = $this->dispatcher->computeScheduledDate($schedule, $request);
-            $recipients = $this->dispatcher->resolveRecipients($schedule, $request);
-            $emailTemplate = $schedule->emailTemplate;
+        return $schedules->flatMap(function (EmailTemplateSchedule $schedule) use ($request) {
+            if ($schedule->event !== 'clearance') {
+                return [$this->row($schedule, $request, null, null)];
+            }
 
-            $existing = $scheduledDate
-                ? EmailTemplateScheduleSend::where('email_template_schedule_id', $schedule->id)
-                    ->where('offboarding_request_id', $request->id)
-                    ->where('scheduled_for', $scheduledDate->toDateString())
-                    ->first()
-                : null;
+            // Clearance Due Date: one row per checklist deadline group, each
+            // with its own date and recipients — the same split the real
+            // scheduler sends with (EmailTemplateScheduleDispatcher::dueOccurrences()).
+            $groups = $this->dispatcher->clearanceDeadlineGroups($schedule, $request);
 
-            [$status, $sentAt, $failureReason, $note] = $this->resolveStatus($scheduledDate, $existing, $request);
+            if ($groups === []) {
+                return [$this->row($schedule, $request, null, [])];
+            }
 
-            return [
-                'template_name' => $emailTemplate?->template_name,
-                'event' => $schedule->event,
-                'event_label' => EmailTemplateSchedule::EVENT_LABELS[$schedule->event] ?? $schedule->event,
-                'label' => $schedule->label(),
-                'channel' => $schedule->channel,
-                'scheduled_date' => $scheduledDate?->format('M d, Y'),
-                'status' => $status,
-                'sent_at' => $sentAt?->format('M d, Y g:i A'),
-                'failure_reason' => $failureReason,
-                'note' => $note,
-                'recipients' => $recipients->map(fn (Employee $recipient) => [
-                    'name' => $recipient->name,
-                    'email' => $recipient->email,
-                ])->values()->all(),
-                'cc_recipients' => $emailTemplate ? $emailTemplate->ccRecipientNames() : [],
-            ];
+            return collect($groups)->map(fn (array $ids, int $days) => $this->row($schedule, $request, $days, $ids))->values()->all();
         })->values()->all();
+    }
+
+    /**
+     * @param  array<int, int>|null  $checklistTemplateIds  null = not a Clearance Due Date row; [] = Clearance Due Date with no checklist deadline configured.
+     * @return array<string, mixed>
+     */
+    private function row(EmailTemplateSchedule $schedule, OffboardingRequest $request, ?int $clearanceDeadlineDays, ?array $checklistTemplateIds): array
+    {
+        // One-time schedules: their single date. Repeating schedules: the
+        // occurrence currently due, else the next upcoming one, else (a
+        // "Before" repeat that has reached its event) the last one.
+        $scheduledDate = $this->dispatcher->dueOccurrence($schedule, $request, null, $clearanceDeadlineDays)
+            ?? $this->dispatcher->nextOccurrence($schedule, $request, null, $clearanceDeadlineDays)
+            ?? $this->dispatcher->latestOccurrence($schedule, $request, null, $clearanceDeadlineDays)
+            ?? $this->dispatcher->computeScheduledDate($schedule, $request, $clearanceDeadlineDays);
+        $nextRepeat = $schedule->repeatsEvery() !== null ? $this->dispatcher->nextOccurrence($schedule, $request, null, $clearanceDeadlineDays) : null;
+        $recipients = $this->dispatcher->resolveRecipients($schedule, $request, $checklistTemplateIds);
+        $emailTemplate = $schedule->emailTemplate;
+
+        $existing = $scheduledDate
+            ? EmailTemplateScheduleSend::where('email_template_schedule_id', $schedule->id)
+                ->where('offboarding_request_id', $request->id)
+                ->where('scheduled_for', $scheduledDate->toDateString())
+                ->first()
+            : null;
+
+        [$status, $sentAt, $failureReason, $note] = $this->resolveStatus($scheduledDate, $existing, $request);
+
+        if ($checklistTemplateIds === []) {
+            $note = 'Pending — none of this request\'s checklists has a Clearance Signing Deadline configured.';
+        }
+
+        $label = $schedule->label();
+
+        if ($clearanceDeadlineDays !== null) {
+            $titles = $request->approvers
+                ->whereIn('checklist_template_id', $checklistTemplateIds)
+                ->map(fn ($approver) => $approver->checklistTemplate?->title)
+                ->filter()->unique()->implode(', ');
+            $label .= " — {$titles} (due {$clearanceDeadlineDays} days after Last Working Day)";
+        }
+
+        return [
+            'template_name' => $emailTemplate?->template_name,
+            'event' => $schedule->event,
+            'event_label' => EmailTemplateSchedule::EVENT_LABELS[$schedule->event] ?? $schedule->event,
+            'label' => $label,
+            'channel' => $schedule->channel,
+            'scheduled_date' => $scheduledDate?->format('M d, Y'),
+            'status' => $status,
+            'sent_at' => $sentAt?->format('M d, Y g:i A'),
+            'failure_reason' => $failureReason,
+            'note' => $schedule->repeatsEvery() !== null && in_array($status, ['sent', 'due', 'failed', 'scheduled'], true)
+                ? trim(($note ?? '').' '.($nextRepeat ? 'Repeats — next on '.$nextRepeat->format('M d, Y').'.' : 'No further repeats.'))
+                : $note,
+            'recipients' => $recipients->map(fn (Employee $recipient) => [
+                'name' => $recipient->name,
+                'email' => $recipient->email,
+            ])->values()->all(),
+            'cc_recipients' => $emailTemplate ? $emailTemplate->ccRecipientNames() : [],
+        ];
     }
 
     /**
