@@ -91,8 +91,10 @@ class NotifyOverdueChecklists extends Command
         $recipients = collect();
 
         // The Department Head is always responsible, as the final approver.
-        if ($assignment->employee?->user) {
-            $recipients->push($assignment->employee->user);
+        // Escalation-aware: while HR/Admin reassignment is pending there is
+        // no active signatory to address (admins are still added below).
+        if ($assignment->activeClearanceSignatory()?->user) {
+            $recipients->push($assignment->activeClearanceSignatory()->user);
         }
 
         // On a per-item-approver checklist, also notify each still-unchecked
@@ -101,7 +103,7 @@ class NotifyOverdueChecklists extends Command
         if ($assignment->usesPerItemApprovers()) {
             $progress = $assignment->itemProgress->keyBy('checklist_item_id');
 
-            foreach ($assignment->checklistTemplate->items as $item) {
+            foreach ($assignment->applicableItems() as $item) {
                 $isChecked = (bool) ($progress->get($item->id)?->is_checked ?? false);
 
                 if ($isChecked) {
@@ -143,7 +145,7 @@ class NotifyOverdueChecklists extends Command
             return;
         }
 
-        $departmentHead = $assignment->employee;
+        $departmentHead = $assignment->activeClearanceSignatory();
 
         if (! $departmentHead || ! $departmentHead->email || ! filter_var($departmentHead->email, FILTER_VALIDATE_EMAIL)) {
             return;

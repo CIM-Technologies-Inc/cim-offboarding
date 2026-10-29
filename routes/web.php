@@ -13,6 +13,7 @@ use App\Http\Controllers\ChecklistDelegationController;
 use App\Http\Controllers\EmailTemplateController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\ClearanceFormController;
+use App\Http\Controllers\ClearanceSignatoryEscalationController;
 use App\Http\Controllers\DepartmentHeadController;
 use App\Http\Controllers\OnboardingChecklistTemplateController;
 use App\Http\Controllers\EmployeeGroupController;
@@ -28,6 +29,7 @@ use App\Http\Controllers\FinalApproverController;
 use App\Http\Controllers\FinalApprovalController;
 use App\Http\Controllers\ReportController;
 use App\Http\Controllers\SeparationTypeController;
+use App\Http\Controllers\TaskExemptionController;
 use App\Http\Controllers\LogController;
 use App\Http\Controllers\SmtpSettingController;
 use App\Http\Controllers\ImpersonationController;
@@ -338,6 +340,32 @@ Route::middleware('permission:separation-types.edit')->group(function () {
 });
 Route::middleware('permission:separation-types.delete')->group(function () {
     Route::delete('/separation-types/{separationType}', [SeparationTypeController::class, 'destroy'])->name('separation-types.destroy');
+});
+
+// clearance signatory escalation — HR/Admin's escalation panel (Approvals
+// page) and "Assign New Clearance Signatory" after a secondary signatory
+// misses their deadline. See ClearanceSignatoryEscalationService.
+Route::middleware('permission:checklist-signatories.reassign')->group(function () {
+    Route::get('/clearance-signatory-escalations', [ClearanceSignatoryEscalationController::class, 'index'])->name('clearance-signatory-escalations.index');
+    Route::post('/clearance-signatory-escalations/{offboardingRequestApprover}/reassign', [ClearanceSignatoryEscalationController::class, 'reassign'])->name('clearance-signatory-escalations.reassign');
+});
+
+// task exemption — rules that leave specific checklist tasks out of FUTURE
+// offboarding requests by department/position/employee (see
+// `TaskExemptionResolver`). Each action independently gated, same split as
+// Separation Types.
+Route::middleware('permission:task-exemptions.view')->group(function () {
+    Route::get('/task-exemptions', [TaskExemptionController::class, 'index'])->name('task-exemptions.index');
+});
+Route::middleware('permission:task-exemptions.create')->group(function () {
+    Route::post('/task-exemptions', [TaskExemptionController::class, 'store'])->name('task-exemptions.store');
+});
+Route::middleware('permission:task-exemptions.edit')->group(function () {
+    Route::put('/task-exemptions/{taskExemption}', [TaskExemptionController::class, 'update'])->name('task-exemptions.update');
+    Route::patch('/task-exemptions/{taskExemption}/toggle-status', [TaskExemptionController::class, 'toggleStatus'])->name('task-exemptions.toggle-status');
+});
+Route::middleware('permission:task-exemptions.delete')->group(function () {
+    Route::delete('/task-exemptions/{taskExemption}', [TaskExemptionController::class, 'destroy'])->name('task-exemptions.destroy');
 });
 
 // reports — read-only, so a single `.view` permission covers the page and

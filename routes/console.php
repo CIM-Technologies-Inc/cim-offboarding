@@ -34,6 +34,12 @@ Schedule::command('app:notify-overdue-checklists')->everyFiveMinutes()->withoutO
 // five-minute cadence and scheduler-must-be-running caveat as its sibling.
 Schedule::command('app:notify-clearance-signing-due')->everyFiveMinutes()->withoutOverlapping(30)->onOneServer();
 
+// Secondary Clearance Signatory & automatic escalation — every 5 minutes, so
+// a checklist escalates within 5 minutes of its deadline. Each transition is
+// row-locked and applied at most once (see ClearanceSignatoryEscalationService),
+// so overlap/duplicate runs can't double-escalate.
+Schedule::command('app:escalate-clearance-signatories')->everyFiveMinutes()->withoutOverlapping(30)->onOneServer();
+
 // Best-effort sweep for idle sessions — see LogExpiredSessions' own
 // docblock for why this can't be instant. Same five-minute cadence as its
 // siblings above.

@@ -795,7 +795,31 @@
                                                     <span x-show="checklist.is_immediate_head_checklist" class="mr-1 rounded-full bg-gray-100 px-2 py-0.5 text-gray-600 dark:bg-white/5 dark:text-gray-300">Immediate Head Checklist</span>
                                                     <span x-show="checklist.use_task_assignee_as_signatory" class="mr-1 rounded-full bg-gray-100 px-2 py-0.5 text-gray-600 dark:bg-white/5 dark:text-gray-300">Use Task Assignee as Clearance Signatory</span>
                                                     <span x-show="checklist.is_temporary_override" class="mr-1 rounded-full bg-amber-100 px-2 py-0.5 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">Temporary Reassignment</span>
+                                                    <span x-show="checklist.exempted_tasks && checklist.exempted_tasks.length" class="mr-1 rounded-full border border-dashed border-gray-400 px-2 py-0.5 text-gray-500 dark:border-gray-600 dark:text-gray-400" x-text="(checklist.exempted_tasks || []).length + ' exempted'"></span>
                                                     <!-- <span x-text="'Sequence: ' + checklist.sequence_type"></span> -->
+                                                </p>
+                                                {{-- Secondary Clearance Signatory — visible without expanding the
+                                                     card; resolved by the same rules submission applies (see
+                                                     OffboardingRequestPreviewService::secondaryApproverPreview()). --}}
+                                                <template x-if="checklist.secondary_approver && checklist.secondary_approver.applicable">
+                                                    <p class="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs">
+                                                        <span class="text-gray-500 dark:text-gray-400">Secondary Approver:</span>
+                                                        <template x-if="checklist.secondary_approver.assigned">
+                                                            <span class="flex flex-wrap items-center gap-1.5">
+                                                                <span class="rounded-full bg-[#145a3a]/10 px-2 py-0.5 font-medium text-[#145a3a] dark:text-[#3aa876]"
+                                                                    x-text="checklist.secondary_approver.name + (checklist.secondary_approver.code ? ' (' + checklist.secondary_approver.code + ')' : '')"></span>
+                                                                <span class="text-gray-500 dark:text-gray-400" x-text="checklist.secondary_approver.escalation_label"></span>
+                                                            </span>
+                                                        </template>
+                                                        <template x-if="!checklist.secondary_approver.assigned">
+                                                            <span class="rounded-full bg-gray-100 px-2 py-0.5 font-medium text-gray-500 dark:bg-white/5 dark:text-gray-400">No Secondary Approver Assigned</span>
+                                                        </template>
+                                                    </p>
+                                                </template>
+                                                <p x-show="checklist.secondary_approver && checklist.secondary_approver.note" class="mt-1 text-xs text-amber-600 dark:text-amber-400"
+                                                    x-text="checklist.secondary_approver ? checklist.secondary_approver.note : ''"></p>
+                                                <p x-show="checklist.secondary_approver && !checklist.secondary_approver.applicable" class="mt-1.5 text-xs text-gray-400">
+                                                    Secondary Approver: Not applicable (Task Assignees are the signatories)
                                                 </p>
                                             </div>
                                             <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" class="shrink-0 transition-transform" :class="expandedChecklist === checklist.id ? 'rotate-180' : ''">
@@ -826,12 +850,40 @@
                                             </div>
                                             <template x-if="checklist.task_assignees.length">
                                                 <div class="mt-3">
-                                                    <p class="mb-1 text-xs font-medium text-gray-500 dark:text-gray-400">Task Assignees</p>
+                                                    <p class="mb-1 text-xs font-medium text-gray-500 dark:text-gray-400">Included Tasks / Task Assignees</p>
                                                     <ul class="space-y-1">
                                                         <template x-for="(item, idx) in checklist.task_assignees" :key="idx">
                                                             <li class="flex items-center justify-between gap-2 text-xs">
                                                                 <span class="text-gray-600 dark:text-gray-300" x-text="item.item_title"></span>
-                                                                <span class="text-gray-400" x-text="item.assignee_name || 'Unassigned'"></span>
+                                                                <span class="flex shrink-0 items-center gap-2">
+                                                                    <span class="text-gray-400" x-text="item.assignee_name || 'Unassigned'"></span>
+                                                                    <span class="rounded-full bg-yellow-50 px-2 py-0.5 text-[10px] font-medium text-yellow-700 dark:bg-yellow-500/15 dark:text-yellow-400">Pending</span>
+                                                                </span>
+                                                            </li>
+                                                        </template>
+                                                    </ul>
+                                                </div>
+                                            </template>
+                                            {{-- Task Exemption: excluded from the workflow on submission
+                                                 (never assigned, notified, or required for approval) —
+                                                 see `TaskExemptionResolver`. --}}
+                                            <template x-if="checklist.exempted_tasks && checklist.exempted_tasks.length">
+                                                <div class="mt-3 rounded-lg border border-dashed border-gray-300 bg-gray-50 p-3 dark:border-gray-700 dark:bg-white/[0.03]">
+                                                    <p class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">Exempted Tasks — will not be included</p>
+                                                    <ul class="space-y-1.5">
+                                                        <template x-for="(task, tIdx) in checklist.exempted_tasks" :key="tIdx">
+                                                            <li class="text-xs">
+                                                                <div class="flex items-center justify-between gap-2">
+                                                                    <span class="text-gray-400 line-through dark:text-gray-500" x-text="task.item_title"></span>
+                                                                    <span class="shrink-0 rounded-full border border-dashed border-gray-400 bg-gray-50 px-2 py-0.5 text-[10px] font-semibold tracking-wide text-gray-500 dark:border-gray-600 dark:bg-white/5 dark:text-gray-400">EXEMPTED</span>
+                                                                </div>
+                                                                <template x-for="(rule, rIdx) in task.rules" :key="rIdx">
+                                                                    <p class="mt-0.5 text-[11px] text-gray-400">
+                                                                        Rule: <span class="font-medium text-gray-500 dark:text-gray-300" x-text="rule.name"></span>
+                                                                        <span x-text="'(matched by ' + rule.matched_by.join(', ') + ')'"></span>
+                                                                        <span x-show="rule.reason" x-text="'— ' + rule.reason"></span>
+                                                                    </p>
+                                                                </template>
                                                             </li>
                                                         </template>
                                                     </ul>
@@ -843,10 +895,75 @@
                             </div>
                         </div>
 
+                        {{-- Task Exemption: checklists not attached at all (every task
+                             exempted), plus exemptions on checklists that only attach at
+                             a later stage (Final Pay; Secondary in Sync mode). --}}
+                        <template x-if="(reviewData.fully_exempted_checklists || []).length || (reviewData.later_stage_exemptions || []).length">
+                            <div>
+                                <h5 class="mb-2 text-sm font-semibold text-gray-800 dark:text-white/90">
+                                    Task Exemptions
+                                    <span class="font-normal text-gray-400" x-text="'(' + reviewData.exempted_task_count + ' task' + (reviewData.exempted_task_count === 1 ? '' : 's') + ')'"></span>
+                                </h5>
+                                <div class="space-y-2">
+                                    <template x-for="checklist in (reviewData.fully_exempted_checklists || [])" :key="'fx-' + checklist.id">
+                                        <div class="rounded-lg border border-dashed border-gray-300 p-4 dark:border-gray-700">
+                                            <p class="mb-2 flex flex-wrap items-center gap-2 text-sm font-semibold text-gray-500 dark:text-gray-400">
+                                                <span class="line-through" x-text="checklist.title"></span>
+                                                <span class="rounded-full border border-dashed border-gray-400 px-2 py-0.5 text-[10px] font-semibold tracking-wide">FULLY EXEMPTED — NOT ATTACHED</span>
+                                            </p>
+                                            <ul class="space-y-1.5">
+                                                        <template x-for="(task, tIdx) in checklist.exempted_tasks" :key="tIdx">
+                                                            <li class="text-xs">
+                                                                <div class="flex items-center justify-between gap-2">
+                                                                    <span class="text-gray-400 line-through dark:text-gray-500" x-text="task.item_title"></span>
+                                                                    <span class="shrink-0 rounded-full border border-dashed border-gray-400 bg-gray-50 px-2 py-0.5 text-[10px] font-semibold tracking-wide text-gray-500 dark:border-gray-600 dark:bg-white/5 dark:text-gray-400">EXEMPTED</span>
+                                                                </div>
+                                                                <template x-for="(rule, rIdx) in task.rules" :key="rIdx">
+                                                                    <p class="mt-0.5 text-[11px] text-gray-400">
+                                                                        Rule: <span class="font-medium text-gray-500 dark:text-gray-300" x-text="rule.name"></span>
+                                                                        <span x-text="'(matched by ' + rule.matched_by.join(', ') + ')'"></span>
+                                                                        <span x-show="rule.reason" x-text="'— ' + rule.reason"></span>
+                                                                    </p>
+                                                                </template>
+                                                            </li>
+                                                        </template>
+                                                    </ul>
+                                        </div>
+                                    </template>
+                                    <template x-for="checklist in (reviewData.later_stage_exemptions || [])" :key="'ls-' + checklist.id">
+                                        <div class="rounded-lg border border-dashed border-gray-300 p-4 dark:border-gray-700">
+                                            <p class="mb-2 flex flex-wrap items-center gap-2 text-sm font-semibold text-gray-700 dark:text-gray-300">
+                                                <span x-text="checklist.title"></span>
+                                                <span class="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-600 dark:bg-white/5 dark:text-gray-300" x-text="checklist.is_final_pay_checklist ? 'Final Pay stage' : 'Later stage'"></span>
+                                                <span x-show="checklist.is_fully_exempted" class="rounded-full border border-dashed border-gray-400 px-2 py-0.5 text-[10px] font-semibold tracking-wide text-gray-500">FULLY EXEMPTED — WILL NOT ATTACH</span>
+                                            </p>
+                                            <ul class="space-y-1.5">
+                                                        <template x-for="(task, tIdx) in checklist.exempted_tasks" :key="tIdx">
+                                                            <li class="text-xs">
+                                                                <div class="flex items-center justify-between gap-2">
+                                                                    <span class="text-gray-400 line-through dark:text-gray-500" x-text="task.item_title"></span>
+                                                                    <span class="shrink-0 rounded-full border border-dashed border-gray-400 bg-gray-50 px-2 py-0.5 text-[10px] font-semibold tracking-wide text-gray-500 dark:border-gray-600 dark:bg-white/5 dark:text-gray-400">EXEMPTED</span>
+                                                                </div>
+                                                                <template x-for="(rule, rIdx) in task.rules" :key="rIdx">
+                                                                    <p class="mt-0.5 text-[11px] text-gray-400">
+                                                                        Rule: <span class="font-medium text-gray-500 dark:text-gray-300" x-text="rule.name"></span>
+                                                                        <span x-text="'(matched by ' + rule.matched_by.join(', ') + ')'"></span>
+                                                                        <span x-show="rule.reason" x-text="'— ' + rule.reason"></span>
+                                                                    </p>
+                                                                </template>
+                                                            </li>
+                                                        </template>
+                                                    </ul>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                        </template>
+
                         {{-- General Signatories --}}
                         <div>
                             <h5 class="mb-2 text-sm font-semibold text-gray-800 dark:text-white/90">
-                                General Signatories
+                                Department Signatories
                                 <span class="font-normal text-gray-400" x-text="'(' + reviewData.general_signatories.length + ')'"></span>
                             </h5>
                             <template x-if="!reviewData.general_signatories.length">

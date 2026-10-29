@@ -88,7 +88,9 @@ class NotifyClearanceSigningDue extends Command
 
     private function notifyChecklistSignatory(OffboardingRequestApprover $assignment, ?EmailTemplate $emailTemplate): void
     {
-        $signatory = $assignment->employee;
+        // The CURRENT active Clearance Signatory (escalation-aware); none
+        // while HR/Admin reassignment is pending.
+        $signatory = $assignment->activeClearanceSignatory();
         $offboardee = $assignment->offboardingRequest->employee;
         $checklistTitle = $assignment->checklistTemplate?->title ?? 'Checklist';
 

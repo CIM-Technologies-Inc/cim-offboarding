@@ -28,9 +28,9 @@ class EmployeeGroupController extends Controller
                 ->withCount('employees')
                 ->orderBy('name')
                 ->get(),
-            'employees' => Employee::with('employeeGroup.groupHead')
+            'employees' => Employee::with(['employeeGroup.groupHead', 'headEmployee:id,name,employee_code'])
                 ->orderBy('name')
-                ->get(['id', 'name', 'firstName', 'lastName', 'middleName', 'email', 'employee_code', 'department', 'designation', 'position', 'employee_group_id', 'is_task_assignee', 'status']),
+                ->get(['id', 'name', 'firstName', 'lastName', 'middleName', 'email', 'employee_code', 'department', 'designation', 'position', 'employee_group_id', 'head_employee_id', 'is_task_assignee', 'status']),
             // Feeds the Add New Employee modal's Department dropdown/Position
             // datalist — see `storeEmployee()`'s own docblock for why
             // Department is a closed dropdown (existing values only) while
@@ -387,26 +387,52 @@ class EmployeeGroupController extends Controller
             // suggestions, but a genuinely new position title (the first
             // hire into a brand-new role) must still be allowed through.
             'position' => ['required', 'string', 'max:255'],
+            // Optional, like the Excel import's own blank `headID` — but when
+            // given, it must be an existing employee who hasn't already been
+            // offboarded (someone who's left can't approve anyone's work).
+            'head_employee_id' => [
+                'nullable',
+                'integer',
+                Rule::exists('employees', 'id')->where(fn ($query) => $query->where(
+                    fn ($q) => $q->whereNull('status')->orWhere('status', '!=', 'offboarded')
+                )),
+            ],
         ], [
             'employee_code.unique' => 'This Employee No. is already registered in the system.',
+            'head_employee_id.exists' => 'The selected Immediate Head is not a valid, active employee record.',
+            'head_employee_id.integer' => 'Please select the Immediate Head from the list.',
         ]);
 
         $firstName = Str::title(strtolower(trim($validated['firstName'])));
         $middleName = Str::title(strtolower(trim($validated['middleName'])));
         $lastName = Str::title(strtolower(trim($validated['lastName'])));
 
-        $employee = $this->createEmployeeGuardingAgainstNameDuplicate($validated, $firstName, $middleName, $lastName);
+        $headEmployee = ! empty($validated['head_employee_id']) ? Employee::find($validated['head_employee_id']) : null;
+
+        $employee = DB::transaction(function () use ($validated, $firstName, $middleName, $lastName, $headEmployee) {
+            $employee = $this->createEmployeeGuardingAgainstNameDuplicate($validated, $firstName, $middleName, $lastName, $headEmployee);
+
+            if ($headEmployee) {
+                $this->assignToHeadsGroup($employee, $headEmployee);
+            }
+
+            return $employee;
+        });
 
         ActivityLog::record('employee_created', 'Employees', "{$employee->name} added to the Employee Master roster.", [
             'subject_type' => 'Employee',
             'subject_id' => $employee->id,
+            'new_values' => $headEmployee ? [
+                'head_employee_id' => $headEmployee->id,
+                'employee_group_id' => $employee->employee_group_id,
+            ] : null,
         ]);
 
         $message = "{$employee->name} added.";
 
         if ($request->wantsJson()) {
             return response()->json([
-                'employee' => $employee->fresh(['employeeGroup.groupHead']),
+                'employee' => $employee->fresh(['employeeGroup.groupHead', 'headEmployee:id,name,employee_code']),
                 'message' => $message,
             ]);
         }
@@ -431,7 +457,7 @@ class EmployeeGroupController extends Controller
      * (never used by this app in practice) just falls back to the
      * unguarded check.
      */
-    private function createEmployeeGuardingAgainstNameDuplicate(array $validated, string $firstName, string $middleName, string $lastName): Employee
+    private function createEmployeeGuardingAgainstNameDuplicate(array $validated, string $firstName, string $middleName, string $lastName, ?Employee $headEmployee = null): Employee
     {
         $usingMysql = DB::connection()->getDriverName() === 'mysql';
         $lockName = 'employee-name:' . sha1(Str::lower($firstName . '|' . $middleName . '|' . $lastName));
@@ -462,6 +488,11 @@ class EmployeeGroupController extends Controller
                 'department' => $validated['department'],
                 'designation' => $validated['position'],
                 'position' => $validated['position'],
+                // Same pair the Excel import writes for a row's headID: the
+                // FK every approval/clearance reader uses (`headEmployee()`),
+                // plus the legacy free-text `head` name alongside it.
+                'head_employee_id' => $headEmployee?->id,
+                'head' => $headEmployee?->name,
                 'status' => 'active',
                 'date_of_joining' => now(),
             ]);
@@ -470,6 +501,75 @@ class EmployeeGroupController extends Controller
                 DB::select('SELECT RELEASE_LOCK(?)', [$lockName]);
             }
         }
+    }
+
+    /**
+     * Makes the Add New Employee form's selected Immediate Head the new
+     * employee's Group Head too. A Group Head lives on the GROUP
+     * (`employee_groups.group_head_employee_id`), not the employee, so this
+     * places the employee in a group that head already runs — preferring
+     * one whose department matches the new employee's own, else the
+     * oldest — and only when the head runs no group yet, creates one for
+     * them (named after their department, same convention as the existing
+     * groups). Creating it never runs `syncDepartmentMembership()`: nobody
+     * else is moved, and the admin can still edit/auto-add members later.
+     *
+     * The head also gets an approver account, same as picking them on the
+     * Create/Edit Group form (`ensureGroupHeadHasAccount()`).
+     */
+    private function assignToHeadsGroup(Employee $employee, Employee $headEmployee): void
+    {
+        $headedGroups = EmployeeGroup::where('group_head_employee_id', $headEmployee->id)->orderBy('id')->get();
+
+        $group = $headedGroups->firstWhere('department', $employee->department) ?? $headedGroups->first();
+
+        if (! $group) {
+            $group = EmployeeGroup::create([
+                'name' => $this->uniqueGroupNameFor($headEmployee),
+                'department' => $headEmployee->department,
+                'group_head_employee_id' => $headEmployee->id,
+                'is_active' => true,
+                'created_by' => auth()->id(),
+            ]);
+
+            ActivityLog::record('employee_group_updated', 'Employees', "Employee group \"{$group->name}\" created for Group Head {$headEmployee->name}.", [
+                'subject_type' => 'EmployeeGroup',
+                'subject_id' => $group->id,
+            ]);
+        }
+
+        $employee->update(['employee_group_id' => $group->id]);
+
+        $this->ensureGroupHeadHasAccount($headEmployee->id);
+    }
+
+    /**
+     * `employee_groups.name` is unique — tries the head's department first,
+     * then "Department – Head Name", then the head's name alone, and finally
+     * appends a counter so creation never fails on a name collision.
+     */
+    private function uniqueGroupNameFor(Employee $headEmployee): string
+    {
+        $candidates = array_values(array_filter([
+            $headEmployee->department,
+            $headEmployee->department ? "{$headEmployee->department} – {$headEmployee->name}" : null,
+            $headEmployee->name,
+        ]));
+
+        foreach ($candidates as $candidate) {
+            if (! EmployeeGroup::where('name', $candidate)->exists()) {
+                return $candidate;
+            }
+        }
+
+        $base = end($candidates);
+        $suffix = 2;
+
+        while (EmployeeGroup::where('name', "{$base} ({$suffix})")->exists()) {
+            $suffix++;
+        }
+
+        return "{$base} ({$suffix})";
     }
 
     private const DUPLICATE_NAME_MESSAGE = 'An employee with the same name already exists in the system. Please verify the employee details before proceeding.';

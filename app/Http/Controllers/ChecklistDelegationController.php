@@ -232,7 +232,7 @@ class ChecklistDelegationController extends Controller
             ->flatMap(function (OffboardingRequestApprover $assignment) {
                 $assignment->loadMissing('checklistTemplate.items');
 
-                return $assignment->checklistTemplate->items->map(fn (ChecklistItem $item) => [
+                return $assignment->applicableItems()->map(fn (ChecklistItem $item) => [
                     'checklistTitle' => $assignment->checklistTemplate->title,
                     'itemTitle' => $item->title,
                     'dueAt' => $assignment->due_at?->format('M d, Y'),
@@ -373,7 +373,7 @@ class ChecklistDelegationController extends Controller
                 // PRIMARY approver may still have personally checked (or
                 // held) some items directly even on a checklist that's
                 // never had per-item approvers, so this is re-checked here.
-                $eligibleItems = $assignment->checklistTemplate->items
+                $eligibleItems = $assignment->applicableItems()
                     ->reject(fn (ChecklistItem $item) => $checkedItemIds->contains($item->id) || $heldItemIds->contains($item->id))
                     ->values();
 
@@ -532,6 +532,12 @@ class ChecklistDelegationController extends Controller
 
         abort_unless($checklistItem->checklist_template_id === $offboardingRequestApprover->checklist_template_id, 404);
 
+        abort_if(
+            $offboardingRequestApprover->isItemExempted($checklistItem->id),
+            422,
+            ChecklistItemProgress::EXEMPTED_TASK_MESSAGE
+        );
+
         abort_unless(
             in_array($offboardingRequestApprover->status, ['pending', 'viewed'], true),
             422,
@@ -672,7 +678,7 @@ class ChecklistDelegationController extends Controller
         $checkedItemIds = $offboardingRequestApprover->itemProgress->where('is_checked', true)->pluck('checklist_item_id');
         $heldItemIds = $offboardingRequestApprover->itemProgress->where('status', 'hold')->pluck('checklist_item_id');
 
-        $eligibleItems = $offboardingRequestApprover->checklistTemplate->items
+        $eligibleItems = $offboardingRequestApprover->applicableItems()
             ->reject(fn (ChecklistItem $item) => $checkedItemIds->contains($item->id) || $heldItemIds->contains($item->id))
             ->values();
 
@@ -756,6 +762,12 @@ class ChecklistDelegationController extends Controller
     public function takeOverItem(Request $request, OffboardingRequestApprover $offboardingRequestApprover, ChecklistItem $checklistItem): JsonResponse
     {
         abort_unless($checklistItem->checklist_template_id === $offboardingRequestApprover->checklist_template_id, 404);
+
+        abort_if(
+            $offboardingRequestApprover->isItemExempted($checklistItem->id),
+            422,
+            ChecklistItemProgress::EXEMPTED_TASK_MESSAGE
+        );
 
         abort_unless(
             in_array($offboardingRequestApprover->status, ['pending', 'viewed'], true),
@@ -952,6 +964,10 @@ class ChecklistDelegationController extends Controller
         if (! $offboardingRequestApprover || ! $checklistItem
             || $checklistItem->checklist_template_id !== $offboardingRequestApprover->checklist_template_id) {
             return ['status' => 'not_found', 'message' => 'Checklist item not found.'];
+        }
+
+        if ($offboardingRequestApprover->isItemExempted($checklistItem->id)) {
+            return ['status' => 'invalid', 'message' => ChecklistItemProgress::EXEMPTED_TASK_MESSAGE];
         }
 
         if (! in_array($offboardingRequestApprover->status, ['pending', 'viewed'], true)) {
@@ -1277,7 +1293,7 @@ class ChecklistDelegationController extends Controller
         foreach ($members as $member) {
             $member->loadMissing('checklistTemplate.items');
 
-            foreach ($member->checklistTemplate->items as $item) {
+            foreach ($member->applicableItems() as $item) {
                 $itemToAssignmentId[$item->id] = $member->id;
             }
         }
@@ -1372,7 +1388,7 @@ class ChecklistDelegationController extends Controller
             $member->load('checklistTemplate.items', 'itemProgress.checkedBy.employee', 'itemProgress.headApprover');
             $progressByItemId = $member->itemProgress->keyBy('checklist_item_id');
 
-            foreach ($member->checklistTemplate->items as $item) {
+            foreach ($member->applicableItems() as $item) {
                 $progress = $progressByItemId->get($item->id);
 
                 if (! $progress?->is_checked) {
@@ -1538,6 +1554,12 @@ class ChecklistDelegationController extends Controller
 
         $this->authorizeItemEditor($offboardingRequestApprover, $checklistItem);
 
+        abort_if(
+            $offboardingRequestApprover->isItemExempted($checklistItem->id),
+            422,
+            ChecklistItemProgress::EXEMPTED_TASK_MESSAGE
+        );
+
         abort_unless(
             in_array($offboardingRequestApprover->status, ['pending', 'viewed'], true),
             422,
@@ -1629,6 +1651,8 @@ class ChecklistDelegationController extends Controller
         }
 
         abort_unless($offboardingRequestApprover->employee_id === $user->employee?->id, 403);
+
+        abort_if($offboardingRequestApprover->isAwaitingHrReassignment(), 403, 'This checklist is awaiting HR/Admin to assign a new Clearance Signatory. Your Clearance Signatory assignment has expired.');
     }
 
     /**
@@ -1678,8 +1702,13 @@ class ChecklistDelegationController extends Controller
         abort_if($employee === null, 403);
         $employeeId = $employee->id;
 
-        if ($offboardingRequestApprover->employee_id === $employeeId
-            || $offboardingRequestApprover->delegated_employee_id === $employeeId) {
+        // Full (whole-checklist) scope for the Clearance Signatory or their
+        // delegate — except an expired signatory awaiting HR/Admin
+        // reassignment, who falls through to just the task(s) individually
+        // assigned to them below.
+        if (($offboardingRequestApprover->employee_id === $employeeId
+            || $offboardingRequestApprover->delegated_employee_id === $employeeId)
+            && ! $offboardingRequestApprover->isAwaitingHrReassignment()) {
             return null;
         }
 
@@ -1690,7 +1719,7 @@ class ChecklistDelegationController extends Controller
         // even if the whole checklist has since been handed to someone
         // else via `reassignChecklist()` — they keep clear/approve rights
         // on just their own originally-assigned items, never the rest.
-        $ownedItemIds = $offboardingRequestApprover->checklistTemplate->items
+        $ownedItemIds = $offboardingRequestApprover->applicableItems()
             ->filter(fn (ChecklistItem $item) => $offboardingRequestApprover->effectiveSignatoryFor($item)?->id === $employeeId
                 || $offboardingRequestApprover->originalSignatoryFor($item)?->id === $employeeId)
             ->pluck('id');
@@ -1727,7 +1756,7 @@ class ChecklistDelegationController extends Controller
             ->where('status', 'hold')
             ->pluck('checklist_item_id');
 
-        $takeoverEligibleIds = $offboardingRequestApprover->checklistTemplate->items
+        $takeoverEligibleIds = $offboardingRequestApprover->applicableItems()
             ->pluck('id')
             ->diff($checkedItemIds)
             ->diff($heldItemIds);
@@ -1794,7 +1823,7 @@ class ChecklistDelegationController extends Controller
 
         $offboardingRequestApprover->loadMissing('checklistTemplate.items.signatory.user', 'itemProgress', 'itemAssignments.assignedEmployee.user');
 
-        $itemsById = $offboardingRequestApprover->checklistTemplate->items->keyBy('id');
+        $itemsById = $offboardingRequestApprover->applicableItems()->keyBy('id');
         $existingProgress = $offboardingRequestApprover->itemProgress->keyBy('checklist_item_id');
 
         foreach ($items as $row) {

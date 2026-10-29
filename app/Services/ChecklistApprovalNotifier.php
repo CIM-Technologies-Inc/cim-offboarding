@@ -158,6 +158,12 @@ class ChecklistApprovalNotifier
 
     public function attachAndNotify(OffboardingRequest $offboardingRequest, Collection $templates, ?EmailTemplate $emailTemplate, string $creatorName = '', array $signatoryOverrides = []): array
     {
+        // A checklist whose every task is exempted on this request (Task
+        // Exemption) is never attached at all — see
+        // `TaskExemptionResolver::withoutFullyExemptedTemplates()`. Done
+        // here so every stage (creation, Secondary, Final Pay) gets it.
+        $templates = app(TaskExemptionResolver::class)->withoutFullyExemptedTemplates($offboardingRequest, $templates);
+
         if ($templates->isEmpty()) {
             return [];
         }
@@ -228,6 +234,15 @@ class ChecklistApprovalNotifier
                     'clearance_signing_due_at' => $dueDates['clearance_signing_due_at'],
                 ]
             );
+
+            // Secondary Clearance Signatory & escalation: snapshot the
+            // template's settings and start the primary signatory's
+            // completion period from this actual assignment moment. Only
+            // for a genuinely new instance — re-running attach on an
+            // existing one never resets an escalation already in progress.
+            if ($assignment->wasRecentlyCreated) {
+                app(ClearanceSignatoryEscalationService::class)->initializeAssignment($assignment, $template);
+            }
 
             // A headless (Task-Assignee-as-Signatory) template has no
             // department head to key this by — it's never looked up below
@@ -332,6 +347,14 @@ class ChecklistApprovalNotifier
      */
     public function notifyDepartmentHeadsOfNewRequest(OffboardingRequest $offboardingRequest, Collection $templates, array $signatoryOverrides = []): void
     {
+        // Same Task Exemption skip as `attachAndNotify()` — never announce
+        // a checklist that won't be attached.
+        $templates = app(TaskExemptionResolver::class)->withoutFullyExemptedTemplates($offboardingRequest, $templates);
+
+        if ($templates->isEmpty()) {
+            return;
+        }
+
         // Prefers the admin's per-request override (picked on the New
         // Offboarding Request modal), captured once at creation and never
         // re-checked for `is_active` afterward — a frozen snapshot, exactly
@@ -965,7 +988,7 @@ class ChecklistApprovalNotifier
         $offboardingRequest = $assignment->offboardingRequest;
         $offboardee = $offboardingRequest->employee;
 
-        $items = $assignment->checklistTemplate?->items ?? collect();
+        $items = $assignment->applicableItems();
         $progressByItemId = $assignment->itemProgress->keyBy('checklist_item_id');
         $completedCount = $items->filter(fn (ChecklistItem $item) => (bool) ($progressByItemId->get($item->id)?->is_checked ?? false))->count();
 
@@ -1109,6 +1132,11 @@ class ChecklistApprovalNotifier
             foreach ($template->items as $item) {
                 /** @var ChecklistItem $item */
 
+                // Exempted on this request — never assigned, never emailed.
+                if ($offboardingRequest->isItemExempted($item->id)) {
+                    continue;
+                }
+
                 // `effectiveSignatoryFor()` only ever resolves to someone
                 // EXPLICITLY configured as this item's Task Assignee (on the
                 // template, or via a per-request override) —
@@ -1242,6 +1270,14 @@ class ChecklistApprovalNotifier
     public function notifyDepartmentHeadReady(OffboardingRequest $offboardingRequest, int $employeeId, Collection $members): void
     {
         $members->each->loadMissing('checklistTemplate.items', 'itemProgress.checkedBy');
+
+        // A checklist awaiting HR/Admin reassignment has no active Clearance
+        // Signatory to ask for approval — HR/Admin was already alerted.
+        $members = $members->reject(fn (OffboardingRequestApprover $member) => $member->isAwaitingHrReassignment())->values();
+
+        if ($members->isEmpty()) {
+            return;
+        }
 
         $departmentHead = $members->first()->employee ?? Employee::find($employeeId);
 
@@ -1397,7 +1433,7 @@ class ChecklistApprovalNotifier
 
             return [
                 'title' => $assignment->checklistTemplate->title,
-                'items' => $assignment->checklistTemplate->items->map(function (ChecklistItem $item) use ($progressByItemId) {
+                'items' => $assignment->applicableItems()->map(function (ChecklistItem $item) use ($progressByItemId) {
                     $progress = $progressByItemId->get($item->id);
 
                     return [
@@ -1462,8 +1498,11 @@ class ChecklistApprovalNotifier
         $alreadyOverriddenItemIds = $assignment->itemAssignments->where('status', 'active')->pluck('checklist_item_id');
 
         $template->loadMissing('items.signatory');
+        // A task exempted on this request (Task Exemption) never gets an
+        // assignment row, so it can never reach a Task Assignee's queue or
+        // inbox.
         $itemsNeedingSnapshot = $template->items->reject(
-            fn (ChecklistItem $item) => $alreadyOverriddenItemIds->contains($item->id)
+            fn (ChecklistItem $item) => $alreadyOverriddenItemIds->contains($item->id) || $assignment->isItemExempted($item->id)
         )->values();
 
         if ($itemsNeedingSnapshot->isEmpty()) {

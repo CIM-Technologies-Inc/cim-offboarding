@@ -43,6 +43,8 @@ class OffboardingRequestPreviewService
     public function __construct(
         private ChecklistApprovalNotifier $checklistApprovalNotifier,
         private EmailTemplateScheduleDispatcher $emailTemplateScheduleDispatcher,
+        private TaskExemptionResolver $taskExemptionResolver,
+        private ClearanceSignatoryEscalationService $clearanceSignatoryEscalationService,
     ) {}
 
     /**
@@ -58,7 +60,13 @@ class OffboardingRequestPreviewService
         $approvalMode = $validated['approval_mode'] ?? 'async';
         $immediateHead = $immediateHeadId ? Employee::find($immediateHeadId) : null;
 
-        $checklists = $this->resolveChecklists($employee, $lastWorkingDay, $approvalMode, $temporarySignatoryOverrides, $immediateHeadId);
+        // Same `exemptionsFor()` call `store()` snapshots from (via
+        // `TaskExemptionResolver::snapshotFor()`), against the offboardee's
+        // live Employee Master record — so the preview is exactly what a
+        // submission right now would freeze.
+        $exemptions = $this->taskExemptionResolver->exemptionsFor($employee);
+
+        [$checklists, $fullyExemptedChecklists, $laterStageExemptions] = $this->resolveChecklists($employee, $lastWorkingDay, $approvalMode, $temporarySignatoryOverrides, $immediateHeadId, $exemptions);
         $generalSignatories = $this->resolveGeneralSignatories($lastWorkingDay, $approvalMode);
         $finalApprover = FinalApprover::where('is_active', true)->with('employee')->first();
 
@@ -90,6 +98,14 @@ class OffboardingRequestPreviewService
                 'approval_mode' => $approvalMode,
             ],
             'checklists' => $checklists,
+            // Task Exemption: checklists left out entirely because every
+            // one of their tasks is exempted (never attached — see
+            // `TaskExemptionResolver::withoutFullyExemptedTemplates()`), and
+            // exempted tasks on checklists that only attach at a later
+            // stage (Secondary in Sync mode, Final Pay).
+            'fully_exempted_checklists' => $fullyExemptedChecklists,
+            'later_stage_exemptions' => $laterStageExemptions,
+            'exempted_task_count' => $exemptions->count(),
             'general_signatories' => $generalSignatories,
             'final_approver' => $finalApprover?->employee ? [
                 'id' => $finalApprover->employee->id,
@@ -112,8 +128,9 @@ class OffboardingRequestPreviewService
      *
      * @param  array<int, int>  $signatoryOverrides
      */
-    private function resolveChecklists(Employee $employee, Carbon $lastWorkingDay, string $approvalMode, array $signatoryOverrides, ?int $immediateHeadId): array
+    private function resolveChecklists(Employee $employee, Carbon $lastWorkingDay, string $approvalMode, array $signatoryOverrides, ?int $immediateHeadId, Collection $exemptions): array
     {
+        $exemptedItemIds = $exemptions->keys();
         $templatesQuery = ChecklistTemplate::where('is_active', true)
             ->where('is_final_pay_checklist', false)
             ->applicableToDepartment($employee->department)
@@ -129,8 +146,12 @@ class OffboardingRequestPreviewService
         // anything else.
         $pseudoRequest = new OffboardingRequest();
         $pseudoRequest->immediate_head_id = $immediateHeadId;
+        // Lets the secondary-signatory eligibility check below reject the
+        // offboardee themselves, exactly as submission does.
+        $pseudoRequest->employee_id = $employee->id;
 
         $result = [];
+        $fullyExempted = [];
 
         foreach ($templates as $template) {
             $signatoryId = $this->checklistApprovalNotifier->resolveChecklistSignatoryId($template, $pseudoRequest, $signatoryOverrides);
@@ -139,13 +160,25 @@ class OffboardingRequestPreviewService
                 continue;
             }
 
+            if (TaskExemptionResolver::isFullyExempted($template, $exemptedItemIds)) {
+                $fullyExempted[] = [
+                    'id' => $template->id,
+                    'title' => $template->title,
+                    'exempted_tasks' => $this->exemptedTaskRows($template, $exemptions),
+                ];
+
+                continue;
+            }
+
             $dueDates = $this->checklistApprovalNotifier->computeChecklistDueDates($template, $lastWorkingDay);
             $signatory = $signatoryId ? Employee::find($signatoryId) : null;
 
-            $taskAssignees = $template->items->map(fn (ChecklistItem $item) => [
-                'item_title' => $item->title,
-                'assignee_name' => $item->signatory?->name,
-            ])->values()->all();
+            $taskAssignees = $template->items
+                ->reject(fn (ChecklistItem $item) => $exemptedItemIds->contains($item->id))
+                ->map(fn (ChecklistItem $item) => [
+                    'item_title' => $item->title,
+                    'assignee_name' => $item->signatory?->name,
+                ])->values()->all();
 
             $result[] = [
                 'id' => $template->id,
@@ -172,10 +205,88 @@ class OffboardingRequestPreviewService
                 'extended_due_at' => $template->due_in_days ? $dueDates['due_at']?->format('M d, Y g:i A') : null,
                 'clearance_signing_due_at' => $dueDates['clearance_signing_due_at']?->format('M d, Y g:i A'),
                 'task_assignees' => $taskAssignees,
+                'exempted_tasks' => $this->exemptedTaskRows($template, $exemptions),
+                'secondary_approver' => $this->secondaryApproverPreview($template, $signatoryId, $pseudoRequest),
             ];
         }
 
-        return $result;
+        // Checklists that will only attach later (Final Pay always; a Sync
+        // request's Secondary tier) — their exemptions are frozen at
+        // submission too, so they're shown here for verification.
+        $laterStage = [];
+
+        if ($exemptions->isNotEmpty()) {
+            $laterTemplates = ChecklistTemplate::where('is_active', true)
+                ->applicableToDepartment($employee->department)
+                ->whereNotIn('id', $templates->pluck('id'))
+                ->with('items')
+                ->orderBy('title')
+                ->get();
+
+            foreach ($laterTemplates as $template) {
+                $rows = $this->exemptedTaskRows($template, $exemptions);
+
+                if ($rows) {
+                    $laterStage[] = [
+                        'id' => $template->id,
+                        'title' => $template->title,
+                        'is_final_pay_checklist' => $template->is_final_pay_checklist,
+                        'is_fully_exempted' => TaskExemptionResolver::isFullyExempted($template, $exemptedItemIds),
+                        'exempted_tasks' => $rows,
+                    ];
+                }
+            }
+        }
+
+        return [$result, $fullyExempted, $laterStage];
+    }
+
+    /**
+     * The Secondary Clearance Signatory / automatic escalation this checklist
+     * will get on submission — resolved by the SAME rules that snapshot it
+     * (`ClearanceSignatoryEscalationService::resolveConfiguration()`), against
+     * the same primary signatory submission would assign, so the review
+     * screen can't drift from what is actually applied.
+     *
+     * @return array{applicable: bool, assigned: bool, name: ?string, code: ?string, escalates: bool, escalation_label: ?string, note: ?string}
+     */
+    private function secondaryApproverPreview(ChecklistTemplate $template, ?int $primarySignatoryId, OffboardingRequest $pseudoRequest): array
+    {
+        // "Use Task Assignee as Clearance Signatory": no single signatory to back up.
+        if ($template->use_task_assignee_as_signatory || ! $primarySignatoryId) {
+            return ['applicable' => false, 'assigned' => false, 'name' => null, 'code' => null, 'escalates' => false, 'escalation_label' => null, 'note' => null];
+        }
+
+        $config = $this->clearanceSignatoryEscalationService->resolveConfiguration($template, $primarySignatoryId, $pseudoRequest);
+        $days = (int) $config['days'];
+
+        return [
+            'applicable' => true,
+            // Assigned = it will actually take over on this request.
+            'assigned' => $config['escalates'],
+            'name' => $config['secondary']?->name,
+            'code' => $config['secondary']?->employee_code,
+            'escalates' => $config['escalates'],
+            'escalation_label' => $config['escalates']
+                ? 'Escalates after '.$days.' '.($config['day_type'] === 'working' ? 'working' : 'calendar').' day'.($days === 1 ? '' : 's')
+                : null,
+            'note' => $config['note'],
+        ];
+    }
+
+    /**
+     * @return array<int, array{item_title: string, rules: array<int, array{name: string, reason: ?string, matched_by: array<int, string>}>}>
+     */
+    private function exemptedTaskRows(ChecklistTemplate $template, Collection $exemptions): array
+    {
+        return $template->items
+            ->filter(fn (ChecklistItem $item) => $exemptions->has($item->id))
+            ->map(fn (ChecklistItem $item) => [
+                'item_title' => $item->title,
+                'rules' => collect($exemptions->get($item->id)['rules'])
+                    ->map(fn (array $rule) => ['name' => $rule['name'], 'reason' => $rule['reason'], 'matched_by' => $rule['matched_by']])
+                    ->all(),
+            ])->values()->all();
     }
 
     /**

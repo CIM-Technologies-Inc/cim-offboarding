@@ -48,7 +48,7 @@ class OffboardeeController extends Controller
 
         $openOffboardeeId = $request->query('offboardee') ? (int) $request->query('offboardee') : null;
 
-        $eagerLoad = ['checklistTemplates', 'approvers.checklistTemplate', 'approvers.employee', 'approvers.itemProgress', 'generalSignatoryApprovals', 'immediateHead', 'finalApproval.employee.user', 'cancelledBy'];
+        $eagerLoad = ['checklistTemplates', 'exemptedTasks', 'approvers.checklistTemplate', 'approvers.employee', 'approvers.itemProgress', 'generalSignatoryApprovals', 'immediateHead', 'finalApproval.employee.user', 'cancelledBy'];
 
         // `offboarding` (still in progress) and `offboarded` (fully
         // completed — see `ChecklistCompletionService::checkFinalPayCompletion()`)
@@ -147,6 +147,12 @@ class OffboardeeController extends Controller
             'noticePeriodStatus' => $offboardingRequest?->noticePeriodStatus(),
             'checklistTemplates' => $offboardingRequest?->checklistTemplates->pluck('title')->all() ?? [],
             'timeline' => $offboardingRequest?->approverActivityTimeline() ?? [],
+            // Task Exemption snapshot — see `OffboardingRequestExemptedTask`.
+            'exemptedTasks' => $offboardingRequest?->exemptedTasks->map(fn ($task) => [
+                'checklist_title' => $task->checklist_title,
+                'item_title' => $task->item_title,
+                'rules' => collect($task->matched_rules)->map(fn ($rule) => ['name' => $rule['name'], 'reason' => $rule['reason'] ?? null])->all(),
+            ])->values()->all() ?? [],
             // URLs are generated whenever a request exists, regardless of its
             // status — admins see the Clearance buttons unconditionally (see
             // the status-timeline-modal component), while everyone else stays

@@ -10,6 +10,7 @@ use App\Models\FinalApprover;
 use App\Models\GeneralSignatory;
 use App\Models\OffboardingRequest;
 use App\Models\OffboardingRequestApprover;
+use App\Services\TaskExemptionResolver;
 use App\Support\OffboardingTimelineStepPresenter;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Carbon\Carbon;
@@ -631,7 +632,7 @@ class ClearanceFormController extends Controller
             return [];
         }
 
-        $itemsByEmployeeId = $template->items
+        $itemsByEmployeeId = $approver->applicableItems()
             ->groupBy(fn ($item) => $approver->effectiveSignatoryFor($item)?->id)
             ->forget(null);
 
@@ -920,7 +921,7 @@ class ClearanceFormController extends Controller
                 }
             }
 
-            $itemsByEmployeeId = ($approver->checklistTemplate?->items ?? collect())
+            $itemsByEmployeeId = $approver->applicableItems()
                 ->groupBy(fn (ChecklistItem $item) => $approver->effectiveSignatoryFor($item)?->id)
                 ->forget(null);
 
@@ -994,9 +995,15 @@ class ClearanceFormController extends Controller
             ->with('items')
             ->get();
 
+        // Task Exemption — a not-yet-attached checklist whose every task is
+        // exempted on this request will never attach, so it contributes no
+        // pending signatory; on the rest, exempted tasks contribute none.
+        $exemptedItemIds = $offboardingRequest->exemptedItemIds();
+        $pendingTemplates = app(TaskExemptionResolver::class)->withoutFullyExemptedTemplates($offboardingRequest, $pendingTemplates);
+
         foreach ($pendingTemplates as $template) {
             if ($template->use_task_assignee_as_signatory) {
-                foreach ($template->items as $item) {
+                foreach ($template->items->reject(fn ($item) => $exemptedItemIds->contains($item->id)) as $item) {
                     $addUnit($this->effectiveClearanceSignatoryIdFor($item->signatory_id) ?? $item->signatory_id, false, 'Pending', null);
                 }
 

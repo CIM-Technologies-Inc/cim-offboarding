@@ -36,6 +36,53 @@ class OffboardingRequestApprover extends Model
         'clearance_signing_due_notified_at',
         'ready_for_approval_notified_at',
         'overdue_notified_at',
+        // Clearance Signatory escalation — see the constants below and
+        // `ClearanceSignatoryEscalationService`. `employee_id` itself stays
+        // the authoritative CURRENT active Clearance Signatory.
+        'primary_signatory_employee_id',
+        'secondary_signatory_employee_id',
+        'escalation_enabled',
+        'escalation_days',
+        'escalation_day_type',
+        'escalation_notify_hr',
+        'escalation_status',
+        'signatory_assigned_at',
+        'signatory_deadline_at',
+        'primary_deadline_at',
+        'secondary_assigned_at',
+        'secondary_deadline_at',
+        'escalated_at',
+        'secondary_failed_at',
+        'hr_alert_sent_at',
+        'hr_reassigned_at',
+        'hr_reassigned_by_user_id',
+        'hr_reassignment_reason',
+        'escalation_note',
+    ];
+
+    /*
+     * Clearance Signatory assignment/escalation states (`escalation_status`).
+     * Completed/Cancelled aren't stored — they're derived from the existing
+     * authoritative `status` (approved) and the request's own status
+     * (cancelled) by `assignmentState()`, so the two can never disagree.
+     * NULL = escalation not tracked (requests created before this feature,
+     * and "Use Task Assignee as Clearance Signatory" checklists).
+     */
+    public const ESCALATION_ASSIGNED_TO_PRIMARY = 'assigned_to_primary';
+
+    public const ESCALATION_ESCALATED_TO_SECONDARY = 'escalated_to_secondary';
+
+    public const ESCALATION_HR_ACTION_REQUIRED = 'hr_action_required';
+
+    public const ESCALATION_REASSIGNED_BY_HR = 'reassigned_by_hr';
+
+    public const ESCALATION_STATE_LABELS = [
+        self::ESCALATION_ASSIGNED_TO_PRIMARY => 'Assigned to Primary',
+        self::ESCALATION_ESCALATED_TO_SECONDARY => 'Escalated to Secondary',
+        self::ESCALATION_HR_ACTION_REQUIRED => 'Escalated to HR/Admin — Reassignment Required',
+        self::ESCALATION_REASSIGNED_BY_HR => 'Reassigned by HR/Admin',
+        'completed' => 'Completed',
+        'cancelled' => 'Cancelled',
     ];
 
     protected function casts(): array
@@ -54,6 +101,129 @@ class OffboardingRequestApprover extends Model
             'clearance_signing_due_notified_at' => 'datetime',
             'ready_for_approval_notified_at' => 'datetime',
             'overdue_notified_at' => 'datetime',
+            'escalation_enabled' => 'boolean',
+            'escalation_days' => 'integer',
+            'escalation_notify_hr' => 'boolean',
+            'signatory_assigned_at' => 'datetime',
+            'signatory_deadline_at' => 'datetime',
+            'primary_deadline_at' => 'datetime',
+            'secondary_assigned_at' => 'datetime',
+            'secondary_deadline_at' => 'datetime',
+            'escalated_at' => 'datetime',
+            'secondary_failed_at' => 'datetime',
+            'hr_alert_sent_at' => 'datetime',
+            'hr_reassigned_at' => 'datetime',
+        ];
+    }
+
+    public function primarySignatory(): BelongsTo
+    {
+        return $this->belongsTo(Employee::class, 'primary_signatory_employee_id');
+    }
+
+    public function secondarySignatory(): BelongsTo
+    {
+        return $this->belongsTo(Employee::class, 'secondary_signatory_employee_id');
+    }
+
+    public function hrReassignedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'hr_reassigned_by_user_id');
+    }
+
+    public function signatoryAssignments(): HasMany
+    {
+        return $this->hasMany(ChecklistSignatoryAssignment::class)->orderBy('id');
+    }
+
+    /**
+     * True while the secondary (or an HR-assigned) Clearance Signatory has
+     * missed their deadline and HR/Admin must pick a new one. In this state
+     * `employee_id` still names the expired signatory (kept for history and
+     * so nothing treats the checklist as headless), but they are NOT the
+     * active signatory: `activeClearanceSignatory()` returns null, their
+     * Clearance Signatory actions are refused server-side, and ordinary
+     * reminders stop going to them.
+     */
+    public function isAwaitingHrReassignment(): bool
+    {
+        return $this->escalation_status === self::ESCALATION_HR_ACTION_REQUIRED
+            && $this->status !== 'approved';
+    }
+
+    /**
+     * The employee currently responsible for clearance signing on this
+     * checklist — the single source every Clearance Signatory notification
+     * should address. `employee_id` (moved by escalation and by HR/Admin
+     * reassignment) except while HR/Admin reassignment is pending, when
+     * there is none.
+     */
+    public function activeClearanceSignatory(): ?Employee
+    {
+        return $this->isAwaitingHrReassignment() ? null : $this->employee;
+    }
+
+    public function isEscalationTracked(): bool
+    {
+        return $this->escalation_status !== null;
+    }
+
+    /**
+     * The assignment lifecycle state, including the derived Completed /
+     * Cancelled ones. Null when escalation isn't tracked for this checklist.
+     */
+    public function assignmentState(): ?string
+    {
+        if (! $this->isEscalationTracked()) {
+            return null;
+        }
+
+        if ($this->status === 'approved') {
+            return 'completed';
+        }
+
+        if ($this->offboardingRequest?->status === 'cancelled') {
+            return 'cancelled';
+        }
+
+        return $this->escalation_status;
+    }
+
+    public function assignmentStateLabel(): ?string
+    {
+        $state = $this->assignmentState();
+
+        return $state ? (self::ESCALATION_STATE_LABELS[$state] ?? null) : null;
+    }
+
+    /**
+     * Display data for the Approvals page (card badge + escalation panel).
+     * Null when escalation isn't tracked for this checklist.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function escalationSummary(): ?array
+    {
+        $state = $this->assignmentState();
+
+        if ($state === null) {
+            return null;
+        }
+
+        $format = fn ($date) => $date?->format('M d, Y g:i A');
+
+        return [
+            'state' => $state,
+            'label' => $this->assignmentStateLabel(),
+            'awaitingHr' => $this->isAwaitingHrReassignment(),
+            'activeSignatoryName' => $this->activeClearanceSignatory()?->name,
+            'currentSignatoryName' => $this->employee?->name,
+            'primarySignatoryName' => $this->primarySignatory?->name,
+            'secondarySignatoryName' => $this->secondarySignatory?->name,
+            'escalationEnabled' => (bool) $this->escalation_enabled,
+            'assignedAt' => $format($this->signatory_assigned_at),
+            'deadlineAt' => $format($this->signatory_deadline_at),
+            'note' => $this->escalation_note,
         ];
     }
 
@@ -65,6 +235,70 @@ class OffboardingRequestApprover extends Model
     public function checklistTemplate(): BelongsTo
     {
         return $this->belongsTo(ChecklistTemplate::class);
+    }
+
+    /** @var Collection<int, int>|null */
+    private ?Collection $exemptedItemIdsCache = null;
+
+    /**
+     * This checklist's tasks that actually APPLY on this request — the
+     * template's items minus whatever Task Exemption froze onto the request
+     * at submission (`OffboardingRequest::exemptedItemIds()`). Every
+     * request-context read of "this checklist's tasks" — completion,
+     * approval gates, assignment/delegation, Clearance Form, email tables,
+     * reminder recipients — goes through here instead of
+     * `checklistTemplate->items`, so an exempted task can never block,
+     * notify, or be acted on. Identical to `checklistTemplate->items` for
+     * any request with no exemptions (every request created before this
+     * feature existed).
+     *
+     * @return Collection<int, ChecklistItem>
+     */
+    public function applicableItems(): Collection
+    {
+        $this->loadMissing('checklistTemplate.items');
+
+        $items = $this->checklistTemplate?->items ?? collect();
+        $exemptedItemIds = $this->exemptedItemIds();
+
+        return $exemptedItemIds->isEmpty()
+            ? $items
+            : $items->reject(fn (ChecklistItem $item) => $exemptedItemIds->contains($item->id))->values();
+    }
+
+    /**
+     * @return Collection<int, int>
+     */
+    public function exemptedItemIds(): Collection
+    {
+        if ($this->exemptedItemIdsCache === null) {
+            $this->exemptedItemIdsCache = $this->relationLoaded('offboardingRequest') && $this->offboardingRequest
+                ? $this->offboardingRequest->exemptedItemIds()
+                : OffboardingRequestExemptedTask::where('offboarding_request_id', $this->offboarding_request_id)
+                    ->whereNotNull('checklist_item_id')
+                    ->pluck('checklist_item_id');
+        }
+
+        return $this->exemptedItemIdsCache;
+    }
+
+    public function isItemExempted(int $checklistItemId): bool
+    {
+        return $this->exemptedItemIds()->contains($checklistItemId);
+    }
+
+    /**
+     * SQL counterpart of `applicableItems()` for `whereHas('checklistTemplate.items', ...)`
+     * visibility checks: leaves out items exempted on the outer
+     * `offboarding_request_approvers` row's own request, so an exempted
+     * task's assignee is never granted visibility through it.
+     */
+    public static function excludeExemptedItems(Builder $itemQuery): Builder
+    {
+        return $itemQuery->whereNotExists(fn ($sub) => $sub->selectRaw('1')
+            ->from('offboarding_request_exempted_tasks as orxt')
+            ->whereColumn('orxt.checklist_item_id', 'checklist_items.id')
+            ->whereColumn('orxt.offboarding_request_id', 'offboarding_request_approvers.offboarding_request_id'));
     }
 
     public function employee(): BelongsTo
@@ -193,7 +427,7 @@ class OffboardingRequestApprover extends Model
         return $query->where(function (Builder $q) use ($employee) {
             $q->where('employee_id', $employee->id)
                 ->orWhere('delegated_employee_id', $employee->id)
-                ->orWhereHas('checklistTemplate.items', fn ($qi) => $qi->where('signatory_id', $employee->id))
+                ->orWhereHas('checklistTemplate.items', fn ($qi) => static::excludeExemptedItems($qi->where('signatory_id', $employee->id)))
                 ->orWhereHas('itemAssignments', fn ($qi) => $qi->where('assigned_employee_id', $employee->id)->where('status', 'active'))
                 // Original-assignee visibility — same employee, but
                 // matching the EARLIEST row for its item regardless of
@@ -235,7 +469,7 @@ class OffboardingRequestApprover extends Model
                 $q->orWhere(function (Builder $qMonitor) use ($subordinateEmployeeIds) {
                     $qMonitor->whereHas('checklistTemplate', fn ($qt) => $qt->where('use_task_assignee_as_signatory', true))
                         ->where(function (Builder $qAssignee) use ($subordinateEmployeeIds) {
-                            $qAssignee->whereHas('checklistTemplate.items', fn ($qi) => $qi->whereIn('signatory_id', $subordinateEmployeeIds))
+                            $qAssignee->whereHas('checklistTemplate.items', fn ($qi) => static::excludeExemptedItems($qi->whereIn('signatory_id', $subordinateEmployeeIds)))
                                 ->orWhereHas('itemAssignments', fn ($qi) => $qi->where('status', 'active')->whereIn('assigned_employee_id', $subordinateEmployeeIds));
                         });
                 });
@@ -265,7 +499,7 @@ class OffboardingRequestApprover extends Model
 
         $this->loadMissing('checklistTemplate.items', 'itemAssignments.assignedEmployee');
 
-        return $this->checklistTemplate->items
+        return $this->applicableItems()
             ->map(fn (ChecklistItem $item) => $this->effectiveSignatoryFor($item))
             ->filter()
             ->unique('id')
@@ -298,9 +532,12 @@ class OffboardingRequestApprover extends Model
     {
         $this->loadMissing('employee', 'checklistTemplate.items', 'itemAssignments.assignedEmployee');
 
-        return collect([$this->employee])
+        // `activeClearanceSignatory()`, not `employee`: while HR/Admin
+        // reassignment is pending the expired signatory no longer owns the
+        // checklist and stops getting ordinary reminders.
+        return collect([$this->activeClearanceSignatory()])
             ->merge($this->checklistTemplate?->use_task_assignee_as_signatory
-                ? $this->checklistTemplate->items->map(fn (ChecklistItem $item) => $this->effectiveSignatoryFor($item))
+                ? $this->applicableItems()->map(fn (ChecklistItem $item) => $this->effectiveSignatoryFor($item))
                 : [])
             ->merge($this->monitoringDepartmentHeads())
             ->filter()
@@ -345,7 +582,7 @@ class OffboardingRequestApprover extends Model
     {
         $this->loadMissing('checklistTemplate.items', 'itemAssignments.assignedEmployee');
 
-        return $this->checklistTemplate->items->contains(function (ChecklistItem $item) {
+        return $this->applicableItems()->contains(function (ChecklistItem $item) {
             $effectiveSignatory = $this->effectiveSignatoryFor($item);
 
             return $effectiveSignatory !== null && $effectiveSignatory->id !== $this->employee_id;
@@ -474,7 +711,7 @@ class OffboardingRequestApprover extends Model
     {
         $this->loadMissing('checklistTemplate.items', 'itemProgress');
 
-        if ($this->checklistTemplate->items->isEmpty()) {
+        if ($this->applicableItems()->isEmpty()) {
             return true;
         }
 
@@ -485,7 +722,7 @@ class OffboardingRequestApprover extends Model
         // checklist that isn't "Use Task Assignee as Clearance Signatory")
         // — this is a strict narrowing of the old condition, never a
         // behavior change, for anything other than that one checklist kind.
-        return $this->checklistTemplate->items->every(
+        return $this->applicableItems()->every(
             fn (ChecklistItem $item) => (bool) $progress->get($item->id)?->isFullyApproved()
         );
     }
@@ -518,7 +755,7 @@ class OffboardingRequestApprover extends Model
     {
         $this->loadMissing('checklistTemplate.items', 'itemProgress');
 
-        $itemsForSignatory = $this->checklistTemplate->items->filter(
+        $itemsForSignatory = $this->applicableItems()->filter(
             fn (ChecklistItem $item) => $this->effectiveSignatoryFor($item)?->id === $signatory->id
         );
 
@@ -634,7 +871,7 @@ class OffboardingRequestApprover extends Model
     {
         $this->loadMissing('checklistTemplate.items', 'itemProgress');
 
-        $itemsByEmployeeId = $this->checklistTemplate->items
+        $itemsByEmployeeId = $this->applicableItems()
             ->groupBy(fn (ChecklistItem $item) => $this->effectiveSignatoryFor($item)?->id)
             ->forget(null);
 
@@ -895,14 +1132,14 @@ class OffboardingRequestApprover extends Model
     {
         $this->loadMissing('checklistTemplate.items', 'itemProgress');
 
-        if ($this->checklistTemplate->items->isEmpty()) {
+        if ($this->applicableItems()->isEmpty()) {
             return '<p>No individual checklist items.</p>';
         }
 
         $progress = $this->itemProgress->keyBy('checklist_item_id');
         $dueDateLabel = $this->due_at?->format('M d, Y') ?? '—';
 
-        $rows = $this->checklistTemplate->items->map(function (ChecklistItem $item) use ($progress, $dueDateLabel) {
+        $rows = $this->applicableItems()->map(function (ChecklistItem $item) use ($progress, $dueDateLabel) {
             $itemProgress = $progress->get($item->id);
             $status = $itemProgress?->status === 'hold'
                 ? 'Hold'
@@ -943,13 +1180,13 @@ class OffboardingRequestApprover extends Model
     {
         $this->loadMissing('checklistTemplate.items', 'itemProgress.checkedBy.employee');
 
-        if ($this->checklistTemplate->items->isEmpty()) {
+        if ($this->applicableItems()->isEmpty()) {
             return '<p>No individual checklist items.</p>';
         }
 
         $progress = $this->itemProgress->keyBy('checklist_item_id');
 
-        $rows = $this->checklistTemplate->items->map(function (ChecklistItem $item) use ($progress) {
+        $rows = $this->applicableItems()->map(function (ChecklistItem $item) use ($progress) {
             $itemProgress = $progress->get($item->id);
             $isChecked = (bool) ($itemProgress?->is_checked ?? false);
             $status = $itemProgress?->status === 'hold'

@@ -69,7 +69,7 @@ class EmployeeDashboardController extends Controller
         $requestIsActive = in_array($offboardingRequest->status, ['pending', 'in_progress'], true);
 
         $checklists = $approvers->map(function (OffboardingRequestApprover $approver) use ($employee, $hasRecipient, $requestIsActive) {
-            $items = $approver->checklistTemplate?->items ?? collect();
+            $items = $approver->applicableItems();
             $progressByItemId = $approver->itemProgress->keyBy('checklist_item_id');
             $completedItems = $items->filter(fn (ChecklistItem $item) => (bool) ($progressByItemId->get($item->id)?->is_checked ?? false));
             $statusLabel = $approver->clearanceStatusLabel();

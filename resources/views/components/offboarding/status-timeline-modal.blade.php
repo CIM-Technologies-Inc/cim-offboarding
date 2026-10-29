@@ -289,6 +289,14 @@
                                         : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'">
                                     Timeline
                                 </button>
+                                <button type="button" @click="activeTab = 'exempted-tasks'"
+                                    class="border-b-2 pb-3 text-sm font-medium transition-colors"
+                                    :class="activeTab === 'exempted-tasks'
+                                        ? 'border-[#145a3a] text-[#145a3a] dark:border-[#3aa876] dark:text-[#3aa876]'
+                                        : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'">
+                                    Exempted Tasks
+                                    <span class="font-normal text-gray-400" x-show="(selected.exemptedTasks || []).length" x-text="'(' + (selected.exemptedTasks || []).length + ')'"></span>
+                                </button>
                                 <button type="button" x-show="selected.canViewScheduledEmailNotifications"
                                     @click="activeTab = 'scheduled-emails'; loadScheduledEmailNotifications()"
                                     class="border-b-2 pb-3 text-sm font-medium transition-colors"
@@ -593,6 +601,32 @@
                                 </div>
                             </template>
                         </div>
+                    </div>
+
+                    {{-- TAB: Exempted Tasks — the tasks Task Exemption froze out of THIS
+                         request at submission (`offboarding_request_exempted_tasks`, fed as
+                         `selected.exemptedTasks` by OffboardeeController). Read-only; never
+                         part of the workflow, shown so HR can see what was excluded and why. --}}
+                    <div x-show="activeTab === 'exempted-tasks'" x-cloak>
+                        <template x-if="!(selected.exemptedTasks || []).length">
+                            <p class="rounded-lg border border-dashed border-gray-300 p-6 text-center text-sm text-gray-400 dark:border-gray-700">
+                                No exempted tasks found for this offboarding record.
+                            </p>
+                        </template>
+                        <ul x-show="(selected.exemptedTasks || []).length" class="space-y-1.5 rounded-lg border border-dashed border-gray-300 p-4 dark:border-gray-700">
+                            <template x-for="(task, idx) in (selected.exemptedTasks || [])" :key="idx">
+                                <li class="text-xs">
+                                    <div class="flex items-center justify-between gap-2">
+                                        <span class="text-gray-400 dark:text-gray-500">
+                                            <span class="font-medium text-gray-500 dark:text-gray-400" x-text="task.checklist_title + ':'"></span>
+                                            <span class="line-through" x-text="task.item_title"></span>
+                                        </span>
+                                        <span class="shrink-0 rounded-full border border-dashed border-gray-400 bg-gray-50 px-2 py-0.5 text-[10px] font-semibold tracking-wide text-gray-500 dark:border-gray-600 dark:bg-white/5 dark:text-gray-400">EXEMPTED</span>
+                                    </div>
+                                    <p class="mt-0.5 text-[11px] text-gray-400" x-text="'Rule: ' + task.rules.map((r) => r.name + (r.reason ? ' — ' + r.reason : '')).join('; ')"></p>
+                                </li>
+                            </template>
+                        </ul>
                     </div>
 
                     <!-- TAB 2: Timeline — the pre-existing full chronological timeline, unchanged. -->

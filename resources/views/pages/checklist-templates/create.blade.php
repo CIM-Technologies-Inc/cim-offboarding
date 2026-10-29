@@ -88,6 +88,16 @@
                 </template>
             </div>
 
+            @include('pages.checklist-templates.partials.escalation-settings', [
+                'settings' => [
+                    'secondary_approver_enabled' => old('secondary_approver_enabled', false),
+                    'secondary_signatory_employee_id' => old('secondary_signatory_employee_id'),
+                    'escalation_days' => old('escalation_days'),
+                    'escalation_day_type' => old('escalation_day_type', 'calendar'),
+                    'escalation_notify_hr' => old('escalation_notify_hr', true),
+                ],
+            ])
+
             <div class="mt-5">
                 <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
                     Clearance Signing Deadline

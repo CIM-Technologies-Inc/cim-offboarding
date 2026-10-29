@@ -8,11 +8,13 @@ use App\Models\Employee;
 use App\Models\EmployeeGroup;
 use App\Models\FinalApprover;
 use App\Models\GeneralSignatory;
+use App\Services\ClearanceSignatoryEscalationService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Illuminate\View\View;
 
 class ChecklistTemplateController extends Controller
@@ -50,6 +52,7 @@ class ChecklistTemplateController extends Controller
             'employeeGroups' => $this->employeeGroupsForPicker(),
             'departments' => $this->departmentOptions(),
             'emailTemplates' => $this->activeEmailTemplateOptions(),
+            'escalationEmployees' => app(ClearanceSignatoryEscalationService::class)->eligibleEmployeeOptions(),
         ]);
     }
 
@@ -80,7 +83,8 @@ class ChecklistTemplateController extends Controller
             'items.*.email_template_id' => ['nullable', 'required_if:items.*.notify_enabled,1', 'exists:email_templates,id'],
             'items.*.notify_timing' => ['nullable', 'required_if:items.*.notify_enabled,1', Rule::in(['before', 'after'])],
             'items.*.notify_days' => ['nullable', 'required_if:items.*.notify_enabled,1', 'integer', 'min:1'],
-        ]);
+            ...self::ESCALATION_RULES,
+        ], self::ESCALATION_MESSAGES);
 
         $isFinalPayChecklist = $validated['checklist_classification'] === 'final_pay';
         $sequenceType = $isFinalPayChecklist ? null : $validated['checklist_classification'];
@@ -117,8 +121,9 @@ class ChecklistTemplateController extends Controller
         // Department Checklist restriction — see the form's own matching
         // disabled-field treatment.
         $department = $useTaskAssigneeAsSignatory ? null : ($validated['department'] ?? null);
+        $escalation = $this->escalationSettings($request, $validated, $departmentHeadId, $useTaskAssigneeAsSignatory, null);
 
-        DB::transaction(function () use ($validated, $request, $isImmediateHeadChecklist, $useTaskAssigneeAsSignatory, $employeeGroupId, $departmentHeadId, $department, $eligibleSignatoryIds, $isFinalPayChecklist, $sequenceType) {
+        DB::transaction(function () use ($validated, $request, $isImmediateHeadChecklist, $useTaskAssigneeAsSignatory, $employeeGroupId, $departmentHeadId, $department, $eligibleSignatoryIds, $isFinalPayChecklist, $sequenceType, $escalation) {
             $template = ChecklistTemplate::create([
                 'title' => $validated['title'],
                 'employee_group_id' => $employeeGroupId,
@@ -132,6 +137,7 @@ class ChecklistTemplateController extends Controller
                 'clearance_signing_deadline_days' => $validated['clearance_signing_deadline_days'] ?: null,
                 'is_active' => true,
                 'created_by' => $request->user()->id,
+                ...$escalation,
             ]);
 
             foreach ($validated['items'] ?? [] as $index => $item) {
@@ -151,7 +157,9 @@ class ChecklistTemplateController extends Controller
 
     public function show(ChecklistTemplate $checklistTemplate): View
     {
-        $checklistTemplate->load('items.signatory', 'creator');
+        // departmentHead / employeeGroup / secondarySignatory feed the
+        // "Primary Approver (Clearance Signatory)" / "Secondary Approver" panel.
+        $checklistTemplate->load('items.signatory', 'creator', 'departmentHead', 'employeeGroup', 'secondarySignatory');
 
         return view('pages.checklist-templates.show', [
             'title' => $checklistTemplate->title,
@@ -171,6 +179,11 @@ class ChecklistTemplateController extends Controller
             'employeeGroups' => $this->employeeGroupsForPicker(),
             'departments' => $this->departmentOptions($checklistTemplate->department),
             'emailTemplates' => $this->activeEmailTemplateOptions(),
+            'escalationEmployees' => app(ClearanceSignatoryEscalationService::class)->eligibleEmployeeOptions($checklistTemplate->secondary_signatory_employee_id),
+            // "Assign Secondary Approver" from the details page: open with
+            // "Enable Secondary Approver" pre-ticked and the section in view.
+            // Only a form default — nothing is saved until Update is clicked.
+            'assignSecondary' => request()->boolean('assign_secondary') && ! $checklistTemplate->use_task_assignee_as_signatory,
         ]);
     }
 
@@ -192,7 +205,8 @@ class ChecklistTemplateController extends Controller
             'items.*.email_template_id' => ['nullable', 'required_if:items.*.notify_enabled,1', 'exists:email_templates,id'],
             'items.*.notify_timing' => ['nullable', 'required_if:items.*.notify_enabled,1', Rule::in(['before', 'after'])],
             'items.*.notify_days' => ['nullable', 'required_if:items.*.notify_enabled,1', 'integer', 'min:1'],
-        ]);
+            ...self::ESCALATION_RULES,
+        ], self::ESCALATION_MESSAGES);
 
         $isFinalPayChecklist = $validated['checklist_classification'] === 'final_pay';
         $sequenceType = $isFinalPayChecklist ? null : $validated['checklist_classification'];
@@ -207,8 +221,9 @@ class ChecklistTemplateController extends Controller
         $departmentHeadId = $employeeGroupId ? EmployeeGroup::find($employeeGroupId)?->group_head_employee_id : null;
         $eligibleSignatoryIds = $this->eligibleSignatoryIds($employeeGroupId);
         $department = $useTaskAssigneeAsSignatory ? null : ($validated['department'] ?? null);
+        $escalation = $this->escalationSettings($request, $validated, $departmentHeadId, $useTaskAssigneeAsSignatory, $checklistTemplate);
 
-        DB::transaction(function () use ($validated, $request, $checklistTemplate, $isImmediateHeadChecklist, $useTaskAssigneeAsSignatory, $employeeGroupId, $departmentHeadId, $department, $eligibleSignatoryIds, $isFinalPayChecklist, $sequenceType) {
+        DB::transaction(function () use ($validated, $request, $checklistTemplate, $isImmediateHeadChecklist, $useTaskAssigneeAsSignatory, $employeeGroupId, $departmentHeadId, $department, $eligibleSignatoryIds, $isFinalPayChecklist, $sequenceType, $escalation) {
             $checklistTemplate->update([
                 'title' => $validated['title'],
                 'employee_group_id' => $employeeGroupId,
@@ -220,12 +235,109 @@ class ChecklistTemplateController extends Controller
                 'sequence_type' => $sequenceType,
                 'due_in_days' => $validated['due_in_days'] ?: null,
                 'clearance_signing_deadline_days' => $validated['clearance_signing_deadline_days'] ?: null,
+                // Template-level only: existing offboarding requests keep
+                // the settings snapshotted when their checklist was assigned.
+                ...$escalation,
             ]);
 
             $this->reconcileItems($checklistTemplate, $validated['items'] ?? [], $eligibleSignatoryIds);
         });
 
         return redirect()->route('checklist-templates.index')->with('success', 'Checklist template updated.');
+    }
+
+    /**
+     * "Secondary Clearance Signatory & Escalation Settings" validation rules,
+     * shared by store() and update().
+     */
+    private const ESCALATION_RULES = [
+        // "Enable Secondary Approver" — master switch. While it's off the
+        // section is hidden and its fields are neither validated nor saved
+        // (`exclude_unless`), so previously saved settings are kept as-is.
+        'secondary_approver_enabled' => ['nullable', 'boolean'],
+        'secondary_signatory_employee_id' => ['exclude_unless:secondary_approver_enabled,1', 'nullable', 'integer', 'exists:employees,id'],
+        // Escalation is automatic whenever the switch is on (there is no
+        // separate "Enable Automatic Escalation" checkbox), so the period is
+        // required then.
+        'escalation_days' => ['exclude_unless:secondary_approver_enabled,1', 'required', 'integer', 'min:1', 'max:365'],
+        'escalation_day_type' => ['exclude_unless:secondary_approver_enabled,1', 'nullable', 'in:calendar,working'],
+        'escalation_notify_hr' => ['exclude_unless:secondary_approver_enabled,1', 'nullable', 'boolean'],
+    ];
+
+    private const ESCALATION_MESSAGES = [
+        'secondary_signatory_employee_id.exists' => 'The selected secondary Clearance Signatory does not exist in Employee Master.',
+        'escalation_days.required' => 'Enter how many days to wait before escalating ("Escalate After (Days)").',
+        'escalation_days.min' => '"Escalate After (Days)" must be at least 1 day.',
+        'escalation_days.max' => '"Escalate After (Days)" can be at most 365 days.',
+    ];
+
+    /**
+     * The template's escalation columns, after the cross-field checks the
+     * plain rules can't express: escalation needs a valid secondary; the
+     * secondary must be an eligible employee and never the template's own
+     * primary (its Department/Group Head); and a "Use Task Assignee as
+     * Clearance Signatory" checklist has no single signatory to escalate.
+     * (An Immediate Head checklist's primary is only known per request, so
+     * that comparison happens when each request's checklist is assigned —
+     * see `ClearanceSignatoryEscalationService::initializeAssignment()`.)
+     *
+     * @return array<string, mixed>
+     */
+    private function escalationSettings(Request $request, array $validated, ?int $departmentHeadId, bool $useTaskAssigneeAsSignatory, ?ChecklistTemplate $existing): array
+    {
+        // "Enable Secondary Approver" off (or not applicable to a Task
+        // Assignee checklist): the feature is disabled for this template.
+        // A new template gets the defaults; an existing one keeps whatever
+        // secondary/escalation settings it had saved, so re-enabling the
+        // switch restores them. `ClearanceSignatoryEscalationService::initializeAssignment()`
+        // ignores those settings while the switch is off.
+        if (! $request->boolean('secondary_approver_enabled') || $useTaskAssigneeAsSignatory) {
+            if ($useTaskAssigneeAsSignatory && $request->boolean('secondary_approver_enabled')) {
+                throw ValidationException::withMessages([
+                    'secondary_approver_enabled' => 'This checklist uses its Task Assignees as signatories, so it has no single Clearance Signatory to back up. Turn off "Enable Secondary Approver".',
+                ]);
+            }
+
+            return $existing
+                ? ['secondary_approver_enabled' => false]
+                : [
+                    'secondary_approver_enabled' => false,
+                    'secondary_signatory_employee_id' => null,
+                    'escalation_enabled' => false,
+                    'escalation_days' => null,
+                    'escalation_day_type' => 'calendar',
+                    'escalation_notify_hr' => true,
+                ];
+        }
+
+        $secondaryId = ! empty($validated['secondary_signatory_employee_id']) ? (int) $validated['secondary_signatory_employee_id'] : null;
+        $errors = [];
+
+        if ($secondaryId) {
+            if ($secondaryId === $departmentHeadId) {
+                $errors['secondary_signatory_employee_id'] = 'The secondary Clearance Signatory must be a different person from the primary Clearance Signatory (the selected group\'s Group Head).';
+            } elseif ($error = app(ClearanceSignatoryEscalationService::class)->eligibilityError(Employee::find($secondaryId))) {
+                $errors['secondary_signatory_employee_id'] = $error;
+            }
+        } else {
+            $errors['secondary_signatory_employee_id'] = 'Select a secondary Clearance Signatory, or turn off "Enable Secondary Approver".';
+        }
+
+        if ($errors) {
+            throw ValidationException::withMessages($errors);
+        }
+
+        return [
+            'secondary_approver_enabled' => true,
+            'secondary_signatory_employee_id' => $secondaryId,
+            // Automatic escalation always accompanies an enabled secondary
+            // approver — kept as a column because each request's snapshot
+            // and the escalation engine read it.
+            'escalation_enabled' => true,
+            'escalation_days' => ! empty($validated['escalation_days']) ? (int) $validated['escalation_days'] : null,
+            'escalation_day_type' => ($validated['escalation_day_type'] ?? null) === 'working' ? 'working' : 'calendar',
+            'escalation_notify_hr' => $request->has('escalation_notify_hr') ? $request->boolean('escalation_notify_hr') : true,
+        ];
     }
 
     /**

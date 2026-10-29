@@ -45,6 +45,7 @@ class OffboardingRequest extends Model
         'cancelled_at',
         'cancelled_by',
         'cancellation_reason',
+        'task_exemption_context',
     ];
 
     protected function casts(): array
@@ -60,6 +61,7 @@ class OffboardingRequest extends Model
             'general_signatory_secondary_notified_at' => 'datetime',
             'general_signatory_final_pay_notified_at' => 'datetime',
             'cancelled_at' => 'datetime',
+            'task_exemption_context' => 'array',
         ];
     }
 
@@ -88,6 +90,48 @@ class OffboardingRequest extends Model
     public function employee(): BelongsTo
     {
         return $this->belongsTo(Employee::class);
+    }
+
+    /**
+     * Checklist tasks the Task Exemption rules left out of THIS request,
+     * frozen at submission time — see `OffboardingRequestExemptedTask`.
+     */
+    public function exemptedTasks(): HasMany
+    {
+        return $this->hasMany(OffboardingRequestExemptedTask::class);
+    }
+
+    /** @var Collection<int, int>|null */
+    private ?Collection $exemptedItemIdsCache = null;
+
+    /**
+     * Every `checklist_items.id` exempted on this request, memoized per
+     * model instance — the single source every "which tasks apply here"
+     * check reads (see `OffboardingRequestApprover::applicableItems()`).
+     * Empty for every request created before Task Exemption existed, so
+     * those keep every task exactly as before.
+     *
+     * @return Collection<int, int>
+     */
+    public function exemptedItemIds(): Collection
+    {
+        if ($this->exemptedItemIdsCache === null) {
+            $this->exemptedItemIdsCache = $this->relationLoaded('exemptedTasks')
+                ? $this->exemptedTasks->pluck('checklist_item_id')->filter()->values()
+                : $this->exemptedTasks()->whereNotNull('checklist_item_id')->pluck('checklist_item_id');
+        }
+
+        return $this->exemptedItemIdsCache;
+    }
+
+    public function isItemExempted(int $checklistItemId): bool
+    {
+        return $this->exemptedItemIds()->contains($checklistItemId);
+    }
+
+    public function forgetExemptedItemIds(): void
+    {
+        $this->exemptedItemIdsCache = null;
     }
 
     /**
@@ -790,7 +834,7 @@ class OffboardingRequest extends Model
             );
             $progressByItem = $assignment->itemProgress->keyBy('checklist_item_id');
 
-            $checklistItems = $assignment->checklistTemplate?->items
+            $checklistItems = $assignment->applicableItems()
                 ->map(function (ChecklistItem $item) use ($progressByItem, $assignment) {
                     $progress = $progressByItem->get($item->id);
 
@@ -908,7 +952,7 @@ class OffboardingRequest extends Model
             $approverName = $assignment->employee?->name;
 
             if ($approverName === null) {
-                $fallbackSignatoryNames = ($assignment->checklistTemplate?->items ?? collect())
+                $fallbackSignatoryNames = $assignment->applicableItems()
                     ->map(fn (ChecklistItem $item) => $assignment->effectiveSignatoryFor($item)?->effectiveClearanceSignatory())
                     ->filter()
                     ->unique('id')

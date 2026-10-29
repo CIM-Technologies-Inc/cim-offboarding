@@ -53,6 +53,16 @@ class ChecklistTemplate extends Model
         'notification_repeat',
         'notification_repeat_interval_days',
         'notification_max_reminders',
+        // Secondary Clearance Signatory & Escalation Settings — snapshotted
+        // onto each checklist instance when it's assigned (see
+        // `ClearanceSignatoryEscalationService::initializeAssignment()`), so
+        // editing these never changes an existing offboarding request.
+        'secondary_approver_enabled',
+        'secondary_signatory_employee_id',
+        'escalation_enabled',
+        'escalation_days',
+        'escalation_day_type',
+        'escalation_notify_hr',
     ];
 
     protected function casts(): array
@@ -70,6 +80,10 @@ class ChecklistTemplate extends Model
             'notification_repeat' => 'boolean',
             'notification_repeat_interval_days' => 'integer',
             'notification_max_reminders' => 'integer',
+            'secondary_approver_enabled' => 'boolean',
+            'escalation_enabled' => 'boolean',
+            'escalation_days' => 'integer',
+            'escalation_notify_hr' => 'boolean',
         ];
     }
 
@@ -86,6 +100,11 @@ class ChecklistTemplate extends Model
     public function creator(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by');
+    }
+
+    public function secondarySignatory(): BelongsTo
+    {
+        return $this->belongsTo(Employee::class, 'secondary_signatory_employee_id');
     }
 
     public function departmentHead(): BelongsTo

@@ -122,8 +122,22 @@ class ChecklistItemProgress extends Model
      *         itself was correctly saved/cleared while the request still
      *         came back as a 500 to the caller.
      */
+    public const EXEMPTED_TASK_MESSAGE = 'One or more of these tasks is exempted for this offboardee (Task Exemption) and is not part of this offboarding request.';
+
     public static function syncForAssignment(OffboardingRequestApprover $assignment, array $items, int $userId): Collection
     {
+        // Task Exemption — an exempted task is not part of this request's
+        // workflow at all, so it can never be checked/remarked (the UI never
+        // offers it; this rejects a crafted/stale submission outright).
+        $exempted = collect($items)->pluck('checklist_item_id')
+            ->filter(fn ($id) => $assignment->isItemExempted((int) $id));
+
+        if ($exempted->isNotEmpty()) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'items' => self::EXEMPTED_TASK_MESSAGE,
+            ]);
+        }
+
         $existing = $assignment->itemProgress()->get()->keyBy('checklist_item_id');
         $newlyPendingHeadApproval = new \Illuminate\Database\Eloquent\Collection();
 
@@ -210,7 +224,7 @@ class ChecklistItemProgress extends Model
             return ['head_approval_required' => false, 'head_approver_employee_id' => null];
         }
 
-        $checklistItem = $assignment->checklistTemplate->items->firstWhere('id', $checklistItemId);
+        $checklistItem = $assignment->applicableItems()->firstWhere('id', $checklistItemId);
         $signatory = $checklistItem ? $assignment->effectiveSignatoryFor($checklistItem) : null;
 
         if (! $signatory || $signatory->isApprovalAuthority()) {

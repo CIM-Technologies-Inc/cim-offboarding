@@ -116,6 +116,12 @@ class MenuHelper
                         'path' => '/smtp-settings',
                         'permission' => 'smtp-settings.view',
                     ],
+                    [
+                        'icon' => 'task',
+                        'name' => 'Task Exemption',
+                        'path' => '/task-exemptions',
+                        'permission' => 'task-exemptions.view',
+                    ],
                 ],
             ],
             [

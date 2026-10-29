@@ -39,6 +39,14 @@ class EmailTemplate extends Model
         'Checklist Signatory Declined',
         'User Account Reactivation Notification',
         'Offboarding Checklist Assigned to You',
+        // Secondary Clearance Signatory & automatic escalation — looked up by
+        // name in `ClearanceSignatoryEscalationService` (its TEMPLATE_*
+        // constants).
+        'Clearance Signatory Escalation — Assigned to You',
+        'Clearance Signatory Responsibility Transferred',
+        'Clearance Signatory Escalation — HR/Admin Notice',
+        'Clearance Signatory Overdue — HR/Admin Action Required',
+        'Clearance Signatory Assigned by HR/Admin',
     ];
 
     protected $fillable = [
@@ -326,6 +334,10 @@ class EmailTemplate extends Model
         ?string $offboardingLinkUrl = null,
         ?string $accountStatus = null,
         ?string $reactivatedAt = null,
+        // Clearance Signatory escalation tokens (see `ESCALATION_TOKENS`),
+        // keyed by token name — only `ClearanceSignatoryEscalationService`
+        // passes these; every other caller leaves them blank.
+        array $escalation = [],
     ): array {
         $values = $this->placeholderValues(
             $approverName, $offboardeeName, $creatorName, $employeeNumber, $checklistName,
@@ -339,6 +351,10 @@ class EmailTemplate extends Model
             $declinedBy, $declinedAt, $declineReason, $signatoryType, $checklistType,
             $completedAt, $offboardingLinkUrl, $accountStatus, $reactivatedAt,
         );
+
+        foreach (self::ESCALATION_TOKENS as $token) {
+            $values[$token] = (string) ($escalation[$token] ?? '');
+        }
 
         return [
             $this->fillPlaceholders($this->subject, $values),
@@ -460,6 +476,15 @@ class EmailTemplate extends Model
     /**
      * @param  array<string, string>  $values
      */
+    /**
+     * Tokens filled only by the Clearance Signatory escalation emails.
+     */
+    public const ESCALATION_TOKENS = [
+        'primary_signatory_name', 'secondary_signatory_name', 'previous_signatory_name', 'new_signatory_name',
+        'original_assigned_at', 'original_deadline', 'secondary_assigned_at', 'secondary_deadline',
+        'new_assigned_at', 'signatory_deadline', 'escalated_at', 'escalation_reason', 'reassigned_by',
+    ];
+
     private function fillPlaceholders(string $text, array $values): string
     {
         $pattern = '/\{\{\s*(approver_name|offboardee_name|employee_name|employee_number|checklist_name|due_date'
@@ -469,7 +494,7 @@ class EmailTemplate extends Model
             . '|original_due_date|extension_days|extended_due_date|clearance_signatory_name'
             . '|cancelled_by|cancelled_at|offboarding_request_id|cancellation_reason'
             . '|declined_by|declined_at|decline_reason|signatory_type|checklist_type|completed_at'
-            . '|account_status|reactivated_at)\s*\}\}'
+            . '|account_status|reactivated_at|' . implode('|', self::ESCALATION_TOKENS) . ')\s*\}\}'
             . '|\{\s*(approver|offboardee|employee)\s*\}'
             . '|\b(approver|offboardee|employee)\b/i';
 

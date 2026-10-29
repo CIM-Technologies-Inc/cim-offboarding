@@ -102,5 +102,8 @@ it('marks every page with an identity value that changes on Login As and on Retu
         ->and($asUser)->not->toBeNull()
         ->and($asUser)->not->toBe($asAdmin)
         ->and($afterReturn)->toBe($asAdmin)
-        ->and($asAdmin)->not->toContain((string) $admin->id);
+        // A hash, not the raw user id. (`not->toContain($id)` was flaky: a
+        // 16-char hex hash contains a short numeric id like "90" by chance.)
+        ->and($asAdmin)->not->toBe((string) $admin->id)
+        ->and($asAdmin)->toMatch('/^[0-9a-f]{16}$/');
 });

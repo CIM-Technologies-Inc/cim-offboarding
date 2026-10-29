@@ -68,7 +68,7 @@ class ApprovalController extends Controller
             ->whereIn('status', ['pending', 'viewed', 'on_hold'])
             ->whereHas('offboardingRequest', fn ($q) => $q->where('status', 'pending'))
             ->visibleTo($user)
-            ->with(['offboardingRequest.employee', 'checklistTemplate.items.signatory', 'employee', 'delegatedEmployee', 'itemProgress.checkedBy.employee', 'itemProgress.heldBy.employee', 'itemProgress.headApprover', 'itemAssignments.assignedEmployee'])
+            ->with(['offboardingRequest.employee', 'checklistTemplate.items.signatory', 'employee', 'delegatedEmployee', 'itemProgress.checkedBy.employee', 'itemProgress.heldBy.employee', 'itemProgress.headApprover', 'itemAssignments.assignedEmployee', 'primarySignatory', 'secondarySignatory'])
             ->get()
             ->filter(fn (OffboardingRequestApprover $assignment) => $assignment->offboardingRequest?->employee);
 
@@ -132,9 +132,13 @@ class ApprovalController extends Controller
                 $request = $assignment->offboardingRequest;
                 $template = $assignment->checklistTemplate;
 
-                $isDepartmentHead = $employee && $assignment->employee_id === $employee->id;
+                // An expired Clearance Signatory awaiting HR/Admin
+                // reassignment is no longer treated as the signatory (or
+                // their delegate) — same rule `authorizeAssignment()` enforces.
+                $isAwaitingHr = $assignment->isAwaitingHrReassignment();
+                $isDepartmentHead = $employee && $assignment->employee_id === $employee->id && ! $isAwaitingHr;
                 $isPrimaryApprover = $user->isAdmin() || $isDepartmentHead;
-                $isDelegate = $employee && $assignment->delegated_employee_id === $employee->id;
+                $isDelegate = $employee && $assignment->delegated_employee_id === $employee->id && ! $isAwaitingHr;
                 $usesPerItemApprovers = $assignment->usesPerItemApprovers();
                 $mustBeCheckedForSubmit = $assignment->requiresAllItemsCompletedBeforeApproval();
 
@@ -155,7 +159,7 @@ class ApprovalController extends Controller
                 $isAssignedApprover = $isDepartmentHead
                     || $isDelegate
                     || $isGroupTaskAssignee
-                    || ($employee && $template?->items->contains(fn ($item) => $assignment->effectiveSignatoryFor($item)?->id === $employee->id));
+                    || ($employee && $template && $assignment->applicableItems()->contains(fn ($item) => $assignment->effectiveSignatoryFor($item)?->id === $employee->id));
 
                 // Group Head/Department Head MONITORING visibility (see
                 // `scopeVisibleTo()`'s matching clause) — reached this row
@@ -170,7 +174,7 @@ class ApprovalController extends Controller
                     && ! $isAssignedApprover
                     && $template?->use_task_assignee_as_signatory
                     && $monitoredEmployeeIds->isNotEmpty()
-                    && $template->items->contains(fn ($item) => $monitoredEmployeeIds->contains($assignment->effectiveSignatoryFor($item)?->id));
+                    && $assignment->applicableItems()->contains(fn ($item) => $monitoredEmployeeIds->contains($assignment->effectiveSignatoryFor($item)?->id));
 
                 $isReadyForApproval = $usesPerItemApprovers
                     && $assignment->allItemsCompleted()
@@ -282,7 +286,7 @@ class ApprovalController extends Controller
                         'assignableEmployees' => $this->eligibleAssigneesForPool($assignment),
                     ] : null,
                     'checklistItems' => $template
-                        ? $template->items->map(function ($item) use ($assignment, $template, $progressByItemId, $isPrimaryApprover, $isDelegate, $employee, $usesPerItemApprovers, $mustBeCheckedForSubmit, $rowAssignableEmployees, $isMonitoring) {
+                        ? $assignment->applicableItems()->map(function ($item) use ($assignment, $template, $progressByItemId, $isPrimaryApprover, $isDelegate, $employee, $usesPerItemApprovers, $mustBeCheckedForSubmit, $rowAssignableEmployees, $isMonitoring) {
                             $progress = $progressByItemId->get($item->id);
                             $isChecked = (bool) ($progress?->is_checked ?? false);
                             $onHold = $progress?->status === 'hold' && ! $isChecked;
@@ -483,6 +487,7 @@ class ApprovalController extends Controller
                     'isPrimaryApprover' => $isPrimaryApprover,
                     'isAssignedApprover' => $isAssignedApprover,
                     'isMonitoring' => (bool) $isMonitoring,
+                    'escalation' => $assignment->escalationSummary(),
                     'isDelegate' => $isDelegate,
                     'usesPerItemApprovers' => $usesPerItemApprovers,
                     // Core/Primary vs. Secondary vs. Final Pay — same three-
@@ -1276,6 +1281,7 @@ class ApprovalController extends Controller
                         'isAssignedApprover' => $row['isAssignedApprover'],
                         'isMonitoring' => $row['isMonitoring'],
                         'isDelegate' => $row['isDelegate'],
+                        'escalation' => $row['escalation'] ?? null,
                         'usesPerItemApprovers' => $row['usesPerItemApprovers'],
                         'isImmediateHeadChecklist' => $row['isImmediateHeadChecklist'],
                         'isCorePrimaryChecklist' => $row['isCorePrimaryChecklist'],
@@ -1611,7 +1617,7 @@ class ApprovalController extends Controller
             foreach ($members as $member) {
                 $member->loadMissing('checklistTemplate.items');
 
-                foreach ($member->checklistTemplate->items as $item) {
+                foreach ($member->applicableItems() as $item) {
                     $itemToAssignmentId[$item->id] = $member->id;
                 }
             }
@@ -2816,6 +2822,10 @@ class ApprovalController extends Controller
             $offboardingRequestApprover->employee_id === $user->employee?->id,
             403
         );
+
+        // An expired Clearance Signatory (secondary/HR-assigned deadline
+        // missed) keeps `employee_id` for history but may no longer act.
+        abort_if($offboardingRequestApprover->isAwaitingHrReassignment(), 403, 'This checklist is awaiting HR/Admin to assign a new Clearance Signatory. Your Clearance Signatory assignment has expired.');
     }
 
     /**

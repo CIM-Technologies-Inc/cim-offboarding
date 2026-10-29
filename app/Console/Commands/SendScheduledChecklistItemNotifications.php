@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Mail\ChecklistSignatoryAnnouncementMail;
 use App\Models\ChecklistItem;
 use App\Models\OffboardingRequestApprover;
+use App\Models\OffboardingRequestExemptedTask;
 use App\Models\User;
 use App\Services\AutoLoginLinkService;
 use Illuminate\Console\Command;
@@ -70,6 +71,9 @@ class SendScheduledChecklistItemNotifications extends Command
 
         $assignments = OffboardingRequestApprover::where('checklist_template_id', $item->checklist_template_id)
             ->whereNotIn('offboarding_request_id', $alreadySent)
+            // Task Exemption — never send this item's notification on a
+            // request where it's exempted (frozen at submission).
+            ->whereNotIn('offboarding_request_id', OffboardingRequestExemptedTask::where('checklist_item_id', $item->id)->select('offboarding_request_id'))
             ->whereHas('offboardingRequest', fn ($q) => $q->whereIn('status', ['pending', 'in_progress'])->whereNotNull('last_working_day'))
             ->with(['offboardingRequest.employee', 'itemAssignments.assignedEmployee'])
             ->get();
@@ -96,6 +100,11 @@ class SendScheduledChecklistItemNotifications extends Command
 
     private function sendForAssignment(ChecklistItem $item, OffboardingRequestApprover $assignment): void
     {
+        // Revalidated right before sending, independent of the query above.
+        if ($assignment->isItemExempted($item->id)) {
+            return;
+        }
+
         $request = $assignment->offboardingRequest;
         $offboardee = $request->employee;
         $recipient = $assignment->effectiveSignatoryFor($item);

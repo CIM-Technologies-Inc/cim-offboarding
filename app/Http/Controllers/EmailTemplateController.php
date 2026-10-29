@@ -120,6 +120,31 @@ class EmailTemplateController extends Controller
             'trigger' => 'Automatically sent whenever items are assigned/reassigned to a Task Assignee (initial attach, delegation, pool assignment, or reassignment).',
             'recipients' => 'The newly assigned Task Assignee.',
         ],
+        'Clearance Signatory Escalation — Assigned to You' => [
+            'purpose' => 'Tells the secondary Clearance Signatory they now own a checklist because the primary did not complete it in time, with the new deadline and remaining actions.',
+            'trigger' => 'Automatically sent when a checklist with Automatic Escalation enabled passes the primary signatory\'s deadline and is transferred to the secondary.',
+            'recipients' => 'The secondary Clearance Signatory.',
+        ],
+        'Clearance Signatory Responsibility Transferred' => [
+            'purpose' => 'Tells the original primary Clearance Signatory that the checklist has been transferred to the secondary signatory.',
+            'trigger' => 'Automatically sent at the same moment as "Clearance Signatory Escalation — Assigned to You".',
+            'recipients' => 'The original primary Clearance Signatory.',
+        ],
+        'Clearance Signatory Escalation — HR/Admin Notice' => [
+            'purpose' => 'Informs HR/Admin that a checklist was automatically escalated from the primary to the secondary Clearance Signatory (no action needed).',
+            'trigger' => 'Automatically sent on a first-level escalation, when the checklist\'s "Notify HR/Admin when a checklist is escalated" setting is on.',
+            'recipients' => 'HR/Admin (users with the Assign New Clearance Signatory permission).',
+        ],
+        'Clearance Signatory Overdue — HR/Admin Action Required' => [
+            'purpose' => 'Alerts HR/Admin that the secondary (or HR-assigned) Clearance Signatory also missed their deadline and a new signatory must be assigned.',
+            'trigger' => 'Automatically sent once when the secondary or HR-assigned signatory\'s deadline passes; automatic reassignment then stops.',
+            'recipients' => 'HR/Admin (users with the Assign New Clearance Signatory permission).',
+        ],
+        'Clearance Signatory Assigned by HR/Admin' => [
+            'purpose' => 'Tells an employee that HR/Admin has assigned them as a checklist\'s Clearance Signatory, with the reason and their completion deadline.',
+            'trigger' => 'Automatically sent when HR/Admin uses "Assign New Clearance Signatory" on the Approvals page.',
+            'recipients' => 'The newly assigned Clearance Signatory.',
+        ],
     ];
 
     /**

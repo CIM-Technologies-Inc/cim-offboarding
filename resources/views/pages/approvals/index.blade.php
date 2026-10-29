@@ -13,6 +13,10 @@
         </div>
     @endif
 
+    @can('checklist-signatories.reassign')
+        @include('pages.approvals.partials.clearance-escalations')
+    @endcan
+
     <div>
         <div class="mb-6 flex flex-wrap items-center justify-between gap-3">
             <p class="text-sm text-gray-500 dark:text-gray-400">
@@ -403,7 +407,7 @@
                             && empty($approval['isPrimaryApprover'])
                             && empty($approval['isDelegate'])
                             && empty($approval['isMonitoring']);
-                        $checklistStatusButtonLabel = $isTaskAssigneeViewer ? 'View Checklist Status' : 'Checklist Status';
+                        $checklistStatusButtonLabel = $isTaskAssigneeViewer ? 'View Progress' : 'Checklist Status';
                     @endphp
                     <div x-show="search.trim() === '' || @js($searchHaystacks[$loop->index]).includes(search.trim().toLowerCase())"
                         @click="@js($isChecklistKind) ? $dispatch('open-checklist-modal', Object.assign({}, @js($approval), window.__approvalCardOverrides?.['{{ $approval['id'] }}'] || {})) : $dispatch('open-offboardee-modal', @js($approval))"
@@ -457,6 +461,28 @@
                                 Signatory Clearance
                             </p>
                         @endif
+
+                        {{-- Clearance Signatory escalation status — only the notable
+                             states (escalated / awaiting HR / reassigned by HR). --}}
+                        @php
+                            $escalationBadges = collect($approval['checklists'] ?? [])->pluck('escalation')
+                                ->push($approval['escalation'] ?? null)
+                                ->filter(fn ($escalation) => $escalation && ! in_array($escalation['state'], ['assigned_to_primary', 'completed', 'cancelled'], true))
+                                ->unique('label')
+                                ->values();
+                        @endphp
+                        @foreach ($escalationBadges as $escalation)
+                            <p class="mt-2 text-xs">
+                                <span class="rounded-full px-2 py-0.5 font-medium {{ $escalation['awaitingHr'] ? 'bg-error-50 text-error-600 dark:bg-error-500/10 dark:text-error-400' : 'bg-amber-100 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400' }}">
+                                    {{ $escalation['label'] }}
+                                </span>
+                                @if (! $escalation['awaitingHr'] && $escalation['activeSignatoryName'])
+                                    <span class="mt-1 block text-gray-400">
+                                        Active signatory: {{ $escalation['activeSignatoryName'] }}@if ($escalation['deadlineAt']) · complete by {{ $escalation['deadlineAt'] }}@endif
+                                    </span>
+                                @endif
+                            </p>
+                        @endforeach
 
                         @if ($approval['isMonitoring'] ?? false)
                             <p class="mt-1 text-xs font-medium text-[#145a3a] dark:text-[#3aa876]">

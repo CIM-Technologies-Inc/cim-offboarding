@@ -23,6 +23,7 @@ use App\Services\ChecklistCompletionService;
 use App\Services\OffboardeeEmailResolver;
 use App\Services\OffboardingRequestPreviewService;
 use App\Services\OffboardingRequestScheduledNotificationsService;
+use App\Services\TaskExemptionResolver;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -219,6 +220,16 @@ class OffboardingRequestController extends Controller
                 'notice_period_days' => $noticePeriodDays,
                 'notification_date' => $notificationDate,
             ]);
+
+            // Task Exemption — freezes which checklist tasks this
+            // offboardee's matching rules leave out, evaluated against their
+            // Employee Master record as it stands RIGHT NOW (the same
+            // `TaskExemptionResolver::exemptionsFor()` the Review preview
+            // used). Inside this transaction and before any checklist is
+            // attached, so attachment, assignments, and every notification
+            // already see it — and a later rule edit or department/position
+            // change never reaches this request.
+            app(TaskExemptionResolver::class)->snapshotFor($offboardingRequest, $employee);
 
             $employee->update(['status' => 'offboarding']);
 
@@ -1073,7 +1084,7 @@ class OffboardingRequestController extends Controller
                 $recipients->push($approver->employee);
             }
 
-            foreach ($approver->checklistTemplate?->items ?? [] as $item) {
+            foreach ($approver->applicableItems() as $item) {
                 $recipients->push($approver->effectiveSignatoryFor($item));
             }
         }

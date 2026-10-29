@@ -716,6 +716,10 @@
                                 <span class="text-gray-400">Group Head</span>
                                 <span class="font-medium text-gray-700 dark:text-gray-300" x-text="viewingEmployee.employee_group && viewingEmployee.employee_group.group_head ? viewingEmployee.employee_group.group_head.name : '—'"></span>
                             </div>
+                            <div class="flex items-center justify-between border-b border-gray-100 pb-2 dark:border-gray-800">
+                                <span class="text-gray-400">Immediate Head</span>
+                                <span class="font-medium text-gray-700 dark:text-gray-300" x-text="viewingEmployee.head_employee ? viewingEmployee.head_employee.name : '—'"></span>
+                            </div>
                             <div class="flex items-center justify-between pb-2">
                                 <span class="text-gray-400">Status</span>
                                 <span class="rounded-full px-2.5 py-1 text-xs font-medium" :class="statusBadgeClass(viewingEmployee.status)" x-text="statusLabel(viewingEmployee.status)"></span>
@@ -852,6 +856,48 @@
                         <p x-show="addEmployeeErrors.personal_email" x-text="addEmployeeErrors.personal_email?.[0]" class="mt-1.5 text-xs text-error-500"></p>
                     </div>
 
+                    {{-- Same searchable picker pattern as the Group Head field
+                         on the Create/Edit Group modal: typing only filters,
+                         picking a row sets `addEmployeeForm.head_employee_id`
+                         (the employee's real id), which is all that's
+                         submitted. The picked employee becomes both the new
+                         hire's Immediate Head and their Group Head — see
+                         `EmployeeGroupController::assignToHeadsGroup()`. --}}
+                    <div class="relative mt-5" x-ref="addEmployeeHeadSelect"
+                        @click.window.capture="addEmployeeHeadDropdownOpen && $refs.addEmployeeHeadSelect && ! $refs.addEmployeeHeadSelect.contains($event.target) && (addEmployeeHeadDropdownOpen = false)">
+                        <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                            Immediate Head
+                        </label>
+                        <div class="relative">
+                            <input type="text" x-model="addEmployeeHeadQuery" autocomplete="off"
+                                @focus="addEmployeeHeadDropdownOpen = true"
+                                @input="addEmployeeForm.head_employee_id = ''; addEmployeeHeadDropdownOpen = true"
+                                placeholder="Search by name or employee no..."
+                                class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 pr-9 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
+                            <button type="button" x-show="addEmployeeForm.head_employee_id" @click="addEmployeeForm.head_employee_id = ''; addEmployeeHeadQuery = ''"
+                                class="absolute top-1/2 right-3 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+                                <svg width="16" height="16" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <path d="M13.5 4.5L4.5 13.5M4.5 4.5L13.5 13.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                                </svg>
+                            </button>
+                        </div>
+                        <div x-show="addEmployeeHeadDropdownOpen"
+                            class="shadow-theme-lg absolute z-50 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
+                            <template x-for="employee in filteredEmployeesForImmediateHead()" :key="employee.id">
+                                <div @click="selectImmediateHead(employee)"
+                                    class="cursor-pointer border-b border-gray-100 px-4 py-2.5 text-sm last:border-b-0 hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-white/[0.03]">
+                                    <span class="text-gray-800 dark:text-white/90" x-text="employee.name + ' (' + employee.employee_code + ')'"></span>
+                                    <span class="block text-xs text-gray-400" x-text="employee.department"></span>
+                                </div>
+                            </template>
+                            <div x-show="filteredEmployeesForImmediateHead().length === 0" class="px-4 py-2.5 text-sm text-gray-400">
+                                No employees found
+                            </div>
+                        </div>
+                        <p class="mt-1.5 text-xs text-gray-400" x-show="!addEmployeeErrors.head_employee_id">Also becomes this employee's Group Head.</p>
+                        <p x-show="addEmployeeErrors.head_employee_id" x-text="addEmployeeErrors.head_employee_id?.[0]" class="mt-1.5 text-xs text-error-500"></p>
+                    </div>
+
                     <div class="mt-5 grid grid-cols-1 gap-5 sm:grid-cols-2">
                         <div>
                             <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
@@ -905,7 +951,9 @@
                 departmentOptions: departmentOptions,
                 positionOptions: positionOptions,
 
-                addEmployeeForm: { employee_code: '', firstName: '', lastName: '', middleName: '', email: '', personal_email: '', department: '', position: '' },
+                addEmployeeForm: { employee_code: '', firstName: '', lastName: '', middleName: '', email: '', personal_email: '', head_employee_id: '', department: '', position: '' },
+                addEmployeeHeadQuery: '',
+                addEmployeeHeadDropdownOpen: false,
                 addEmployeeErrors: {},
                 addingEmployee: false,
 
@@ -1200,9 +1248,26 @@
                 },
 
                 openAddEmployeeModal() {
-                    this.addEmployeeForm = { employee_code: '', firstName: '', lastName: '', middleName: '', email: '', personal_email: '', department: '', position: '' };
+                    this.addEmployeeForm = { employee_code: '', firstName: '', lastName: '', middleName: '', email: '', personal_email: '', head_employee_id: '', department: '', position: '' };
+                    this.addEmployeeHeadQuery = '';
+                    this.addEmployeeHeadDropdownOpen = false;
                     this.addEmployeeErrors = {};
                     this.$dispatch('open-add-employee-modal');
+                },
+                selectImmediateHead(employee) {
+                    this.addEmployeeForm.head_employee_id = String(employee.id);
+                    this.addEmployeeHeadQuery = `${employee.name} (${employee.employee_code})`;
+                    this.addEmployeeHeadDropdownOpen = false;
+                },
+                // Offboarded employees are left out — the backend rejects
+                // them as an Immediate Head too (see `storeEmployee()`).
+                filteredEmployeesForImmediateHead() {
+                    const needle = this.addEmployeeHeadQuery.toLowerCase();
+                    const eligible = this.employees.filter((e) => e.status !== 'offboarded');
+                    if (!needle) return eligible;
+                    return eligible.filter((e) =>
+                        e.name.toLowerCase().includes(needle) || e.employee_code.toLowerCase().includes(needle)
+                    );
                 },
                 // Same fetch()-based, no-reload convention as
                 // `addEmployeeToGroup()` above, plus field-level errors from
@@ -1244,6 +1309,16 @@
                             return data;
                         })
                         .then((data) => {
+                            // Picking an Immediate Head who didn't run a group
+                            // yet creates one server-side — add its card here
+                            // (count starts at 0; `applyEmployeeUpdate()`
+                            // below bumps it for this employee).
+                            const group = data.employee.employee_group;
+                            if (group && !this.groups.some((g) => g.id === group.id)) {
+                                this.groups.push({ ...group, employees_count: 0 });
+                                this.groups.sort((a, b) => a.name.localeCompare(b.name));
+                            }
+
                             this.applyEmployeeUpdate(data.employee);
                             this.notify('success', data.message || 'Employee added.');
                             this.$dispatch('close-add-employee-modal');

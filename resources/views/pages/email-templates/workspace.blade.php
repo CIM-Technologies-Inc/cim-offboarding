@@ -835,6 +835,24 @@
                                                     [$brace('extended_due_date'), "The new due date after the extension."],
                                                 ],
                                             ],
+                                            [
+                                                'label' => 'Clearance Signatory escalation emails (sent automatically when a signatory misses their completion period, or HR/Admin assigns a new one)',
+                                                'items' => [
+                                                    [$brace('primary_signatory_name'), "The checklist's original primary Clearance Signatory."],
+                                                    [$brace('secondary_signatory_name'), "The configured secondary Clearance Signatory."],
+                                                    [$brace('previous_signatory_name'), "Who held the checklist before this transfer."],
+                                                    [$brace('new_signatory_name'), "Who holds the checklist after this transfer."],
+                                                    [$brace('original_assigned_at'), "When the checklist was first assigned to the primary signatory."],
+                                                    [$brace('original_deadline'), "The primary signatory's completion deadline."],
+                                                    [$brace('secondary_assigned_at'), "When the secondary signatory took over."],
+                                                    [$brace('secondary_deadline'), "The secondary signatory's completion deadline."],
+                                                    [$brace('new_assigned_at'), "When the recipient was assigned."],
+                                                    [$brace('signatory_deadline'), "The recipient's completion deadline."],
+                                                    [$brace('escalated_at'), "When the checklist was escalated."],
+                                                    [$brace('escalation_reason'), "Why the checklist was escalated or reassigned."],
+                                                    [$brace('reassigned_by'), "The HR/Admin user who assigned the new signatory."],
+                                                ],
+                                            ],
                                         ];
                                     @endphp
 

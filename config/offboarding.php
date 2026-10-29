@@ -19,4 +19,20 @@ return [
 
     'follow_up_cooldown_hours' => env('OFFBOARDING_FOLLOW_UP_COOLDOWN_HOURS', 24),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Clearance Signatory Escalation
+    |--------------------------------------------------------------------------
+    |
+    | Holidays skipped when a checklist's "Escalate After (Days)" is counted
+    | in Working Days (weekends are always skipped). Comma-separated Y-m-d
+    | dates, e.g. OFFBOARDING_ESCALATION_HOLIDAYS="2026-12-25,2027-01-01".
+    | See App\Services\ClearanceSignatoryEscalationService::computeDeadline().
+    |
+    */
+
+    'escalation_holidays' => array_values(array_filter(array_map('trim', explode(',', (string) env('OFFBOARDING_ESCALATION_HOLIDAYS', ''))))),
+
+    'escalation_max_days' => 365,
+
 ];

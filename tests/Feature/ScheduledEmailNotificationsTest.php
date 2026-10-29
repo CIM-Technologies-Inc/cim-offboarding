@@ -1177,3 +1177,147 @@ it('shows "Clearance Due Date" in the editor and keeps the event when an existin
     $schedule->refresh();
     expect([$schedule->event, $schedule->timing, $schedule->days, $schedule->clearance_signing_deadline_days])->toBe(['clearance', 'after', 9, null]);
 });
+
+// ---------------------------------------------------------------------
+// {{checklist_name}} / checklist context per recipient
+// ---------------------------------------------------------------------
+
+/** The rendered HTML of the (first) message sent to $address. */
+function sentHtmlTo(string $address): ?string
+{
+    foreach (RecordingTransport::$messages as $message) {
+        if (in_array(strtolower($address), $message['to'], true)) {
+            return $message['html'];
+        }
+    }
+
+    return null;
+}
+
+/** Same wording as the real "Checklist Completion Daily Reminder" template. */
+function dailyReminderTemplate(array $attributes = []): EmailTemplate
+{
+    return schedTemplate(array_merge([
+        'subject' => 'Checklist Completion Daily Reminder',
+        'html_content' => '<p>Good day Mrs/Mr.&nbsp;{{approver_name}},</p><p>This is your CIM Offboarding Assistant giving you a friendly reminder that your assigned&nbsp;{{checklist_name}} will be Due this coming&nbsp;{{due_date}}. We would like to&nbsp;ask your small cooperation to complete your assigned checklist</p>{{offboarding_link}}',
+    ], $attributes));
+}
+
+it('fills {{checklist_name}} and {{due_date}} with each Clearance Signatory\'s own checklist', function () {
+    $request = schedRequest();
+    schedApprover($request, schedChecklist('IT Clearance Checklist'), schedEmployee(['name' => 'Ian It', 'email' => 'it@example.test']), ['due_at' => '2026-11-02 23:59:59']);
+    schedApprover($request, schedChecklist('HR Checklist'), schedEmployee(['name' => 'Hana Hr', 'email' => 'hr@example.test']), ['due_at' => '2026-11-05 23:59:59']);
+    schedSchedule(['days' => 7], dailyReminderTemplate());
+
+    $this->travelTo(Carbon::parse('2026-10-24 08:00:00'));
+    runScheduler();
+
+    $itHtml = sentHtmlTo('it@example.test');
+    $hrHtml = sentHtmlTo('hr@example.test');
+
+    expect($itHtml)->toContain('Ian It')
+        ->toContain('your assigned&nbsp;IT Clearance Checklist will be Due this coming&nbsp;Nov 02, 2026')
+        ->not->toContain('HR Checklist')
+        ->and($hrHtml)->toContain('your assigned&nbsp;HR Checklist will be Due this coming&nbsp;Nov 05, 2026')
+        ->not->toContain('IT Clearance Checklist')
+        ->and($itHtml.$hrHtml)->not->toContain('{{');
+});
+
+it('names only the still-active checklist, or every active one in order, when a signatory has several', function () {
+    $request = schedRequest();
+    $both = schedEmployee(['email' => 'both@example.test']);
+    $mixed = schedEmployee(['email' => 'mixed@example.test']);
+
+    schedApprover($request, schedChecklist('Admin Checklist'), $both, ['due_at' => '2026-11-03 23:59:59']);
+    schedApprover($request, schedChecklist('Accounting Checklist'), $both, ['due_at' => '2026-11-01 23:59:59']);
+    schedApprover($request, schedChecklist('Done Checklist'), $mixed, ['status' => 'approved', 'approved_at' => now()]);
+    schedApprover($request, schedChecklist('Open Checklist'), $mixed, ['due_at' => '2026-11-04 23:59:59']);
+    schedSchedule(['days' => 7], dailyReminderTemplate());
+
+    $this->travelTo(Carbon::parse('2026-10-24 08:00:00'));
+    runScheduler();
+
+    // One email per address (the ledger is per recipient), names and due dates in matching order.
+    expect(collect(RecordingTransport::toAddresses())->filter(fn ($a) => $a === 'both@example.test'))->toHaveCount(1)
+        ->and(sentHtmlTo('both@example.test'))->toContain('Accounting Checklist, Admin Checklist will be Due this coming&nbsp;Nov 01, 2026, Nov 03, 2026')
+        ->and(sentHtmlTo('mixed@example.test'))->toContain('your assigned&nbsp;Open Checklist will be Due')
+        ->not->toContain('Done Checklist');
+});
+
+it('resolves the checklist for each request separately when one signatory serves several requests', function () {
+    $signatory = schedEmployee(['email' => 'shared@example.test']);
+    $requestA = schedRequest();
+    $requestB = schedRequest(['last_working_day' => '2026-11-07']);
+    schedApprover($requestA, schedChecklist('IT Clearance Checklist'), $signatory);
+    schedApprover($requestB, schedChecklist('Finance Checklist'), $signatory, ['due_at' => '2026-11-07 23:59:59']);
+    schedSchedule(['days' => 7], dailyReminderTemplate());
+
+    $this->travelTo(Carbon::parse('2026-10-24 08:00:00'));
+    runScheduler();
+    expect(sentHtmlTo('shared@example.test'))->toContain('IT Clearance Checklist')->not->toContain('Finance Checklist');
+
+    RecordingTransport::reset();
+    $this->travelTo(Carbon::parse('2026-10-31 08:00:00'));
+    runScheduler();
+    expect(sentHtmlTo('shared@example.test'))->toContain('Finance Checklist')->not->toContain('IT Clearance Checklist');
+});
+
+it('uses only the schedule\'s selected checklists, the occurrence\'s Clearance Due Date group, and labels General Signatories', function () {
+    $request = schedRequest();
+    $signatory = schedEmployee(['email' => 'sig@example.test']);
+    $selected = schedChecklist('IT Clearance Checklist');
+    schedApprover($request, $selected, $signatory);
+    schedApprover($request, schedChecklist('HR Checklist'), $signatory);
+
+    $schedule = schedSchedule(['days' => 7], dailyReminderTemplate());
+    $schedule->checklistTemplates()->sync([$selected->id]);
+
+    $this->travelTo(Carbon::parse('2026-10-24 08:00:00'));
+    runScheduler();
+    expect(sentHtmlTo('sig@example.test'))->toContain('your assigned&nbsp;IT Clearance Checklist will be Due')->not->toContain('HR Checklist');
+
+    // Clearance Due Date: LWD + each checklist's own deadline; only that group's checklists.
+    RecordingTransport::reset();
+    $clearanceRequest = schedRequest();
+    $clearanceSignatory = schedEmployee(['email' => 'clear@example.test']);
+    schedApprover($clearanceRequest, schedChecklist('Short Deadline', false, 5), $clearanceSignatory);
+    schedApprover($clearanceRequest, schedChecklist('Long Deadline', false, 30), $clearanceSignatory);
+    schedSchedule(['event' => 'clearance', 'timing' => 'before', 'days' => 1], dailyReminderTemplate());
+
+    $this->travelTo(Carbon::parse('2026-11-04 08:00:00')); // Oct 31 + 5 days - 1
+    runScheduler();
+    expect(sentHtmlTo('clear@example.test'))->toContain('Short Deadline')->not->toContain('Long Deadline');
+
+    // A General Signatory recipient gets the existing "General Signatory Clearance" label.
+    RecordingTransport::reset();
+    $gsRequest = schedRequest();
+    schedGeneralSignatory($gsRequest, schedEmployee(['email' => 'gs@example.test']));
+    schedSchedule(['days' => 7], dailyReminderTemplate());
+    $this->travelTo(Carbon::parse('2026-10-24 09:00:00'));
+    runScheduler();
+    expect(sentHtmlTo('gs@example.test'))->toContain('your assigned&nbsp;General Signatory Clearance will be Due');
+});
+
+it('also fills the other checklist/request placeholders and the in-app notification subject', function () {
+    $request = schedRequest(['reason' => 'resignation']);
+    $signatory = schedEmployee(['name' => 'Ian It', 'email' => 'it@example.test']);
+    $user = User::factory()->create(['username' => $signatory->employee_code_digits]);
+    schedApprover($request, schedChecklist('IT Clearance Checklist'), $signatory, ['due_at' => '2026-11-02 23:59:59']);
+
+    schedSchedule(['days' => 7, 'channel' => 'email_and_system'], schedTemplate([
+        'subject' => 'Reminder: {{checklist_name}} for {{employee_name}}',
+        'html_content' => '<p>[{{checklist_name}}|{{due_date}}|{{checklist_status}}|{{clearance_signatory_name}}|{{reason}}|{{request_date}}|{{offboarding_request_id}}|{{department}}]</p>{{pending_items}}',
+    ]));
+
+    $this->travelTo(Carbon::parse('2026-10-24 08:00:00'));
+    runScheduler();
+
+    $message = collect(RecordingTransport::$messages)->first(fn ($m) => in_array('it@example.test', $m['to'], true));
+    expect($message['subject'])->toBe('Reminder: IT Clearance Checklist for Olivia Offboardee')
+        ->and($message['html'])->toContain('[IT Clearance Checklist|Nov 02, 2026|')
+        ->toContain('|Ian It|Resignation|Oct 01, 2026|'.$request->id.'|')
+        ->not->toContain('{{');
+
+    // In-app notification: same subject, placeholders filled for that user.
+    expect($user->fresh()->notifications()->first()?->data['message'])->toBe('Reminder: IT Clearance Checklist for Olivia Offboardee');
+});

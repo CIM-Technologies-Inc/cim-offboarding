@@ -473,7 +473,10 @@ class EmailTemplateScheduleDispatcher
     private function sendForRequest(EmailTemplateSchedule $schedule, OffboardingRequest $request, Carbon $scheduledDate, ?EmailTemplateScheduleSend $existing, ?array $checklistTemplateIds = null): void
     {
         $template = $schedule->emailTemplate;
-        $recipients = $this->resolveRecipients($schedule, $request, $checklistTemplateIds);
+        // Each recipient WITH the checklist(s)/General Signatory row(s) they
+        // were selected for — that context is what fills {{checklist_name}},
+        // {{due_date}}, etc. per recipient (see `checklistPlaceholderValues()`).
+        $contexts = $this->recipientContexts($schedule, $request, $checklistTemplateIds);
 
         $recipientLog = collect($existing?->recipient_log ?? [])->keyBy('key');
         $emailSentAt = $existing?->email_sent_at;
@@ -481,7 +484,7 @@ class EmailTemplateScheduleDispatcher
         $errors = [];
 
         if (in_array($schedule->channel, ['email', 'email_and_system'], true) && ! $emailSentAt) {
-            $errors = $this->sendEmails($template, $request, $recipients, $recipientLog);
+            $errors = $this->sendEmails($template, $request, $contexts, $recipientLog);
 
             if ($errors === []) {
                 $emailSentAt = now();
@@ -490,7 +493,7 @@ class EmailTemplateScheduleDispatcher
 
         if (in_array($schedule->channel, ['system', 'email_and_system'], true) && ! $systemSentAt) {
             try {
-                $this->sendSystemNotifications($schedule, $request, $template, $recipients);
+                $this->sendSystemNotifications($schedule, $request, $template, $contexts);
                 $systemSentAt = now();
             } catch (\Throwable $e) {
                 $errors[] = 'System notification: '.$e->getMessage();
@@ -572,29 +575,160 @@ class EmailTemplateScheduleDispatcher
      */
     public function resolveRecipients(EmailTemplateSchedule $schedule, OffboardingRequest $request, ?array $onlyChecklistTemplateIds = null): Collection
     {
+        return $this->recipientContexts($schedule, $request, $onlyChecklistTemplateIds)
+            ->map(fn (array $context) => $context['employee'])
+            ->values();
+    }
+
+    /**
+     * The same recipients `resolveRecipients()` returns (same selection
+     * rules, same order, deduped by Employee id), but each one keeps the
+     * request's own `OffboardingRequestApprover` rows (checklists) and
+     * `OffboardingRequestGeneralSignatory` rows they were selected FOR in
+     * this occurrence. Without this, the recipient list was a bare list of
+     * employees and nothing downstream knew which checklist an email was
+     * about — which is why {{checklist_name}}/{{due_date}} rendered blank.
+     *
+     * @return Collection<int, array{employee: Employee, approvers: Collection, general_signatory_approvals: Collection}>
+     */
+    public function recipientContexts(EmailTemplateSchedule $schedule, OffboardingRequest $request, ?array $onlyChecklistTemplateIds = null): Collection
+    {
         // A Clearance Due Date occurrence goes only to the Clearance
         // Signatories of the checklists it was computed for.
         if ($onlyChecklistTemplateIds !== null) {
-            return $request->approvers
-                ->whereIn('checklist_template_id', $onlyChecklistTemplateIds)
-                ->map(fn ($approver) => $approver->employee)
-                ->filter()
-                ->unique('id');
+            $approvers = $request->approvers->whereIn('checklist_template_id', $onlyChecklistTemplateIds);
+            $generalSignatoryApprovals = collect();
+        } else {
+            $selectedChecklistIds = $schedule->checklistTemplates->pluck('id');
+            $selectedGeneralSignatoryIds = $schedule->generalSignatories->pluck('id');
+            $hasAnySelection = $selectedChecklistIds->isNotEmpty() || $selectedGeneralSignatoryIds->isNotEmpty();
+
+            $approvers = $selectedChecklistIds->isNotEmpty()
+                ? $request->approvers->whereIn('checklist_template_id', $selectedChecklistIds)
+                : ($hasAnySelection ? collect() : $request->approvers);
+
+            $generalSignatoryApprovals = $selectedGeneralSignatoryIds->isNotEmpty()
+                ? $request->generalSignatoryApprovals->whereIn('general_signatory_id', $selectedGeneralSignatoryIds)
+                : ($hasAnySelection ? collect() : $request->generalSignatoryApprovals);
         }
 
-        $selectedChecklistIds = $schedule->checklistTemplates->pluck('id');
-        $selectedGeneralSignatoryIds = $schedule->generalSignatories->pluck('id');
-        $hasAnySelection = $selectedChecklistIds->isNotEmpty() || $selectedGeneralSignatoryIds->isNotEmpty();
+        $contexts = collect();
 
-        $clearanceSignatories = $selectedChecklistIds->isNotEmpty()
-            ? $request->approvers->whereIn('checklist_template_id', $selectedChecklistIds)->map(fn ($approver) => $approver->employee)
-            : ($hasAnySelection ? collect() : $request->approvers->map(fn ($approver) => $approver->employee));
+        $add = function (?Employee $employee, string $bucket, $row) use ($contexts) {
+            if (! $employee) {
+                return;
+            }
 
-        $generalSignatoryRecipients = $selectedGeneralSignatoryIds->isNotEmpty()
-            ? $request->generalSignatoryApprovals->whereIn('general_signatory_id', $selectedGeneralSignatoryIds)->map(fn ($gsApproval) => $gsApproval->generalSignatory?->clearanceSignatory)
-            : ($hasAnySelection ? collect() : $request->generalSignatoryApprovals->map(fn ($gsApproval) => $gsApproval->generalSignatory?->clearanceSignatory));
+            $context = $contexts->get($employee->id) ?? [
+                'employee' => $employee,
+                'approvers' => collect(),
+                'general_signatory_approvals' => collect(),
+            ];
+            $context[$bucket]->push($row);
+            $contexts->put($employee->id, $context);
+        };
 
-        return $clearanceSignatories->merge($generalSignatoryRecipients)->filter()->unique('id');
+        // Escalation-aware: the checklist's CURRENT active Clearance
+        // Signatory; a checklist awaiting HR/Admin reassignment has none.
+        foreach ($approvers as $approver) {
+            $add($approver->activeClearanceSignatory(), 'approvers', $approver);
+        }
+
+        foreach ($generalSignatoryApprovals as $generalSignatoryApproval) {
+            $add($generalSignatoryApproval->generalSignatory?->clearanceSignatory, 'general_signatory_approvals', $generalSignatoryApproval);
+        }
+
+        return $contexts;
+    }
+
+    /**
+     * The checklist-specific placeholder values for ONE recipient of ONE
+     * occurrence, resolved from the exact rows they were selected for —
+     * the same per-checklist values the other checklist notifications
+     * already pass (`SendChecklistReminders`/`NotifyOverdueChecklists`:
+     * the template's title and the assignment's own `due_at`).
+     *
+     * "Active" checklist: a recipient's still-outstanding (not yet
+     * approved) checklists in this occurrence are used; only if every one
+     * of them is already approved do the approved ones show instead, so the
+     * value is never blank for someone who was still emailed. A recipient
+     * responsible for several checklists in the same occurrence gets one
+     * email (the ledger is per address) listing each name, with
+     * {{due_date}}/{{checklist_status}} in the same order — the same
+     * convention as the Offboarding Request Notification
+     * (`ChecklistApprovalNotifier::notifyDepartmentHeadsOfNewRequest()`).
+     * A General Signatory row shows as "General Signatory Clearance", the
+     * label `GeneralSignatoryApprovalController` already uses.
+     *
+     * @param  array{employee: Employee, approvers: Collection, general_signatory_approvals: Collection}  $context
+     * @return array<string, ?string>
+     */
+    private function checklistPlaceholderValues(array $context): array
+    {
+        $activeOnly = fn (Collection $rows) => $rows->reject(fn ($row) => $row->status === 'approved')->values();
+
+        $approvers = $activeOnly($context['approvers']);
+        $generalSignatoryApprovals = $activeOnly($context['general_signatory_approvals']);
+
+        if ($approvers->isEmpty() && $generalSignatoryApprovals->isEmpty()) {
+            $approvers = $context['approvers']->values();
+            $generalSignatoryApprovals = $context['general_signatory_approvals']->values();
+        }
+
+        $approvers = $approvers->sortBy(fn ($approver) => $approver->checklistTemplate?->title)->values();
+
+        $entries = $approvers->map(fn ($approver) => [
+            'name' => $approver->checklistTemplate?->title ?? 'Untitled Checklist',
+            'due' => $approver->due_at?->format('M d, Y'),
+            'status' => $approver->clearanceStatusLabel(),
+        ])->concat($generalSignatoryApprovals->map(fn ($generalSignatoryApproval) => [
+            'name' => 'General Signatory Clearance',
+            'due' => $generalSignatoryApproval->due_at?->format('M d, Y'),
+            'status' => $generalSignatoryApproval->clearanceStatusLabel(),
+        ]));
+
+        if ($entries->isEmpty()) {
+            return [];
+        }
+
+        $pendingItems = $approvers->count() === 1
+            ? $approvers->first()->itemsStatusTableHtml()
+            : $approvers->map(fn ($approver) => '<p style="margin:12px 0 4px;font-weight:bold;">'.e($approver->checklistTemplate?->title ?? 'Untitled Checklist').'</p>'.$approver->itemsStatusTableHtml())->implode('');
+
+        return [
+            'checklistName' => $entries->pluck('name')->implode(', '),
+            'dueDate' => $entries->pluck('due')->map(fn ($due) => $due ?? 'No due date')->implode(', '),
+            'checklistStatus' => $entries->pluck('status')->implode(', '),
+            'daysOverdue' => $approvers->count() === 1 ? (string) $approvers->first()->daysOverdue() : null,
+            'pendingItems' => $pendingItems !== '' ? $pendingItems : null,
+            'clearanceSignatoryName' => $context['employee']->name,
+        ];
+    }
+
+    /**
+     * Request-level placeholder values every recipient of this request
+     * shares — formatted exactly as the other notifications format them
+     * (e.g. `ChecklistApprovalNotifier::notifyOffboardee()`), so a
+     * scheduled template using them no longer renders them blank either.
+     *
+     * @return array<string, ?string>
+     */
+    private function requestPlaceholderValues(OffboardingRequest $request): array
+    {
+        $offboardee = $request->employee;
+
+        return [
+            'offboardeeName' => $offboardee->name,
+            'employeeNumber' => $offboardee->employee_code,
+            'department' => $offboardee->department,
+            'position' => $offboardee->designation,
+            'dateHired' => $offboardee->date_of_joining?->format('M d, Y'),
+            'separationDate' => $request->last_working_day?->format('M d, Y'),
+            'reason' => $request->reason ? ucfirst($request->reason) : null,
+            'requestDate' => $request->created_at?->format('M d, Y'),
+            'offboardingRequestId' => (string) $request->id,
+            'offboardingStatus' => ucfirst(str_replace('_', ' ', $request->displayStatus())),
+        ];
     }
 
     /**
@@ -612,13 +746,13 @@ class EmailTemplateScheduleDispatcher
      * `ProcessCreationEmailTemplateSchedules` job), never in a web
      * request, so sending synchronously costs no HTTP latency.
      *
-     * @param  Collection<int, Employee>  $recipients
+     * @param  Collection<int, array{employee: Employee, approvers: Collection, general_signatory_approvals: Collection}>  $contexts
      * @param  Collection<string, array<string, mixed>>  $recipientLog
      * @return array<int, string>
      */
-    private function sendEmails($template, OffboardingRequest $request, Collection $recipients, Collection $recipientLog): array
+    private function sendEmails($template, OffboardingRequest $request, Collection $contexts, Collection $recipientLog): array
     {
-        $offboardee = $request->employee;
+        $requestValues = $this->requestPlaceholderValues($request);
         $errors = [];
         $handledThisAttempt = [];
 
@@ -633,7 +767,8 @@ class EmailTemplateScheduleDispatcher
         // `employees`/`users` tables don't enforce email uniqueness), which
         // would otherwise send that one inbox two separate copies of the
         // same notification.
-        foreach ($recipients as $recipient) {
+        foreach ($contexts as $context) {
+            $recipient = $context['employee'];
             $recipientEmail = trim((string) $recipient->email);
             $key = strtolower($recipientEmail);
 
@@ -670,15 +805,12 @@ class EmailTemplateScheduleDispatcher
             try {
                 $recipientUser = User::firstWhere('username', $recipient->employee_code_digits);
 
-                [$subject, $body] = $template->render(
-                    approverName: $recipient->name,
-                    offboardeeName: $offboardee->name,
-                    employeeNumber: $offboardee->employee_code,
-                    department: $offboardee->department,
-                    position: $offboardee->designation,
-                    separationDate: $request->last_working_day?->format('M d, Y'),
-                    offboardingLinkUrl: $recipientUser ? app(AutoLoginLinkService::class)->generate($recipientUser) : null,
-                );
+                [$subject, $body] = $template->render(...[
+                    ...$requestValues,
+                    ...$this->checklistPlaceholderValues($context),
+                    'approverName' => $recipient->name,
+                    'offboardingLinkUrl' => $recipientUser ? app(AutoLoginLinkService::class)->generate($recipientUser) : null,
+                ]);
 
                 Mail::to($recipientEmail)->cc($cc)->sendNow(new ChecklistSignatoryAnnouncementMail($subject, $body));
 
@@ -693,22 +825,41 @@ class EmailTemplateScheduleDispatcher
     }
 
     /**
-     * @param  Collection<int, Employee>  $recipients
+     * Same audience as before (every recipient plus the template's CC
+     * employees/groups, deduped by Employee id), but the in-app message is
+     * the template's subject with its placeholders filled for each person —
+     * previously the raw subject was used, so a subject containing e.g.
+     * {{checklist_name}} showed the literal token in-app.
+     *
+     * @param  Collection<int, array{employee: Employee, approvers: Collection, general_signatory_approvals: Collection}>  $contexts
      */
-    private function sendSystemNotifications(EmailTemplateSchedule $schedule, OffboardingRequest $request, $template, Collection $recipients): void
+    private function sendSystemNotifications(EmailTemplateSchedule $schedule, OffboardingRequest $request, $template, Collection $contexts): void
     {
         $ccEmployees = collect($template->recipientEmployees)
             ->merge($template->recipientGroups->flatMap(fn ($group) => $group->employees));
 
-        $users = $recipients->merge($ccEmployees)
-            ->unique('id')
-            ->map(fn (Employee $employee) => $employee->user)
-            ->filter();
+        $employees = $contexts->map(fn (array $context) => $context['employee'])
+            ->merge($ccEmployees)
+            ->unique('id');
 
-        if ($users->isEmpty()) {
-            return;
+        $requestValues = $this->requestPlaceholderValues($request);
+
+        foreach ($employees as $employee) {
+            $user = $employee->user;
+
+            if (! $user) {
+                continue;
+            }
+
+            $context = $contexts->get($employee->id);
+
+            [$subject] = $template->render(...[
+                ...$requestValues,
+                ...($context ? $this->checklistPlaceholderValues($context) : []),
+                'approverName' => $employee->name,
+            ]);
+
+            Notification::send($user, new ScheduledEmailTemplateNotification($schedule, $request, $subject));
         }
-
-        Notification::send($users, new ScheduledEmailTemplateNotification($schedule, $request, $template->subject));
     }
 }
