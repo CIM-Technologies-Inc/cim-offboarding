@@ -117,3 +117,27 @@ it('renders the Immediate Head picker on the Employee Master page', function () 
         ->assertSee('Immediate Head')
         ->assertSee("Also becomes this employee's Group Head.", false);
 });
+
+it('shows Immediate Head (sup_one) instead of Group and Group Head columns in the Employee Directory', function () {
+    Employee::factory()->create(['name' => 'Dina Directory', 'sup_one' => 'Joel Grospe']);
+
+    $html = $this->actingAs(immediateHeadAdmin())->get(route('employee-groups.index'))->assertOk()->getContent();
+
+    expect($html)->toContain("toggleDirectorySort('immediate_head')")
+        ->toContain('employee.sup_one')
+        ->not->toContain("toggleDirectorySort('group')")
+        ->not->toContain("toggleDirectorySort('group_head')")
+        // The directory data carries each employee's sup_one.
+        ->and($html)->toContain('Joel Grospe');
+});
+
+it('fills sup_one from the Immediate Head picked on the Add Employee form', function () {
+    $head = Employee::factory()->create(['name' => 'Hugo Head', 'department' => 'Finance and Accounting']);
+
+    $response = $this->actingAs(immediateHeadAdmin())
+        ->postJson(route('employee-groups.employees.store'), newHirePayload(['head_employee_id' => $head->id]))
+        ->assertOk();
+
+    expect(Employee::findOrFail($response->json('employee.id'))->sup_one)->toBe('Hugo Head')
+        ->and($response->json('employee.sup_one'))->toBe('Hugo Head');
+});

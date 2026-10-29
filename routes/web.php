@@ -244,6 +244,9 @@ Route::middleware('permission:offboarding-requests.create')->group(function () {
     // renders — see `OffboardingRequestController::checkSignatoryConflicts()`/
     // `resolveSignatoryConflict()`'s own docblocks.
     Route::get('/offboarding-requests/signatory-conflicts/{employee}', [OffboardingRequestController::class, 'checkSignatoryConflicts'])->name('offboarding-requests.signatory-conflicts');
+    // Outstanding Task Assignee work on other active requests — blocks a new
+    // request for this employee until reassigned (see taskAssigneeConflicts()).
+    Route::get('/offboarding-requests/task-assignee-conflicts/{employee}', [OffboardingRequestController::class, 'taskAssigneeConflicts'])->name('offboarding-requests.task-assignee-conflicts');
     Route::post('/offboarding-requests/signatory-conflicts/{checklistTemplate}/resolve', [OffboardingRequestController::class, 'resolveSignatoryConflict'])->name('offboarding-requests.signatory-conflicts.resolve');
 });
 

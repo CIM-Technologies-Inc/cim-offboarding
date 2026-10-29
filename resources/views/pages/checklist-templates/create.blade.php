@@ -3,7 +3,7 @@
 @section('content')
     <x-common.page-breadcrumb pageTitle="New Checklist Template" />
 
-    <div x-data="checklistBuilder(@js(old('title', '')), @js(old('employee_group_id', '')), @js((bool) old('is_immediate_head_checklist', false)), @js(old('checklist_classification', 'primary')), @js(old('department', '')), @js(old('due_in_days', '')), @js(old('clearance_signing_deadline_days', '19')), @js(old('items', [['title' => '', 'signatory_id' => '']])), @js($employees->map(fn ($employee) => ['id' => (string) $employee->id, 'name' => $employee->name, 'department' => $employee->department])), @js($employeeGroups), @js($errors->any() ? $errors->first() : null))"
+    <div x-data="checklistBuilder(@js(old('title', '')), @js(old('employee_group_id', '')), @js((bool) old('is_immediate_head_checklist', false)), @js(old('checklist_classification', 'primary')), @js(old('department', '')), @js(old('due_in_days', '')), @js(old('clearance_signing_deadline_days', '19')), @js(collect(old('items', [['title' => '', 'signatory_id' => '']]))->sortKeys()->values()), @js($employees->map(fn ($employee) => ['id' => (string) $employee->id, 'name' => $employee->name, 'department' => $employee->department])), @js($employeeGroups), @js($errors->any() ? $errors->first() : null))"
         class="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-white/[0.03] lg:p-6">
         <form method="POST" action="{{ route('checklist-templates.store') }}" class="flex flex-col">
             @csrf
@@ -152,21 +152,21 @@
                 </div>
 
                 <div class="space-y-4">
-                    <template x-for="(item, index) in items" :key="index">
-                        <div class="flex flex-col gap-3 rounded-xl border border-gray-200 p-4 dark:border-gray-800">
+                    <template x-for="(item, index) in items" :key="item._uid">
+                        <div data-task-item class="flex flex-col gap-3 rounded-xl border border-gray-200 p-4 dark:border-gray-800">
                         <div class="flex flex-col gap-3 sm:flex-row sm:items-start">
                             <div class="flex-1">
                                 <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
                                     List Title
                                 </label>
-                                <input type="text" x-model="item.title" :name="`items[${index}][title]`" placeholder="e.g. Return company laptop"
+                                <input type="text" x-model="item.title" :name="`items[${submitIndex(item)}][title]`" placeholder="e.g. Return company laptop"
                                     class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
                             </div>
                             <div class="relative sm:w-72" @click.away="item.signatory_open = false">
                                 <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
                                     Task Assignee
                                 </label>
-                                <input type="hidden" :name="`items[${index}][signatory_id]`" :value="item.signatory_id" />
+                                <input type="hidden" :name="`items[${submitIndex(item)}][signatory_id]`" :value="item.signatory_id" />
                                 <div class="relative">
                                     <input type="text" x-model="item.signatory_query" autocomplete="off"
                                         @focus="item.signatory_open = true"
@@ -209,7 +209,7 @@
 
                         <div>
                             <label class="flex cursor-pointer items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-400">
-                                <input type="checkbox" :name="`items[${index}][notify_enabled]`" value="1"
+                                <input type="checkbox" :name="`items[${submitIndex(item)}][notify_enabled]`" value="1"
                                     x-model="item.notify_enabled" :disabled="!item.signatory_id"
                                     class="h-4 w-4 accent-brand-500 disabled:cursor-not-allowed disabled:opacity-50" />
                                 Enable Scheduled Notification
@@ -223,7 +223,7 @@
                                     <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
                                         Email/Notification Template
                                     </label>
-                                    <select :name="`items[${index}][email_template_id]`" x-model="item.email_template_id"
+                                    <select :name="`items[${submitIndex(item)}][email_template_id]`" x-model="item.email_template_id"
                                         class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:focus:border-brand-800">
                                         <option value="">Select a template</option>
                                         @foreach ($emailTemplates as $et)
@@ -235,7 +235,7 @@
                                     <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
                                         Send Timing
                                     </label>
-                                    <select :name="`items[${index}][notify_timing]`" x-model="item.notify_timing"
+                                    <select :name="`items[${submitIndex(item)}][notify_timing]`" x-model="item.notify_timing"
                                         class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-3 py-2.5 text-sm text-gray-800 shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:focus:border-brand-800">
                                         <option value="before">Before Last Working Day</option>
                                         <option value="after">After Last Working Day</option>
@@ -245,7 +245,7 @@
                                     <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
                                         Number of Days
                                     </label>
-                                    <input type="number" min="1" step="1" :name="`items[${index}][notify_days]`"
+                                    <input type="number" min="1" step="1" :name="`items[${submitIndex(item)}][notify_days]`"
                                         x-model="item.notify_days" placeholder="e.g. 5"
                                         class="dark:bg-dark-900 h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800" />
                                 </div>
@@ -291,7 +291,9 @@
                 items: [],
                 init() {
                     const source = initialItems.length ? initialItems : [{ title: '', signatory_id: '' }];
-                    this.items = source.map((item) => ({
+                    this.items = source.map((item, position) => ({
+                        _uid: position,
+                        _order: position,
                         title: item.title || '',
                         signatory_id: item.signatory_id || '',
                         signatory_query: this.labelFor(item.signatory_id),
@@ -301,6 +303,7 @@
                         notify_timing: item.notify_timing || 'before',
                         notify_days: item.notify_days || '',
                     }));
+                    this.nextItemKey = this.items.length;
 
                     if (flashError) {
                         window.Swal?.fire({
@@ -388,10 +391,30 @@
                     item.signatory_open = false;
                     item.notify_enabled = false;
                 },
+                // New items are SHOWN at the top (no scrolling to the bottom to
+                // fill one in) but SAVED after the existing ones, in the order
+                // they were added — `submitIndex()` — so adding items never
+                // changes the checklist's saved task order.
+                nextItemKey: 0,
+                submitIndex(item) {
+                    return this.items.map((i) => i._order).sort((a, b) => a - b).indexOf(item._order);
+                },
                 addItem() {
-                    this.items.push({
+                    const key = this.nextItemKey++;
+                    this.items.unshift({
+                        _uid: key,
+                        _order: key,
                         title: '', signatory_id: '', signatory_query: '', signatory_open: false,
                         notify_enabled: false, email_template_id: '', notify_timing: 'before', notify_days: '',
+                    });
+                    this.$nextTick(() => {
+                        const row = this.$root.querySelector('[data-task-item]');
+                        if (!row) return;
+                        const rect = row.getBoundingClientRect();
+                        if (rect.top < 0 || rect.bottom > window.innerHeight) {
+                            row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        }
+                        row.querySelector('input[type=text]')?.focus({ preventScroll: true });
                     });
                 },
                 removeItem(index) {

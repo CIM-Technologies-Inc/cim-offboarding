@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Str;
 
 class EmailTemplate extends Model
 {
@@ -57,6 +58,9 @@ class EmailTemplate extends Model
         'is_default_announcement',
         'is_default_reactivation',
         'created_by',
+        // Manually entered Recipients (company or personal addresses, not
+        // necessarily any employee's) — see `ccRecipientEmails()`.
+        'recipient_emails',
     ];
 
     protected function casts(): array
@@ -65,6 +69,7 @@ class EmailTemplate extends Model
             'is_active' => 'boolean',
             'is_default_announcement' => 'boolean',
             'is_default_reactivation' => 'boolean',
+            'recipient_emails' => 'array',
         ];
     }
 
@@ -131,6 +136,10 @@ class EmailTemplate extends Model
 
         return $this->recipientEmployees->pluck('email')
             ->merge($this->recipientGroups->flatMap(fn (EmployeeGroup $group) => $group->employees->pluck('email')))
+            // Manually entered addresses — same filter/dedupe/exclude as the
+            // employee-based ones, so every send path (manual or scheduled)
+            // includes them with no change of its own.
+            ->merge($this->recipient_emails ?? [])
             ->filter(fn (?string $email) => $email && filter_var($email, FILTER_VALIDATE_EMAIL))
             ->map(fn (string $email) => strtolower(trim($email)))
             ->unique()
@@ -166,7 +175,18 @@ class EmailTemplate extends Model
             ->merge($this->recipientGroups->flatMap(fn (EmployeeGroup $group) => $group->employees))
             ->unique('id')
             ->reject(fn (Employee $employee) => $exclude && $employee->email && strtolower(trim($employee->email)) === $exclude)
+            // Plain collection from here on: merging the manual addresses
+            // (strings) into an Eloquent collection — which an EMPTY
+            // employee list still is after map() — calls getKey() on them.
+            ->toBase()
             ->map(fn (Employee $employee) => $employee->name)
+            // Manually entered addresses have no employee name — shown as
+            // the address itself, skipping any already covered above.
+            ->merge(collect($this->recipient_emails ?? [])
+                ->map(fn (string $email) => strtolower(trim($email)))
+                ->reject(fn (string $email) => $email === $exclude
+                    || $this->recipientEmployees->merge($this->recipientGroups->flatMap(fn (EmployeeGroup $group) => $group->employees))
+                        ->contains(fn (Employee $employee) => $employee->email && strtolower(trim($employee->email)) === $email)))
             ->values()
             ->all();
     }
@@ -184,6 +204,27 @@ class EmailTemplate extends Model
     {
         return in_array($this->template_name, self::SYSTEM_TEMPLATE_NAMES, true)
             || $this->is_default_reactivation;
+    }
+
+    /**
+     * A short plain-text excerpt of the email body for the Email and
+     * Notification template list — derived from `html_content` itself (no
+     * separate description to maintain), so it changes as soon as the body
+     * is edited and saved. Scripts/styles are dropped, block breaks become
+     * spaces, tags are stripped and entities decoded; placeholders such as
+     * {{employee_name}} stay as-is (never resolved here). Null when the body
+     * has no readable text. Output is plain text — escape it when rendering.
+     */
+    public function bodyPreview(int $limit = 150): ?string
+    {
+        $html = (string) $this->html_content;
+        $html = preg_replace('#<(script|style)\b[^>]*>.*?</\1>#is', ' ', $html) ?? '';
+        $html = preg_replace('#<(br|/p|/div|/li|/tr|/td|/h[1-6])\b[^>]*>#i', ' ', $html) ?? '';
+
+        $text = html_entity_decode(strip_tags($html), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $text = trim(preg_replace('/\s+/u', ' ', str_replace("\u{00A0}", ' ', $text)) ?? '');
+
+        return $text === '' ? null : Str::limit($text, $limit);
     }
 
     /**

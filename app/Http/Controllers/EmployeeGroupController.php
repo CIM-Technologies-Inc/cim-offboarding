@@ -30,7 +30,7 @@ class EmployeeGroupController extends Controller
                 ->get(),
             'employees' => Employee::with(['employeeGroup.groupHead', 'headEmployee:id,name,employee_code'])
                 ->orderBy('name')
-                ->get(['id', 'name', 'firstName', 'lastName', 'middleName', 'email', 'employee_code', 'department', 'designation', 'position', 'employee_group_id', 'head_employee_id', 'is_task_assignee', 'status']),
+                ->get(['id', 'name', 'firstName', 'lastName', 'middleName', 'email', 'employee_code', 'department', 'designation', 'position', 'employee_group_id', 'head_employee_id', 'sup_one', 'is_task_assignee', 'status']),
             // Feeds the Add New Employee modal's Department dropdown/Position
             // datalist — see `storeEmployee()`'s own docblock for why
             // Department is a closed dropdown (existing values only) while
@@ -493,6 +493,9 @@ class EmployeeGroupController extends Controller
                 // plus the legacy free-text `head` name alongside it.
                 'head_employee_id' => $headEmployee?->id,
                 'head' => $headEmployee?->name,
+                // `sup_one` is what the Employee Directory shows as the
+                // Immediate Head (the Excel import's supOne column).
+                'sup_one' => $headEmployee?->name,
                 'status' => 'active',
                 'date_of_joining' => now(),
             ]);

@@ -90,7 +90,7 @@
                             <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
                                 Template Name <span class="text-error-500">*</span>
                             </label>
-                            <input type="text" name="template_name" required
+                            <input type="text" name="template_name" required @unless ($isSystemTemplate) data-variable-drop @endunless
                                 value="{{ old('template_name', $template->template_name ?? '') }}"
                                 @readonly($isSystemTemplate)
                                 placeholder="e.g. Exit Interview Invitation"
@@ -100,6 +100,10 @@
                         <div x-data="{
                                 recipientEmployeeIds: @js(old('recipient_employee_ids', $template?->recipientEmployees->pluck('id')->all() ?? [])).map(String),
                                 recipientGroupIds: @js(old('recipient_group_ids', $template?->recipientGroups->pluck('id')->all() ?? [])).map(String),
+                                // Manually entered addresses (company or personal) — added by
+                                // typing an address in the search box and pressing Enter.
+                                recipientEmails: @js(array_values(old('recipient_emails', $template?->recipient_emails ?? []))),
+                                manualEmailError: @js($errors->first('recipient_emails.*') ?: $errors->first('recipient_emails') ?: ''),
                                 recipientQuery: '',
                                 recipientDropdownOpen: false,
                                 groupsExpanded: false,
@@ -195,6 +199,49 @@
                                 deselectAllRecipients() {
                                     this.recipientEmployeeIds = [];
                                     this.recipientGroupIds = [];
+                                    this.recipientEmails = [];
+                                    this.manualEmailError = '';
+                                },
+                                hasAnyRecipient() {
+                                    return this.recipientEmployeeIds.length || this.recipientGroupIds.length || this.recipientEmails.length;
+                                },
+                                // Same shape the server's `email` rule accepts in practice
+                                // (the server re-validates every address on save).
+                                isValidEmail(value) {
+                                    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+                                },
+                                queryLooksLikeEmail() {
+                                    return this.recipientQuery.includes('@');
+                                },
+                                // Who (if anyone) already receives this address through a
+                                // selected employee or group — so it isn't added twice.
+                                selectedRecipientWithEmail(email) {
+                                    const ids = [...this.recipientEmployeeIds, ...this.groupMemberIds()];
+                                    return this.allEmployees.find((e) => ids.includes(e.id) && e.email && e.email.trim().toLowerCase() === email) || null;
+                                },
+                                addManualEmail() {
+                                    const email = this.recipientQuery.trim().toLowerCase();
+                                    if (!email) return;
+                                    if (!this.isValidEmail(email)) {
+                                        this.manualEmailError = '“' + this.recipientQuery.trim() + '” is not a valid email address.';
+                                        return;
+                                    }
+                                    if (this.recipientEmails.includes(email)) {
+                                        this.manualEmailError = email + ' has already been added as a recipient.';
+                                        return;
+                                    }
+                                    const existing = this.selectedRecipientWithEmail(email);
+                                    if (existing) {
+                                        this.manualEmailError = email + ' is already a recipient (' + existing.name + ').';
+                                        return;
+                                    }
+                                    this.recipientEmails.push(email);
+                                    this.manualEmailError = '';
+                                    this.recipientQuery = '';
+                                    this.recipientDropdownOpen = false;
+                                },
+                                removeManualEmail(email) {
+                                    this.recipientEmails = this.recipientEmails.filter((x) => x !== email);
                                 },
                                 toggleRecipientGroup(id) {
                                     if (this.recipientGroupIds.includes(id)) {
@@ -221,7 +268,7 @@
                                     Recipients
                                 </label>
                                 <button type="button" @click="deselectAllRecipients()"
-                                    x-show="recipientEmployeeIds.length || recipientGroupIds.length" x-cloak
+                                    x-show="hasAnyRecipient()" x-cloak
                                     class="text-xs font-medium text-gray-500 hover:text-error-600 dark:text-gray-400 dark:hover:text-error-400">
                                     Deselect All
                                 </button>
@@ -230,7 +277,7 @@
                                 These employees and groups are CC'd whenever this template is used to send an email, in addition to its normal recipient(s).
                             </p> -->
 
-                            <div class="mb-2 flex flex-wrap gap-1.5" x-show="recipientEmployeeIds.length || recipientGroupIds.length">
+                            <div class="mb-2 flex flex-wrap gap-1.5" x-show="hasAnyRecipient()">
                                 <template x-for="id in recipientEmployeeIds" :key="'emp-' + id">
                                     <span class="inline-flex items-center gap-1 rounded-full bg-[#145a3a]/10 px-2.5 py-1 text-xs font-medium text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]">
                                         <span x-text="employeeLabel(id)"></span>
@@ -244,12 +291,22 @@
                                         <button type="button" @click="toggleRecipientGroup(id)" class="text-blue-700/60 hover:text-blue-700 dark:text-blue-400/60 dark:hover:text-blue-400">&times;</button>
                                     </span>
                                 </template>
+                                <template x-for="email in recipientEmails" :key="'mail-' + email">
+                                    <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-700 dark:bg-white/5 dark:text-gray-300" :title="'Manually added: ' + email">
+                                        <svg width="12" height="12" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2.5 5.83333L9.0755 10.2172C9.63533 10.5904 10.3647 10.5904 10.9245 10.2172L17.5 5.83333M4.16667 15.8333H15.8333C16.7538 15.8333 17.5 15.0871 17.5 14.1667V5.83333C17.5 4.91286 16.7538 4.16667 15.8333 4.16667H4.16667C3.24619 4.16667 2.5 4.91286 2.5 5.83333V14.1667C2.5 15.0871 3.24619 15.8333 4.16667 15.8333Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></svg>
+                                        <span x-text="email"></span>
+                                        <button type="button" @click="removeManualEmail(email)" class="text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white" :aria-label="'Remove ' + email">&times;</button>
+                                    </span>
+                                </template>
                             </div>
 
                             <div class="relative" @click.outside="recipientDropdownOpen = false" @keydown.escape="recipientDropdownOpen = false"
                                 x-init="$watch('recipientDropdownOpen', (open) => { if (!open) recipientQuery = '' })">
-                                <input type="text" x-model="recipientQuery" @focus="recipientDropdownOpen = true" @click="recipientDropdownOpen = true" @input="recipientDropdownOpen = true"
-                                    placeholder="Search by name, employee code, email, or department (e.g. HR)..."
+                                <input type="text" x-model="recipientQuery" data-variable-no-drop
+                                    @variable-drop-refused.window="manualEmailError = 'Template variables can\u2019t be used as recipients. Select an employee or group, or type an email address.'"
+                                    @focus="recipientDropdownOpen = true" @click="recipientDropdownOpen = true" @input="recipientDropdownOpen = true; manualEmailError = ''"
+                                    @keydown.enter.prevent="queryLooksLikeEmail() && addManualEmail()"
+                                    placeholder="Search by name, employee code, email, or department (e.g. HR) — or type an email address and press Enter"
                                     class="h-11 w-full rounded-xl border border-gray-300 bg-transparent px-4 py-2.5 text-sm text-gray-800 shadow-sm placeholder:text-gray-400 focus:border-[#145a3a]/50 focus:outline-hidden focus:ring-3 focus:ring-[#145a3a]/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30" />
                                 {{-- Closes after each tick/untick and after Select All / Deselect
                                      All. Whenever it closes (for any reason) the search box is
@@ -265,6 +322,13 @@
                                                 x-text="allMatchingSelected() ? 'Deselect All' : 'Select All'"></button>
                                         </template>
                                     </div>
+                                    <template x-if="queryLooksLikeEmail()">
+                                        <button type="button" @click="addManualEmail()"
+                                            class="flex w-full items-center gap-2 border-b border-gray-100 px-4 py-2.5 text-left text-sm text-[#145a3a] hover:bg-gray-50 dark:border-gray-800 dark:text-[#3aa876] dark:hover:bg-white/5">
+                                            <span class="font-semibold">+</span>
+                                            <span class="truncate" x-text="'Add ' + recipientQuery.trim() + ' as a recipient'"></span>
+                                        </button>
+                                    </template>
                                     <template x-for="employee in matchingEmployees()" :key="employee.id">
                                         <button type="button" @click="toggleRecipientEmployee(employee.id); recipientDropdownOpen = false"
                                             :disabled="coveringGroupName(employee.id) !== null"
@@ -283,6 +347,11 @@
                                     </template>
                                 </div>
                             </div>
+
+                            <p x-show="manualEmailError" x-cloak class="mt-1.5 text-xs text-error-500" x-text="manualEmailError"></p>
+                            <p x-show="!manualEmailError" class="mt-1.5 text-xs text-gray-400">
+                                To add someone who isn't in Employee Master (a company or personal address), type their email address and press Enter.
+                            </p>
 
                             <div class="mt-3">
                                 <button type="button" @click="groupsExpanded = !groupsExpanded"
@@ -319,6 +388,9 @@
                             </template>
                             <template x-for="id in recipientGroupIds" :key="'grp-input-' + id">
                                 <input type="hidden" name="recipient_group_ids[]" :value="id" />
+                            </template>
+                            <template x-for="email in recipientEmails" :key="'mail-input-' + email">
+                                <input type="hidden" name="recipient_emails[]" :value="email" />
                             </template>
                         </div>
 
@@ -727,7 +799,7 @@
                             <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
                                 Email Subject <span class="text-error-500">*</span>
                             </label>
-                            <input type="text" name="subject" id="templateSubject" required
+                            <input type="text" name="subject" id="templateSubject" required data-variable-drop
                                 value="{{ old('subject', $template->subject ?? '') }}"
                                 placeholder="e.g. Your Exit Interview is Scheduled"
                                 class="h-11 w-full rounded-xl border border-gray-300 bg-transparent px-4 py-2.5 text-sm text-gray-800 shadow-sm placeholder:text-gray-400 focus:border-[#145a3a]/50 focus:outline-hidden focus:ring-3 focus:ring-[#145a3a]/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30" />
@@ -746,14 +818,6 @@
                                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-400">
                                     Email Body
                                 </label>
-                                <button type="button" @click="undoDraggedNames()"
-                                    class="flex items-center gap-1 rounded-md border border-gray-200 px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
-                                    <svg width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                        <path d="M7.5 4.16667L3.33333 8.33333L7.5 12.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-                                        <path d="M3.33333 8.33333H12.5C14.8012 8.33333 16.6667 10.1989 16.6667 12.5C16.6667 14.8012 14.8012 16.6667 12.5 16.6667H8.33333" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-                                    </svg>
-                                    Undo
-                                </button>
                             </div>
                             @php
                                 $defaultBody = old('html_content', $template->html_content ?? '');
@@ -766,111 +830,13 @@
                                         . '<p>HR</p>';
                                     }
                             @endphp
-                            <!-- Wrapper (not the textarea itself) carries the drop handler: Summernote
-                                 hides the raw textarea and injects its own editable area next to it, so a
-                                 handler bound to the textarea would never see the drop. -->
-                            <div @dragover.prevent @drop.prevent="handleEmployeeDrop($event)">
+                            <div>
                                 <textarea name="html_content" id="templateBody" class="summernote" data-height="350">{{ $defaultBody }}</textarea>
                             </div>
                             <p class="mt-1.5 text-xs text-gray-400">
-                                Tip: drag an employee's name from the list on the right (or click Insert) to replace the nearest "approver", "offboardee", or "employee" placeholder. Click Undo to remove all dragged names and restore the placeholders.
+                                Use the variables listed in Available Variables (e.g. <code>{{ '{' . '{employee_name}' . '}' }}</code>) in the subject or body — they're replaced with the real values when the email is sent.
                             </p>
 
-                            <div x-data="{ variablesExpanded: false }" class="mt-2">
-                                <button type="button" @click="variablesExpanded = !variablesExpanded"
-                                    class="flex items-center gap-1.5 text-xs font-medium text-gray-600 dark:text-gray-400">
-                                    <svg width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"
-                                        class="shrink-0 transition-transform duration-200" :class="variablesExpanded ? 'rotate-180' : ''">
-                                        <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-                                    </svg>
-                                    <span>Available Variables</span>
-                                </button>
-
-                                <div x-show="variablesExpanded" x-cloak
-                                    x-transition:enter="transition ease-out duration-200"
-                                    x-transition:enter-start="opacity-0 -translate-y-1"
-                                    x-transition:enter-end="opacity-100 translate-y-0"
-                                    x-transition:leave="transition ease-in duration-150"
-                                    x-transition:leave-start="opacity-100 translate-y-0"
-                                    x-transition:leave-end="opacity-0 -translate-y-1"
-                                    class="mt-2 space-y-4 rounded-xl border border-gray-200 p-3 dark:border-gray-800">
-
-                                    @php
-                                        $brace = fn (string $name) => '{' . '{' . $name . '}' . '}';
-                                        $variableGroups = [
-                                            [
-                                                'label' => 'General — available in every template',
-                                                'items' => [
-                                                    [$brace('approver_name'), "The name of whoever is receiving this email (the Clearance Signatory, Department Head, or other approver)."],
-                                                    [$brace('employee_name'), "The name of the offboardee this email is about."],
-                                                    [$brace('employee_number'), "The offboardee's employee ID/code."],
-                                                    [$brace('checklist_name'), "The title of the checklist this email concerns."],
-                                                    [$brace('due_date'), "The checklist's current due date."],
-                                                    [$brace('offboarding_link'), "A dark green \"CIM Offboarding\" button linking to the sign-in page."],
-                                                ],
-                                            ],
-                                            [
-                                                'label' => 'Overdue-checklist template only',
-                                                'items' => [
-                                                    [$brace('department'), "The offboardee's department."],
-                                                    [$brace('position'), "The offboardee's job position/designation."],
-                                                    [$brace('days_overdue'), "How many days past the due date the checklist currently is."],
-                                                    [$brace('checklist_status'), "The checklist's current status (e.g. Pending, Viewed)."],
-                                                    [$brace('pending_items'), "An auto-generated table listing each checklist item's status and due date."],
-                                                ],
-                                            ],
-                                            [
-                                                'label' => '"Notify Approver" follow-up on a checklist (e.g. once it\'s ready for approval)',
-                                                'items' => [
-                                                    [$brace('checklist_summary'), "An auto-generated table of each checklist item's Checked By, Date, and Remarks."],
-                                                    [$brace('approve_button'), "A one-click Approve button — only works when the recipient is that checklist's Clearance Signatory."],
-                                                ],
-                                            ],
-                                            [
-                                                'label' => '"Checklist Due Date Extended" notification (sent automatically once an Extend Due request is saved)',
-                                                'items' => [
-                                                    [$brace('clearance_signatory_name'), "The name of the Clearance Signatory whose checklist's due date was extended."],
-                                                    [$brace('original_due_date'), "The due date before the extension."],
-                                                    [$brace('extension_days'), "How many days the due date was extended by."],
-                                                    [$brace('extended_due_date'), "The new due date after the extension."],
-                                                ],
-                                            ],
-                                            [
-                                                'label' => 'Clearance Signatory escalation emails (sent automatically when a signatory misses their completion period, or HR/Admin assigns a new one)',
-                                                'items' => [
-                                                    [$brace('primary_signatory_name'), "The checklist's original primary Clearance Signatory."],
-                                                    [$brace('secondary_signatory_name'), "The configured secondary Clearance Signatory."],
-                                                    [$brace('previous_signatory_name'), "Who held the checklist before this transfer."],
-                                                    [$brace('new_signatory_name'), "Who holds the checklist after this transfer."],
-                                                    [$brace('original_assigned_at'), "When the checklist was first assigned to the primary signatory."],
-                                                    [$brace('original_deadline'), "The primary signatory's completion deadline."],
-                                                    [$brace('secondary_assigned_at'), "When the secondary signatory took over."],
-                                                    [$brace('secondary_deadline'), "The secondary signatory's completion deadline."],
-                                                    [$brace('new_assigned_at'), "When the recipient was assigned."],
-                                                    [$brace('signatory_deadline'), "The recipient's completion deadline."],
-                                                    [$brace('escalated_at'), "When the checklist was escalated."],
-                                                    [$brace('escalation_reason'), "Why the checklist was escalated or reassigned."],
-                                                    [$brace('reassigned_by'), "The HR/Admin user who assigned the new signatory."],
-                                                ],
-                                            ],
-                                        ];
-                                    @endphp
-
-                                    @foreach ($variableGroups as $group)
-                                        <div>
-                                            <p class="mb-1.5 text-xs font-semibold text-gray-500 dark:text-gray-400">{{ $group['label'] }}</p>
-                                            <div class="space-y-1">
-                                                @foreach ($group['items'] as [$variable, $description])
-                                                    <div class="flex flex-col gap-0.5 rounded-lg px-2 py-1.5 sm:flex-row sm:items-baseline sm:gap-3 hover:bg-gray-50 dark:hover:bg-white/5">
-                                                        <code class="shrink-0 rounded-md bg-[#145a3a]/10 px-1.5 py-0.5 text-xs font-medium text-[#145a3a] dark:bg-[#3aa876]/15 dark:text-[#3aa876]">{{ $variable }}</code>
-                                                        <span class="text-xs text-gray-500 dark:text-gray-400">{{ $description }}</span>
-                                                    </div>
-                                                @endforeach
-                                            </div>
-                                        </div>
-                                    @endforeach
-                                </div>
-                            </div>
                         </div>
                     </div>
 
@@ -893,30 +859,197 @@
                 </form>
             </div>
 
-            <!-- RIGHT (25%) -->
-            <div class="h-fit rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-white/[0.03]">
-                <h4 class="mb-3 text-sm font-semibold text-gray-800 dark:text-white/90">Employees</h4>
-                <p class="mb-3 text-xs text-gray-400">Drag a name onto the email body, or click Insert.</p>
+            {{-- Drag-and-drop of Available Variables into the form. Text inputs
+                 marked data-variable-drop use the browser's own drop (inserted at
+                 the drop caret, fires input). The Summernote body is handled here
+                 so the token lands at the drop point AND Summernote syncs its
+                 textarea (insertText fires its change event). Recipients
+                 (data-variable-no-drop) refuse variable drops. Plain CSS so it
+                 doesn't depend on the compiled Tailwind build. --}}
+            <style>
+                .email-variable-dragging [data-variable-drop],
+                .email-variable-dragging .note-editor { outline: 2px dashed #145a3a; outline-offset: 2px; }
+                .email-variable-dragging [data-variable-drop].variable-drop-over,
+                .email-variable-dragging .note-editor.variable-drop-over { outline-style: solid; background-color: rgba(20, 90, 58, 0.06); }
+                .email-variable-dragging [data-variable-no-drop] { outline: 2px dashed #f04438; outline-offset: 2px; }
+                [data-email-variable] { cursor: grab; }
+                [data-email-variable]:active { cursor: grabbing; }
+            </style>
+            <script>
+                (function () {
+                    if (window.__emailVariableDnd) return;
+                    window.__emailVariableDnd = true;
 
-                <div class="max-h-[75vh] space-y-1 overflow-y-auto custom-scrollbar">
-                    @forelse ($employees as $employee)
-                        <div draggable="true"
-                            @dragstart="$event.dataTransfer.setData('text/plain', @js($employee->name))"
-                            class="flex cursor-grab items-center justify-between gap-2 rounded-lg px-3 py-2 hover:bg-gray-50 active:cursor-grabbing dark:hover:bg-white/5">
-                            <div class="min-w-0">
-                                <p class="truncate text-sm font-medium text-gray-700 dark:text-gray-300">{{ $employee->name }}</p>
-                                @if ($employee->department)
-                                    <p class="truncate text-xs text-gray-400">{{ $employee->department }}</p>
-                                @endif
+                    const TYPE = 'application/x-email-variable';
+                    const isVariableDrag = (event) => !!event.dataTransfer && Array.from(event.dataTransfer.types || []).includes(TYPE);
+                    const dropTarget = (el) => el && el.closest ? el.closest('[data-variable-drop], .note-editor') : null;
+
+                    const caretRangeAt = (x, y) => {
+                        if (document.caretRangeFromPoint) return document.caretRangeFromPoint(x, y);
+                        if (document.caretPositionFromPoint) {
+                            const pos = document.caretPositionFromPoint(x, y);
+                            if (!pos) return null;
+                            const range = document.createRange();
+                            range.setStart(pos.offsetNode, pos.offset);
+                            range.collapse(true);
+                            return range;
+                        }
+                        return null;
+                    };
+
+                    document.addEventListener('dragover', (event) => {
+                        if (!isVariableDrag(event)) return;
+                        document.querySelectorAll('.variable-drop-over').forEach((el) => el.classList.remove('variable-drop-over'));
+                        if (event.target.closest && event.target.closest('[data-variable-no-drop]')) {
+                            event.preventDefault();
+                            event.dataTransfer.dropEffect = 'none';
+                            return;
+                        }
+                        const target = dropTarget(event.target);
+                        if (target) {
+                            target.classList.add('variable-drop-over');
+                            event.dataTransfer.dropEffect = 'copy';
+                        }
+                    }, true);
+
+                    document.addEventListener('drop', (event) => {
+                        if (!isVariableDrag(event)) return;
+                        document.body.classList.remove('email-variable-dragging');
+                        document.querySelectorAll('.variable-drop-over').forEach((el) => el.classList.remove('variable-drop-over'));
+
+                        if (event.target.closest && event.target.closest('[data-variable-no-drop]')) {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            window.dispatchEvent(new CustomEvent('variable-drop-refused'));
+                            return;
+                        }
+
+                        const editable = event.target.closest ? event.target.closest('.note-editable') : null;
+                        if (!editable || !window.jQuery) return; // text inputs: browser inserts at the drop caret
+
+                        event.preventDefault();
+                        event.stopPropagation();
+                        const variable = event.dataTransfer.getData(TYPE);
+                        const $note = window.jQuery('#templateBody');
+                        const range = caretRangeAt(event.clientX, event.clientY);
+
+                        editable.focus();
+                        if (range && editable.contains(range.startContainer)) {
+                            const selection = window.getSelection();
+                            selection.removeAllRanges();
+                            selection.addRange(range);
+                        }
+                        $note.summernote('insertText', variable);
+                        $note.val($note.summernote('code'));
+                    }, true);
+                })();
+            </script>
+
+            <!-- RIGHT (25%): Available Variables -->
+            <div class="h-fit rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-white/[0.03]"
+                x-data="{
+                    copied: null,
+                    copyVariable(variable) {
+                        const done = () => { this.copied = variable; setTimeout(() => { if (this.copied === variable) this.copied = null; }, 1500); };
+                        if (navigator.clipboard && window.isSecureContext) {
+                            navigator.clipboard.writeText(variable).then(done).catch(() => this.fallbackCopy(variable, done));
+                        } else {
+                            this.fallbackCopy(variable, done);
+                        }
+                    },
+                    fallbackCopy(variable, done) {
+                        const input = document.createElement('textarea');
+                        input.value = variable;
+                        document.body.appendChild(input);
+                        input.select();
+                        try { document.execCommand('copy'); done(); } finally { input.remove(); }
+                    },
+                }">
+                <h4 class="mb-1 text-sm font-semibold text-gray-800 dark:text-white/90">Available Variables</h4>
+                <p class="mb-3 text-xs text-gray-400">Drag a variable into Template Name, Email Subject or Email Body (it's inserted where you drop it), or click to copy it. Each is replaced with the real value when the email is sent.</p>
+
+                <div class="max-h-[75vh] space-y-4 overflow-y-auto pr-1 custom-scrollbar">
+                    @php
+                        $brace = fn (string $name) => '{' . '{' . $name . '}' . '}';
+                        $variableGroups = [
+                            [
+                                'label' => 'General — available in every template',
+                                'items' => [
+                                    [$brace('approver_name'), "The name of whoever is receiving this email (the Clearance Signatory, Department Head, or other approver)."],
+                                    [$brace('employee_name'), "The name of the offboardee this email is about."],
+                                    [$brace('employee_number'), "The offboardee's employee ID/code."],
+                                    [$brace('checklist_name'), "The title of the checklist this email concerns."],
+                                    [$brace('due_date'), "The checklist's current due date."],
+                                    [$brace('offboarding_link'), "A dark green \"CIM Offboarding\" button linking to the sign-in page."],
+                                ],
+                            ],
+                            [
+                                'label' => 'Overdue-checklist template only',
+                                'items' => [
+                                    [$brace('department'), "The offboardee's department."],
+                                    [$brace('position'), "The offboardee's job position/designation."],
+                                    [$brace('days_overdue'), "How many days past the due date the checklist currently is."],
+                                    [$brace('checklist_status'), "The checklist's current status (e.g. Pending, Viewed)."],
+                                    [$brace('pending_items'), "An auto-generated table listing each checklist item's status and due date."],
+                                ],
+                            ],
+                            [
+                                'label' => '"Notify Approver" follow-up on a checklist (e.g. once it\'s ready for approval)',
+                                'items' => [
+                                    [$brace('checklist_summary'), "An auto-generated table of each checklist item's Checked By, Date, and Remarks."],
+                                    [$brace('approve_button'), "A one-click Approve button — only works when the recipient is that checklist's Clearance Signatory."],
+                                ],
+                            ],
+                            [
+                                'label' => '"Checklist Due Date Extended" notification (sent automatically once an Extend Due request is saved)',
+                                'items' => [
+                                    [$brace('clearance_signatory_name'), "The name of the Clearance Signatory whose checklist's due date was extended."],
+                                    [$brace('original_due_date'), "The due date before the extension."],
+                                    [$brace('extension_days'), "How many days the due date was extended by."],
+                                    [$brace('extended_due_date'), "The new due date after the extension."],
+                                ],
+                            ],
+                            [
+                                'label' => 'Clearance Signatory escalation emails (sent automatically when a signatory misses their completion period, or HR/Admin assigns a new one)',
+                                'items' => [
+                                    [$brace('primary_signatory_name'), "The checklist's original primary Clearance Signatory."],
+                                    [$brace('secondary_signatory_name'), "The configured secondary Clearance Signatory."],
+                                    [$brace('previous_signatory_name'), "Who held the checklist before this transfer."],
+                                    [$brace('new_signatory_name'), "Who holds the checklist after this transfer."],
+                                    [$brace('original_assigned_at'), "When the checklist was first assigned to the primary signatory."],
+                                    [$brace('original_deadline'), "The primary signatory's completion deadline."],
+                                    [$brace('secondary_assigned_at'), "When the secondary signatory took over."],
+                                    [$brace('secondary_deadline'), "The secondary signatory's completion deadline."],
+                                    [$brace('new_assigned_at'), "When the recipient was assigned."],
+                                    [$brace('signatory_deadline'), "The recipient's completion deadline."],
+                                    [$brace('escalated_at'), "When the checklist was escalated."],
+                                    [$brace('escalation_reason'), "Why the checklist was escalated or reassigned."],
+                                    [$brace('reassigned_by'), "The HR/Admin user who assigned the new signatory."],
+                                ],
+                            ],
+                        ];
+                    @endphp
+
+                    @foreach ($variableGroups as $group)
+                        <div>
+                            <p class="mb-1.5 text-xs font-semibold text-gray-500 dark:text-gray-400">{{ $group['label'] }}</p>
+                            <div class="space-y-1">
+                                @foreach ($group['items'] as [$variable, $description])
+                                    <div class="flex flex-col items-start gap-1 rounded-lg px-2 py-1.5 hover:bg-gray-50 dark:hover:bg-white/5">
+                                        <span role="button" tabindex="0" draggable="true" data-email-variable
+                                            @click="copyVariable(@js($variable))" @keydown.enter.prevent="copyVariable(@js($variable))"
+                                            @dragstart="$event.dataTransfer.setData('text/plain', @js($variable)); $event.dataTransfer.setData('application/x-email-variable', @js($variable)); $event.dataTransfer.effectAllowed = 'copy'; document.body.classList.add('email-variable-dragging')"
+                                            @dragend="document.body.classList.remove('email-variable-dragging'); document.querySelectorAll('.variable-drop-over').forEach((el) => el.classList.remove('variable-drop-over'))"
+                                            :title="copied === @js($variable) ? 'Copied!' : 'Drag into a field, or click to copy'"
+                                            class="shrink-0 rounded-md bg-[#145a3a]/10 px-1.5 py-0.5 text-left text-xs font-medium text-[#145a3a] hover:bg-[#145a3a]/20 dark:bg-[#3aa876]/15 dark:text-[#3aa876]">
+                                            <code x-text="copied === @js($variable) ? 'Copied!' : @js($variable)">{{ $variable }}</code>
+                                        </span>
+                                        <span class="text-xs text-gray-500 dark:text-gray-400">{{ $description }}</span>
+                                    </div>
+                                @endforeach
                             </div>
-                            <button type="button" @click="insertEmployeeName(@js($employee->name))"
-                                class="shrink-0 rounded-md bg-[#145a3a]/10 px-2 py-1 text-[11px] font-medium text-[#145a3a] hover:bg-[#145a3a]/20 dark:text-[#3aa876]">
-                                Insert
-                            </button>
                         </div>
-                    @empty
-                        <p class="px-1 py-6 text-center text-sm text-gray-400">No employees found.</p>
-                    @endforelse
+                    @endforeach
                 </div>
             </div>
         </div>

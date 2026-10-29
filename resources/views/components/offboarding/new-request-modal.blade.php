@@ -245,7 +245,7 @@
                                      they're selectable again with no page reload. Guarded
                                      against a duplicate push if this same employee were somehow
                                      already present. --}}
-                                @employee-available-for-offboarding.window="if (!employees.some((e) => e.id === $event.detail.id)) { employees.push($event.detail); }"
+                                @employee-available-for-offboarding.window="if (!employees.some((e) => e.id === $event.detail.id)) { employees.push($event.detail); } immediateHeadByEmployeeId[$event.detail.id] = $event.detail.headEmployeeId ?? null;"
                                 class="relative">
                                 <input type="hidden" name="employee_id" :value="selectedEmployeeId" />
                                 <input type="text" id="offboardeeNameInput" x-model="query" autocomplete="off"
@@ -268,7 +268,7 @@
                                 <div x-show="activeDropdown === 'employee'"
                                     class="shadow-theme-lg absolute z-50 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
                                     <template x-for="employee in filteredEmployees()" :key="employee.id">
-                                        <div @click="selectEmployee(employee); setImmediateHeadFromEmployee(employee.id); checkSignatoryConflicts(employee.id); activeDropdown = null"
+                                        <div @click="selectEmployee(employee); setImmediateHeadFromEmployee(employee.id); checkSignatoryConflicts(employee.id); window.offboardingTaskAssigneeGate?.check(employee.id); activeDropdown = null"
                                             class="cursor-pointer border-b border-gray-100 px-4 py-2.5 text-sm last:border-b-0 hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-white/[0.03]">
                                             <span class="block font-medium text-gray-800 dark:text-white/90"
                                                 x-text="`${employee.name} (${employee.code})`"></span>
@@ -1053,7 +1053,7 @@
                             class="flex w-full justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03] sm:w-auto">
                             Close
                         </button>
-                        <button type="button" @click="reviewRequest($el.closest('form'), @js(route('offboarding-requests.preview')))" :disabled="reviewLoading"
+                        <button type="button" @click="if (await window.offboardingTaskAssigneeGate.check($el.closest('form').querySelector('input[name=employee_id]')?.value)) reviewRequest($el.closest('form'), @js(route('offboarding-requests.preview')))" :disabled="reviewLoading"
                             class="flex w-full items-center justify-center gap-2 rounded-lg bg-[#145a3a] px-4 py-2.5 text-sm font-medium text-white hover:bg-[#0f4630] disabled:cursor-not-allowed disabled:opacity-70 sm:w-auto">
                             <span x-show="reviewLoading" class="h-4 w-4 animate-spin rounded-full border-2 border-solid border-white border-t-transparent"></span>
                             <span x-text="reviewLoading ? 'Building Review...' : 'Review Request'"></span>
@@ -1086,3 +1086,7 @@
      that includes this component) so it's automatically available
      everywhere <x-offboarding.new-request-modal> already is. --}}
 <x-offboarding.signatory-conflict-modal />
+{{-- Blocks the request (warning notification only) while the chosen
+     offboardee still has outstanding Task Assignee work on other active
+     requests — see its own header. --}}
+<x-offboarding.task-assignee-conflict-gate />

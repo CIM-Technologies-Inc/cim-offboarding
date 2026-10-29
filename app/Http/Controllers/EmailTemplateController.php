@@ -232,6 +232,7 @@ class EmailTemplateController extends Controller
         $recipientGroupIds = $validated['recipient_group_ids'] ?? [];
         $schedules = $validated['schedules'] ?? [];
         unset($validated['recipient_employee_ids'], $validated['recipient_group_ids'], $validated['schedules']);
+        $validated['recipient_emails'] = $this->normalizedRecipientEmails($validated['recipient_emails'] ?? []);
 
         DB::transaction(function () use ($request, $validated, $recipientEmployeeIds, $recipientGroupIds, $schedules) {
             if ($validated['is_default_announcement']) {
@@ -255,6 +256,27 @@ class EmailTemplateController extends Controller
             ->with('success', 'Template saved successfully.');
     }
 
+    /**
+     * Manually entered recipient addresses as stored: trimmed, lowercased
+     * and de-duplicated (validation already rejected invalid ones and
+     * case-insensitive duplicates within the submission). Null when none,
+     * so templates without any keep a clean empty column.
+     *
+     * @param  array<int, string>  $emails
+     * @return array<int, string>|null
+     */
+    private function normalizedRecipientEmails(array $emails): ?array
+    {
+        $normalized = collect($emails)
+            ->map(fn ($email) => strtolower(trim((string) $email)))
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+
+        return $normalized ?: null;
+    }
+
     public function update(UpdateEmailTemplateRequest $request, EmailTemplate $emailTemplate): RedirectResponse
     {
         $validated = $request->validated();
@@ -262,6 +284,7 @@ class EmailTemplateController extends Controller
         $recipientGroupIds = $validated['recipient_group_ids'] ?? [];
         $schedules = $validated['schedules'] ?? [];
         unset($validated['recipient_employee_ids'], $validated['recipient_group_ids'], $validated['schedules']);
+        $validated['recipient_emails'] = $this->normalizedRecipientEmails($validated['recipient_emails'] ?? []);
 
         // A system template's `template_name` (and, for the one template
         // whose trigger IS the `is_default_reactivation` flag rather than

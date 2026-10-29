@@ -141,6 +141,14 @@ class OffboardingRequestController extends Controller
             ])->withInput();
         }
 
+        // Outstanding Task Assignee work on OTHER active requests must be
+        // reassigned first — re-checked here at submission time (it may have
+        // changed since the form's own check when the employee was picked).
+        // See `OffboardingRequestApprover::outstandingTaskAssignmentsForEmployee()`.
+        if (OffboardingRequestApprover::outstandingTaskAssignmentsForEmployee($employee->id)->isNotEmpty()) {
+            return back()->withErrors(['employee_id' => self::TASK_ASSIGNEE_CONFLICT_MESSAGE])->withInput();
+        }
+
         $temporarySignatoryOverrides = $this->resolveTemporarySignatoryOverrides($validated['temporary_signatory_overrides'] ?? [], $employee);
 
         if (is_string($temporarySignatoryOverrides)) {
@@ -288,21 +296,27 @@ class OffboardingRequestController extends Controller
     }
 
     /**
-     * Fallback: if the admin didn't manually pick an Immediate Head, use
-     * the offboardee's Employee Master Group Head instead — the same
-     * "group's registered head" concept `Employee::departmentHead()`
-     * already uses for checklist template department heads, applied here
-     * to the per-request Immediate Head field. A manually-picked Immediate
-     * Head is never overridden (this only runs when the field came in
-     * empty), and an employee with no group (or a group with no registered
-     * head) simply gets no fallback, same as today. Shared between
+     * Fallback when the admin left the Immediate Head field empty: the
+     * offboardee's CURRENT Employee Master Immediate Head
+     * (`head_employee_id` — the same field the New Offboarding Request
+     * modal auto-fills from), read fresh from the employee record at this
+     * moment, never from any earlier (e.g. retracted) request; then, if
+     * that's unset or unusable (no longer active, or the employee
+     * themselves), their Employee Master Group Head as before. A
+     * manually-picked Immediate Head is never overridden. Shared between
      * `store()` and `preview()` so the Review screen shows the exact same
-     * Immediate Head the real request would actually be created with.
+     * Immediate Head the real request is created with.
      */
     private function resolveImmediateHeadId(Employee $employee, ?int $submittedImmediateHeadId): ?int
     {
         if (! empty($submittedImmediateHeadId)) {
             return $submittedImmediateHeadId;
+        }
+
+        $immediateHead = $employee->head_employee_id ? Employee::find($employee->head_employee_id) : null;
+
+        if ($immediateHead && $immediateHead->id !== $employee->id && $immediateHead->status === 'active') {
+            return $immediateHead->id;
         }
 
         $groupHead = $employee->employeeGroup?->groupHead;
@@ -334,6 +348,15 @@ class OffboardingRequestController extends Controller
         $validated = $request->validate($this->storeValidationRules());
 
         $employee = Employee::findOrFail($validated['employee_id']);
+
+        // Same Task Assignee block as `store()` — the warning only, never the
+        // affected tasks.
+        if (OffboardingRequestApprover::outstandingTaskAssignmentsForEmployee($employee->id)->isNotEmpty()) {
+            return response()->json([
+                'message' => self::TASK_ASSIGNEE_CONFLICT_MESSAGE,
+                'errors' => ['employee_id' => [self::TASK_ASSIGNEE_CONFLICT_MESSAGE]],
+            ], 422);
+        }
 
         $temporarySignatoryOverrides = $this->resolveTemporarySignatoryOverrides($validated['temporary_signatory_overrides'] ?? [], $employee);
 
@@ -372,6 +395,26 @@ class OffboardingRequestController extends Controller
 
         return response()->json([
             'notifications' => app(OffboardingRequestScheduledNotificationsService::class)->forRequest($offboardingRequest),
+        ]);
+    }
+
+    public const TASK_ASSIGNEE_CONFLICT_MESSAGE = 'The selected employee is currently assigned as a task assignee in one or more active offboarding checklists. Before creating a new offboarding request, you must assign these tasks to another eligible employee.';
+
+    /**
+     * Checked live (fetch) by the New Offboarding Request form when an
+     * offboardee is picked and again on every Review Request click: whether
+     * this employee is still the Task Assignee of any outstanding checklist
+     * task on another active request. Only a yes/no plus the warning — the
+     * affected tasks are deliberately not returned. `preview()` and
+     * `store()` re-check server-side regardless of what the form shows.
+     */
+    public function taskAssigneeConflicts(Employee $employee): JsonResponse
+    {
+        $blocked = OffboardingRequestApprover::outstandingTaskAssignmentsForEmployee($employee->id)->isNotEmpty();
+
+        return response()->json([
+            'blocked' => $blocked,
+            'message' => $blocked ? self::TASK_ASSIGNEE_CONFLICT_MESSAGE : null,
         ]);
     }
 
@@ -1028,6 +1071,11 @@ class OffboardingRequestController extends Controller
             return response()->json([
                 'success' => true,
                 'message' => 'Offboarding request has been retracted.',
+                // The employee is selectable again for a new request; this is
+                // their CURRENT Employee Master Immediate Head (read fresh, not
+                // from the retracted request) so the New Offboarding Request
+                // modal can auto-fill it without a page reload.
+                'headEmployeeId' => $employee->fresh()?->head_employee_id,
                 'cancelledByName' => $admin->name,
                 'cancellationReason' => $offboardingRequest->cancellation_reason,
                 'cancelledAt' => $offboardingRequest->cancelled_at?->format('M d, Y g:i A'),

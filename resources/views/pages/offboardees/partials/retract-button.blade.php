@@ -128,6 +128,8 @@
                             code: @js($offboardee['employeeCode']),
                             department: @js($offboardee['department']),
                             position: @js($offboardee['designation']),
+                            // Current Employee Master Immediate Head, from the server.
+                            headEmployeeId: data.headEmployeeId ?? null,
                         });
                         Swal.fire({
                             icon: 'success',

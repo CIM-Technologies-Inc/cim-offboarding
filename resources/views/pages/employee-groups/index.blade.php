@@ -323,16 +323,10 @@
                                         <span x-text="directorySortIndicator('department')" class="text-[9px]"></span>
                                     </span>
                                 </th>
-                                <th class="cursor-pointer px-4 py-3 text-left select-none" @click="toggleDirectorySort('group')">
+                                <th class="cursor-pointer px-4 py-3 text-left select-none" @click="toggleDirectorySort('immediate_head')">
                                     <span class="inline-flex items-center gap-1 font-medium text-gray-500 text-theme-xs dark:text-gray-400">
-                                        Group
-                                        <span x-text="directorySortIndicator('group')" class="text-[9px]"></span>
-                                    </span>
-                                </th>
-                                <th class="cursor-pointer px-4 py-3 text-left select-none" @click="toggleDirectorySort('group_head')">
-                                    <span class="inline-flex items-center gap-1 font-medium text-gray-500 text-theme-xs dark:text-gray-400">
-                                        Group Head
-                                        <span x-text="directorySortIndicator('group_head')" class="text-[9px]"></span>
+                                        Immediate Head
+                                        <span x-text="directorySortIndicator('immediate_head')" class="text-[9px]"></span>
                                     </span>
                                 </th>
                                 <th class="cursor-pointer px-4 py-3 text-left select-none" @click="toggleDirectorySort('status')">
@@ -357,8 +351,8 @@
                                     </td>
                                     <td class="px-4 py-3 text-sm text-gray-500 dark:text-gray-400" x-text="employee.designation || '—'"></td>
                                     <td class="px-4 py-3 text-sm text-gray-500 dark:text-gray-400" x-text="employee.department || '—'"></td>
-                                    <td class="px-4 py-3 text-sm text-gray-500 dark:text-gray-400" x-text="employee.employee_group ? employee.employee_group.name : 'Unassigned'"></td>
-                                    <td class="px-4 py-3 text-sm text-gray-500 dark:text-gray-400" x-text="employee.employee_group && employee.employee_group.group_head ? employee.employee_group.group_head.name : '—'"></td>
+                                    {{-- Immediate Head = `employees.sup_one` (Employee Master import's supOne). --}}
+                                    <td class="px-4 py-3 text-sm text-gray-500 dark:text-gray-400" x-text="employee.sup_one || '—'"></td>
                                     <td class="px-4 py-3">
                                         <span class="rounded-full px-2.5 py-1 text-xs font-medium" :class="statusBadgeClass(employee.status)" x-text="statusLabel(employee.status)"></span>
                                     </td>
@@ -377,7 +371,7 @@
                                 </tr>
                             </template>
                             <tr x-show="paginatedDirectoryEmployees().length === 0">
-                                <td colspan="8" class="px-4 py-8 text-center text-sm text-gray-400">No employees match your search/filters.</td>
+                                <td colspan="7" class="px-4 py-8 text-center text-sm text-gray-400">No employees match your search/filters.</td>
                             </tr>
                         </tbody>
                     </table>
@@ -1392,8 +1386,7 @@
                         case 'name': return employee.name || '';
                         case 'designation': return employee.designation || '';
                         case 'department': return employee.department || '';
-                        case 'group': return employee.employee_group ? employee.employee_group.name : '';
-                        case 'group_head': return (employee.employee_group && employee.employee_group.group_head) ? employee.employee_group.group_head.name : '';
+                        case 'immediate_head': return employee.sup_one || '';
                         case 'status': return employee.status || '';
                         default: return '';
                     }
@@ -1421,6 +1414,7 @@
                             || e.employee_code.toLowerCase().includes(needle)
                             || (e.department || '').toLowerCase().includes(needle)
                             || (e.designation || '').toLowerCase().includes(needle)
+                            || (e.sup_one || '').toLowerCase().includes(needle)
                         );
                     }
 

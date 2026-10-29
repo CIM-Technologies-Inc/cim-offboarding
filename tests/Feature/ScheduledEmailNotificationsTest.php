@@ -1321,3 +1321,22 @@ it('also fills the other checklist/request placeholders and the in-app notificat
     // In-app notification: same subject, placeholders filled for that user.
     expect($user->fresh()->notifications()->first()?->data['message'])->toBe('Reminder: IT Clearance Checklist for Olivia Offboardee');
 });
+
+it('CCs a template\'s manually entered recipient addresses on scheduled sends, alongside its employee recipients', function () {
+    $request = schedRequest();
+    schedApprover($request, schedChecklist('IT Clearance Checklist'), schedEmployee(['email' => 'it@example.test']));
+    $ccEmployee = schedEmployee(['email' => 'cc.employee@example.test']);
+
+    $template = schedTemplate(['recipient_emails' => ['payroll@company.test', 'personal.address@gmail.test']]);
+    $template->recipientEmployees()->sync([$ccEmployee->id]);
+    schedSchedule(['days' => 7], $template);
+
+    $this->travelTo(Carbon::parse('2026-10-24 08:00:00'));
+    runScheduler();
+
+    $message = collect(RecordingTransport::$messages)->first(fn ($m) => in_array('it@example.test', $m['to'], true));
+    expect($message)->not->toBeNull()
+        ->and($message['cc'])->toEqualCanonicalizing(['cc.employee@example.test', 'payroll@company.test', 'personal.address@gmail.test'])
+        // Every CC address really reached the transport's envelope.
+        ->and($message['envelope'])->toContain('payroll@company.test')->toContain('personal.address@gmail.test');
+});

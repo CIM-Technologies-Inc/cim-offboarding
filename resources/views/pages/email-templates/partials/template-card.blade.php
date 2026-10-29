@@ -40,9 +40,21 @@
         </span>
     </div>
 
-    <p class="mt-1.5 text-sm leading-snug text-gray-600 dark:text-gray-300">
-        {{ $metadata['purpose'] }}
-    </p>
+    @if ($isSystem)
+        <p class="mt-1.5 text-sm leading-snug text-gray-600 dark:text-gray-300">
+            {{ $metadata['purpose'] }}
+        </p>
+    @else
+        {{-- Customizable templates have no fixed purpose text — show the start
+             of their actual email body instead (plain text, placeholders kept
+             as-is, escaped). Recomputed on every page load, so it reflects
+             the body as soon as it's saved. --}}
+        @php($preview = $item->bodyPreview())
+        <p style="overflow-wrap: anywhere" class="mt-1.5 text-xs leading-snug {{ $preview ? 'text-gray-600 dark:text-gray-300' : 'italic text-gray-400' }}"
+            @if ($preview) title="{{ $item->bodyPreview(600) }}" @endif>
+            {{ $preview ?? 'No email body available.' }}
+        </p>
+    @endif
 
     @if ($item->scheduleLabel())
         <p class="mt-1 flex items-center gap-1 text-[11px] font-medium text-blue-600 dark:text-blue-400">

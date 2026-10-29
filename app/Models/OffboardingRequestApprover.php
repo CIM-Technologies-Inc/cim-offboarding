@@ -703,6 +703,53 @@ class OffboardingRequestApprover extends Model
     }
 
     /**
+     * Every OUTSTANDING checklist task this employee is currently the Task
+     * Assignee of on someone else's still-active offboarding request — what
+     * blocks creating an offboarding request for them until HR/Admin
+     * reassigns those tasks (see `OffboardingRequestController::taskAssigneeConflicts()`
+     * and its re-check in `preview()`/`store()`).
+     *
+     * "Currently assigned" is the same resolution the rest of the app uses
+     * (`effectiveSignatoryFor()`: the active `checklist_item_assignments`
+     * snapshot row, falling back to the template's own item signatory only
+     * for a request that predates snapshotting) — never a name match. Only
+     * requests that are still `pending`/`in_progress` count (retracted /
+     * cancelled / completed ones never block), only checklists not yet
+     * approved, only tasks that apply to that request (Task Exemption), and
+     * only tasks not already checked off — a completed task needs no
+     * reassignment.
+     *
+     * @return Collection<int, array{approver: OffboardingRequestApprover, item: ChecklistItem, status: string}>
+     */
+    public static function outstandingTaskAssignmentsForEmployee(int $employeeId): Collection
+    {
+        $approvers = static::query()
+            ->where('status', '!=', 'approved')
+            ->whereHas('offboardingRequest', fn (Builder $query) => $query
+                ->whereIn('status', ['pending', 'in_progress'])
+                ->where('employee_id', '!=', $employeeId))
+            ->where(fn (Builder $query) => $query
+                ->whereHas('itemAssignments', fn (Builder $assignments) => $assignments->where('status', 'active')->where('assigned_employee_id', $employeeId))
+                ->orWhereHas('checklistTemplate.items', fn (Builder $items) => $items->where('signatory_id', $employeeId)))
+            ->with(['offboardingRequest.employee', 'checklistTemplate.items', 'itemAssignments.assignedEmployee', 'itemProgress'])
+            ->orderBy('offboarding_request_id')
+            ->get();
+
+        return $approvers->flatMap(function (self $approver) use ($employeeId) {
+            $progress = $approver->itemProgress->keyBy('checklist_item_id');
+
+            return $approver->applicableItems()
+                ->filter(fn (ChecklistItem $item) => $approver->effectiveSignatoryFor($item)?->id === $employeeId
+                    && ! ($progress->get($item->id)?->is_checked))
+                ->map(fn (ChecklistItem $item) => [
+                    'approver' => $approver,
+                    'item' => $item,
+                    'status' => $progress->get($item->id)?->status === 'hold' ? 'On Hold' : 'Pending',
+                ]);
+        })->values();
+    }
+
+    /**
      * True once every checklist item on this assignment's template has
      * been checked, regardless of who checked it. Items with no progress
      * row yet count as unchecked. An empty checklist counts as complete.

@@ -34,6 +34,9 @@ class StoreEmailTemplateRequest extends FormRequest
             'recipient_employee_ids.*' => ['integer', 'exists:employees,id'],
             'recipient_group_ids' => ['nullable', 'array'],
             'recipient_group_ids.*' => ['integer', 'exists:employee_groups,id'],
+            // Manually entered recipient addresses (company or personal).
+            'recipient_emails' => ['nullable', 'array', 'max:50'],
+            'recipient_emails.*' => ['required', 'string', 'max:255', 'email', 'distinct:ignore_case'],
             // Email Notification Schedule Timeline — see `EmailTemplateSchedule`.
             'schedules' => ['nullable', 'array'],
             'schedules.*.id' => ['nullable', 'integer'],
@@ -78,6 +81,10 @@ class StoreEmailTemplateRequest extends FormRequest
     {
         return [
             'template_name.not_in' => 'That name is reserved for a Default System template and cannot be used here.',
+            'recipient_emails.*.email' => '":input" is not a valid email address.',
+            'recipient_emails.*.distinct' => '":input" has already been added as a recipient.',
+            'recipient_emails.*.max' => 'Recipient email addresses can be at most 255 characters.',
+            'recipient_emails.max' => 'You can add at most 50 manually entered recipient email addresses.',
         ];
     }
 }
