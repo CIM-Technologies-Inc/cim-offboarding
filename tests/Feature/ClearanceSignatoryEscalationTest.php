@@ -890,3 +890,118 @@ it('hides Assign Secondary Approver from view-only users and for Task Assignee c
         ->assertSee('Not applicable')
         ->assertDontSee('Assign Secondary Approver');
 });
+
+// ---------------------------------------------------------------------
+// Audit trail: checklist history, Logs module, Offboarding Status
+// ---------------------------------------------------------------------
+
+it('records every re-routing exactly once in the checklist history, the request activity, and the Logs module', function () {
+    $approver = escToHrAction($this);
+    $this->travelTo(Carbon::parse('2026-10-23 14:00:00'));
+    escReassign($this, $approver, $this->other, ['reason' => 'Secondary on extended leave.'])->assertOk();
+
+    $events = ['escalated_to_secondary' => 'clearance_signatory_escalated', 'hr_action_required' => 'clearance_signatory_hr_action_required', 'reassigned_by_hr' => 'clearance_signatory_reassigned_by_hr'];
+    foreach ($events as $event => $logAction) {
+        expect($approver->signatoryAssignments()->where('event', $event)->count())->toBe(1)
+            ->and(\App\Models\OffboardingActivity::where('offboarding_request_approver_id', $approver->id)->where('action', 'clearance_signatory_'.$event)->count())->toBe(1)
+            ->and(ActivityLog::where('action', $logAction)->where('subject_id', $approver->id)->count())->toBe(1);
+    }
+
+    // Automatic escalation: attributed to System, with checklist, request, from/to, date and reason.
+    $escalated = ActivityLog::where('action', 'clearance_signatory_escalated')->where('subject_id', $approver->id)->sole();
+    expect($escalated->module)->toBe('Checklist')
+        ->and($escalated->user_id)->toBeNull()
+        ->and($escalated->username)->toBe('System')
+        ->and($escalated->description)->toContain('"IT Clearance Checklist"')
+        ->toContain("Offboarding Request #{$approver->offboarding_request_id} — Olivia Offboardee")
+        ->toContain('From: Paula Primary.')
+        ->toContain('To: Sam Secondary.')
+        ->toContain('Initiated by: System (automatic escalation).')
+        ->toContain('Date: Oct 11, 2026 9:05 AM.')
+        ->toContain('Reason: The primary Clearance Signatory (Paula Primary) did not complete')
+        ->and($escalated->old_values['clearance_signatory'])->toBe('Paula Primary')
+        ->and($escalated->new_values['clearance_signatory'])->toBe('Sam Secondary')
+        ->and($escalated->new_values['initiated_by'])->toBe('System (automatic escalation)');
+
+    // HR/Admin reassignment: attributed to the HR/Admin user, with their reason.
+    $reassigned = ActivityLog::where('action', 'clearance_signatory_reassigned_by_hr')->sole();
+    expect($reassigned->user_id)->toBe($this->admin->id)
+        ->and($reassigned->description)->toContain('From: Sam Secondary.')
+        ->toContain('To: Olga Other.')
+        ->toContain('Initiated by: Hera HrAdmin.')
+        ->toContain('Date: Oct 23, 2026 2:00 PM.')
+        ->toContain('Reason: Secondary on extended leave.')
+        ->and($reassigned->new_values['history_id'])->toBe($approver->signatoryAssignments()->where('event', 'reassigned_by_hr')->value('id'));
+
+    // Request activity rows read as proper labels, not raw action names.
+    $labels = \App\Models\OffboardingActivity::where('offboarding_request_approver_id', $approver->id)->where('action', 'like', 'clearance_signatory_%')->get()->map->label()->all();
+    expect($labels[0])->toBe('Re-routed to Secondary Approver: "IT Clearance Checklist" by System (automatic escalation)')
+        ->and($labels[1])->toBe('HR/Admin Action Required: "IT Clearance Checklist": Clearance Signatory deadline missed')
+        // Followed by the HR/Admin's department, like every other actor label.
+        ->and($labels[2])->toStartWith('Clearance Signatory Reassigned: "IT Clearance Checklist" by Hera HrAdmin');
+});
+
+it('shows the complete reassignment history on the checklist in the Offboarding Status view', function () {
+    $approver = escToHrAction($this);
+    $this->travelTo(Carbon::parse('2026-10-23 14:00:00'));
+    escReassign($this, $approver, $this->other)->assertOk();
+
+    $step = collect($approver->offboardingRequest->fresh()->approverActivityTimeline())
+        ->first(fn ($step) => ($step['rich'] ?? false) && $step['department'] === 'IT Clearance Checklist');
+
+    expect(collect($step['signatoryHistory'])->map(fn ($m) => [$m['label'], $m['from'], $m['to'], $m['initiatedBy']])->all())->toBe([
+        ['Assigned to Primary', null, 'Paula Primary', 'System'],
+        ['Escalated to Secondary', 'Paula Primary', 'Sam Secondary', 'System (automatic escalation)'],
+        ['HR/Admin Action Required', 'Sam Secondary', null, 'System (automatic escalation)'],
+        ['Reassigned by HR/Admin', 'Sam Secondary', 'Olga Other', 'Hera HrAdmin'],
+    ])
+        ->and($step['signatoryHistory'][1]['occurredAt'])->toBe('Oct 11, 2026 9:05 AM')
+        ->and($step['signatoryHistory'][3]['reason'])->toBe('Secondary on leave.');
+
+    // A checklist never moved shows no history block at all.
+    $untouched = escSubmit($this, Employee::factory()->create());
+    $untouchedStep = collect($untouched->offboardingRequest->approverActivityTimeline())->first(fn ($step) => $step['rich'] ?? false);
+    expect($untouchedStep['signatoryHistory'])->toBe([]);
+});
+
+it('opens the Approvals page when HR/Admin clicks the "HR/Admin action required" notification, whatever address the app is browsed at', function () {
+    // Escalations are created by the scheduler, so the stored link is built
+    // from APP_URL — not the address HR/Admin actually uses.
+    config(['app.url' => 'http://localhost']);
+    \Illuminate\Support\Facades\URL::useOrigin('http://localhost');
+    escToHrAction($this);
+    \Illuminate\Support\Facades\URL::useOrigin(null);
+
+    $notification = $this->admin->fresh()->notifications()->where('type', 'clearance_signatory_escalation')->get()
+        ->first(fn ($n) => ($n->data['event'] ?? null) === 'hr_action_required');
+    expect($notification->data['message'])->toStartWith('HR/Admin action required')
+        ->and($notification->data['url'])->toBe('http://localhost/approvals');
+
+    // Browsing the app at http://127.0.0.1:8000: the click lands on THIS address's Approvals page.
+    $this->actingAs($this->admin)
+        ->post('http://127.0.0.1:8000/notifications/'.$notification->id.'/read')
+        ->assertRedirect('http://127.0.0.1:8000/approvals');
+
+    expect($notification->fresh()->read_at)->not->toBeNull();
+});
+
+it('writes each Approvals card payload once and has the card buttons look it up, instead of inlining it per button', function () {
+    $approver = escSubmit($this);
+    $signatory = User::firstWhere('username', $this->primary->employee_code_digits) ?? escUser($this->primary, User::ROLE_APPROVER);
+    $signatory->forceFill(['must_change_password' => false])->save();
+
+    $html = $this->actingAs($signatory)->get(route('approvals.index'))->assertOk()->getContent();
+    $cardId = $approver->offboarding_request_id.'-'.$this->primary->id;
+
+    expect($html)->toContain('id="approval-cards-data"')
+        ->toContain("approvalCard('{$cardId}')")
+        ->and($html)->not->toContain("open-checklist-modal', Object.assign({}, JSON.parse(");
+
+    preg_match('/<script type="application\/json" id="approval-cards-data">(.*?)<\/script>/s', $html, $m);
+    // The payload (e.g. its checklist item titles) lives only in the data
+    // block — never repeated inside each button, in each layout.
+    expect(substr_count(str_replace($m[0], '', $html), 'System Access Revocation'))->toBe(0);
+    $cards = json_decode($m[1], true);
+    expect($cards)->toHaveKey($cardId)
+        ->and($cards[$cardId]['name'])->toBe('Olivia Offboardee');
+});

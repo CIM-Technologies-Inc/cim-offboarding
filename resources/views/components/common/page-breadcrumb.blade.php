@@ -2,7 +2,9 @@
 
 <div class="flex flex-wrap items-center justify-between gap-3 mb-6">
     <h2 class="text-xl font-semibold text-gray-800 dark:text-white/90">
-        {{ $pageTitle }}
+        {{-- Optional `title` slot overrides the heading only; the breadcrumb
+             trail below always shows the page's own name. --}}
+        {{ $title ?? $pageTitle }}
     </h2>
     <nav>
         <ol class="flex items-center gap-1.5">

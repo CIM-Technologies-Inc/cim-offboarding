@@ -450,12 +450,7 @@ class ClearanceSignatoryEscalationService
             'reason' => $reason,
         ]);
 
-        $this->audit($approver, 'clearance_signatory_escalated', "\"{$this->checklistTitle($approver)}\" Clearance Signatory escalated automatically: {$primary?->name} → {$secondary->name}. {$reason}", null, [
-            'previous_employee_id' => $primary?->id,
-            'new_employee_id' => $secondary->id,
-            'deadline_at' => $deadline->toDateTimeString(),
-            'history_id' => $event->id,
-        ]);
+        $this->audit($approver, 'clearance_signatory_escalated', $event, 'Clearance Signatory re-routed to the Secondary Approver');
 
         return ['outcome' => 'escalated', 'event' => $event];
     }
@@ -506,10 +501,7 @@ class ClearanceSignatoryEscalationService
             'reason' => $reason,
         ]);
 
-        $this->audit($approver, 'clearance_signatory_hr_action_required', "\"{$this->checklistTitle($approver)}\" requires HR/Admin to assign a new Clearance Signatory. {$reason}", null, [
-            'expired_employee_id' => $approver->employee_id,
-            'history_id' => $event->id,
-        ]);
+        $this->audit($approver, 'clearance_signatory_hr_action_required', $event, 'Clearance Signatory deadline missed, HR/Admin must assign a new Clearance Signatory');
 
         return ['outcome' => 'hr_action_required', 'event' => $event];
     }
@@ -599,12 +591,7 @@ class ClearanceSignatoryEscalationService
                 'performed_by' => $performedBy,
             ]);
 
-            $this->audit($locked, 'clearance_signatory_reassigned_by_hr', "\"{$this->checklistTitle($locked)}\" Clearance Signatory reassigned by {$performedBy->name}: {$previous?->name} → {$newSignatory->name}.".($reason ? " Reason: {$reason}" : ''), $performedBy, [
-                'previous_employee_id' => $previous?->id,
-                'new_employee_id' => $newSignatory->id,
-                'deadline_at' => $deadline?->toDateTimeString(),
-                'history_id' => $event->id,
-            ]);
+            $this->audit($locked, 'clearance_signatory_reassigned_by_hr', $event, 'Clearance Signatory reassigned by HR/Admin');
 
             return ['ok' => true, 'message' => "{$newSignatory->name} is now the Clearance Signatory for \"{$this->checklistTitle($locked)}\".", 'approver' => $locked, 'event' => $event];
         });
@@ -914,14 +901,51 @@ class ClearanceSignatoryEscalationService
         return $event;
     }
 
-    private function audit(OffboardingRequestApprover $approver, string $action, string $description, ?User $user, array $newValues): void
+    /**
+     * The Logs-module copy of a history event — exactly one entry per event,
+     * built from the same `ChecklistSignatoryAssignment` row the checklist's
+     * own history shows, so both always agree. Scheduler-driven events have
+     * no acting user and are attributed to "System" rather than left blank.
+     */
+    private function audit(OffboardingRequestApprover $approver, string $action, ChecklistSignatoryAssignment $event, string $summary): void
     {
-        ActivityLog::record($action, 'Checklist', $description, array_filter([
+        $approver->loadMissing('offboardingRequest.employee');
+        $request = $approver->offboardingRequest;
+        $performedBy = $event->performedBy;
+        $initiatedBy = $event->initiatorLabel();
+
+        $description = "\"{$this->checklistTitle($approver)}\" (Offboarding Request #{$approver->offboarding_request_id}".($request?->employee ? " — {$request->employee->name}" : '')."): {$summary}. "
+            .'From: '.($event->previous_employee_name ?? '—').'. '
+            .'To: '.($event->new_employee_name ?? 'HR/Admin (awaiting reassignment)').'. '
+            ."Initiated by: {$initiatedBy}. "
+            .'Date: '.$event->occurred_at->format(self::DATE_FORMAT).'.'
+            .($event->reason ? " Reason: {$event->reason}" : '');
+
+        ActivityLog::record($action, 'Checklist', $description, array_merge([
             'subject_type' => 'OffboardingRequestApprover',
             'subject_id' => $approver->id,
-            'new_values' => $newValues + ['offboarding_request_id' => $approver->offboarding_request_id, 'checklist_template_id' => $approver->checklist_template_id],
-            'user' => $user,
-        ], fn ($value) => $value !== null));
+            'old_values' => [
+                'clearance_signatory' => $event->previous_employee_name,
+                'clearance_signatory_employee_id' => $event->previous_employee_id,
+                'escalation_status' => $event->previous_status,
+            ],
+            'new_values' => [
+                'checklist' => $this->checklistTitle($approver),
+                'offboarding_request_id' => $approver->offboarding_request_id,
+                'offboardee' => $request?->employee?->name,
+                'clearance_signatory' => $event->new_employee_name,
+                'clearance_signatory_employee_id' => $event->new_employee_id,
+                'escalation_status' => $event->new_status,
+                'deadline_at' => $event->deadline_at?->toDateTimeString(),
+                'initiated_by' => $initiatedBy,
+                'occurred_at' => $event->occurred_at->toDateTimeString(),
+                'reason' => $event->reason,
+                'checklist_template_id' => $approver->checklist_template_id,
+                'history_id' => $event->id,
+            ],
+        ], $performedBy
+            ? ['user' => $performedBy]
+            : ['user' => null, 'username' => 'System', 'roles' => 'System (automatic escalation)']));
     }
 
     private function checklistTitle(OffboardingRequestApprover $approver): string

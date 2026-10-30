@@ -134,10 +134,21 @@
             <!-- app header start -->
             @include('layouts.app-header')
             <!-- app header end -->
+            {{-- Loading skeleton shown while Turbo fetches the next page. It
+                 is cleared by EVERY way a visit can end — not just a
+                 successful render: a failed/aborted request (server busy,
+                 restarted, network drop), a response Turbo hands back to the
+                 browser (file downloads), or the page being restored from
+                 the browser's back/forward cache — so the skeleton can never
+                 be left covering the page. --}}
             <div class="p-4 mx-auto max-w-(--breakpoint-2xl) md:p-6"
                 x-data="{ navigating: false }"
                 @turbo:visit.window="navigating = true"
-                @turbo:render.window="navigating = false">
+                @turbo:render.window="navigating = false"
+                @turbo:load.window="navigating = false"
+                @turbo:fetch-request-error.window="navigating = false"
+                @turbo:before-fetch-response.window="if (!($event.detail.fetchResponse?.isHTML ?? true)) navigating = false"
+                @pageshow.window="navigating = false">
                 <div x-show="navigating" x-cloak>
                     <x-common.content-skeleton />
                 </div>

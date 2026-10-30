@@ -6,6 +6,8 @@ use App\Models\EmailTemplate;
 use App\Models\Employee;
 use App\Models\OffboardingRequest;
 use App\Models\SeparationType;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 
 class DashboardController extends Controller
@@ -26,17 +28,7 @@ class DashboardController extends Controller
         $overdueCount = OffboardingRequest::displayOverdue()->count();
         $completedCount = OffboardingRequest::where('status', 'completed')->count();
 
-        $startOfMonth = Carbon::now()->startOfMonth();
-
-        $completedThisMonth = OffboardingRequest::where('status', 'completed')
-            ->whereBetween('completed_at', [$startOfMonth, Carbon::now()])
-            ->count();
-
-        $dueThisMonth = OffboardingRequest::whereBetween('created_at', [$startOfMonth, Carbon::now()])->count();
-
-        $completionRate = $dueThisMonth > 0 ? (int) round($completedThisMonth / $dueThisMonth * 100) : 0;
-
-        [$monthLabels, $initiatedSeries, $completedSeries] = $this->buildMonthlySeries();
+        [$monthLabels, $initiatedSeries] = $this->buildMonthlySeries();
 
         $departmentBreakdown = Employee::whereHas('offboardingRequests')
             ->selectRaw('department, count(*) as total')
@@ -90,17 +82,79 @@ class DashboardController extends Controller
             'inProgressCount' => $inProgressCount,
             'overdueCount' => $overdueCount,
             'completedCount' => $completedCount,
-            'completionRate' => $completionRate,
-            'completedThisMonth' => $completedThisMonth,
-            'dueThisMonth' => $dueThisMonth,
             'monthLabels' => $monthLabels,
             'initiatedSeries' => $initiatedSeries,
-            'completedSeries' => $completedSeries,
             'departments' => $departments,
             'recentRequests' => $recentRequests,
             'employeesNotOffboarded' => $employeesNotOffboarded,
             'activeEmailTemplates' => $activeEmailTemplates,
             'separationTypes' => $separationTypes,
+        ]);
+    }
+
+    /**
+     * Dashboard Calendar card data: every offboarding request whose Last
+     * Working Day falls inside the requested month's visible 6-week grid,
+     * grouped by that date. Read live from `offboarding_requests` — no
+     * separate calendar records — so an extended LWD simply moves to its new
+     * date. Cancelled (incl. retracted) requests are excluded; completed
+     * ones are kept but flagged, so the card never shows them as an active
+     * schedule. Also returns the next few upcoming active LWDs from today.
+     */
+    public function calendar(Request $request): JsonResponse
+    {
+        $month = $request->query('month');
+        $monthStart = is_string($month) && preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', $month)
+            ? Carbon::createFromFormat('Y-m-d', "{$month}-01")->startOfDay()
+            : Carbon::today()->startOfMonth();
+
+        // Same Sunday-first 6-week window the card renders.
+        $gridStart = $monthStart->copy()->startOfWeek(Carbon::SUNDAY);
+        $gridEnd = $gridStart->copy()->addDays(41);
+
+        $toEvent = fn (OffboardingRequest $offboarding) => [
+            'id' => $offboarding->id,
+            'name' => $offboarding->employee?->name,
+            'employeeCode' => $offboarding->employee?->employee_code,
+            'department' => $offboarding->employee?->department,
+            'position' => $offboarding->employee?->designation,
+            'separationType' => $offboarding->separationType?->title ?? $offboarding->reason,
+            'lastWorkingDay' => $offboarding->last_working_day->toDateString(),
+            'lastWorkingDayLabel' => $offboarding->last_working_day->format('D, M d, Y'),
+            'status' => $status = $offboarding->displayStatus(),
+            'isActive' => $status !== 'completed',
+        ];
+
+        $baseQuery = fn () => OffboardingRequest::query()
+            ->where('status', '!=', 'cancelled')
+            ->whereHas('employee')
+            ->with('employee', 'separationType', 'approvers', 'generalSignatoryApprovals');
+
+        $days = $baseQuery()
+            ->whereBetween('last_working_day', [$gridStart->toDateString(), $gridEnd->toDateString()])
+            ->orderBy('last_working_day')
+            ->get()
+            ->map($toEvent)
+            ->sortBy([['isActive', 'desc'], ['name', 'asc']])
+            ->groupBy('lastWorkingDay')
+            ->map(fn ($events) => $events->values());
+
+        $upcoming = $baseQuery()
+            ->where('status', '!=', 'completed')
+            ->whereDate('last_working_day', '>=', Carbon::today())
+            ->orderBy('last_working_day')
+            ->take(5)
+            ->get()
+            ->map($toEvent)
+            ->values();
+
+        return response()->json([
+            'month' => $monthStart->format('Y-m'),
+            'monthLabel' => $monthStart->format('F Y'),
+            'today' => Carbon::today()->toDateString(),
+            'gridStart' => $gridStart->toDateString(),
+            'days' => $days,
+            'upcoming' => $upcoming,
         ]);
     }
 

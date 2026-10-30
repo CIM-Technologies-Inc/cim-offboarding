@@ -153,6 +153,12 @@ class OffboardingActivity extends Model
             'clearance_signatory_replaced' => $this->offboardingRequestApprover?->checklistTemplate?->title
                 ? "Clearance Signatory Replaced: \"{$this->offboardingRequestApprover->checklistTemplate->title}\" by {$actor}{$suffix}"
                 : "Clearance Signatory Replaced by {$actor}{$suffix}",
+            // Secondary approver escalation / HR/Admin reassignment — see
+            // `ClearanceSignatoryEscalationService::recordEvent()`; the
+            // previous/new signatory and reason live in this row's comment.
+            'clearance_signatory_escalated_to_secondary' => 'Re-routed to Secondary Approver'.$this->checklistTitleSuffix().' by System (automatic escalation)',
+            'clearance_signatory_hr_action_required' => 'HR/Admin Action Required'.$this->checklistTitleSuffix().': Clearance Signatory deadline missed',
+            'clearance_signatory_reassigned_by_hr' => 'Clearance Signatory Reassigned'.$this->checklistTitleSuffix()." by {$actor}{$suffix}",
             'checklist_item_reassigned' => "Checklist Item Reassigned by {$actor}{$suffix}",
             'checklist_item_auto_assigned' => 'Checklist Items Auto-Assigned to Group Members',
             'checklist_delegate_completed' => "Checklist Completed by {$actor}{$suffix} (Delegated Approver)",
@@ -163,5 +169,12 @@ class OffboardingActivity extends Model
             'completed' => 'Offboarding Completed',
             default => ucfirst($this->action) . " by {$actor}{$suffix}",
         };
+    }
+
+    private function checklistTitleSuffix(): string
+    {
+        $title = $this->offboardingRequestApprover?->checklistTemplate?->title;
+
+        return $title ? ": \"{$title}\"" : '';
     }
 }

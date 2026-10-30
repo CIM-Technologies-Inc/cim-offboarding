@@ -1,6 +1,60 @@
 @extends('layouts.app')
 
 @section('content')
+    {{-- Card View card surface. Scoped here because the app's Tailwind
+         bundle is prebuilt. A defined green-tinted border + soft shadow so
+         each card stands out from the page in Light Mode, a gentle lift with
+         a brand-green border on hover, and matching Dark Mode values. --}}
+    <style>
+        .offboardee-card {
+            border-radius: 1rem;
+            background-color: #ffffff;
+            border: 1px solid #d3ded8;
+            box-shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 3px 10px -4px rgba(20, 90, 58, .12);
+            transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease;
+        }
+        .offboardee-card:hover {
+            transform: translateY(-2px);
+            border-color: rgba(20, 90, 58, .45);
+            box-shadow: 0 2px 4px rgba(16, 24, 40, .05), 0 12px 24px -12px rgba(20, 90, 58, .35);
+        }
+        .offboardee-card:focus-visible { outline: 2px solid #3aa876; outline-offset: 2px; }
+
+        .dark .offboardee-card {
+            background-color: rgba(255, 255, 255, .03);
+            border-color: rgba(255, 255, 255, .10);
+            box-shadow: 0 1px 2px rgba(0, 0, 0, .45), 0 4px 12px -6px rgba(0, 0, 0, .6);
+        }
+        .dark .offboardee-card:hover {
+            border-color: rgba(58, 168, 118, .50);
+            box-shadow: 0 12px 26px -12px rgba(0, 0, 0, .8), 0 0 0 1px rgba(58, 168, 118, .12);
+        }
+
+        /* Offboardee initials: dark-green circle with white initials,
+           framed by a full round border (white inner edge + green ring). */
+        .offboardee-avatar {
+            color: #ffffff;
+            letter-spacing: .03em;
+            background: linear-gradient(145deg, #23885a 0%, #145a3a 60%, #0f4630 100%);
+            border: 2px solid #ffffff;
+            box-shadow: 0 0 0 2px #145a3a, 0 4px 10px -3px rgba(20, 90, 58, .45);
+            text-shadow: 0 1px 1px rgba(0, 0, 0, .25);
+            transition: box-shadow .2s ease;
+        }
+        .group:hover .offboardee-avatar { box-shadow: 0 0 0 2px #3aa876, 0 6px 14px -4px rgba(20, 90, 58, .55); }
+        .dark .offboardee-avatar {
+            background: linear-gradient(145deg, #2f9e6b 0%, #1a6e48 60%, #145a3a 100%);
+            border-color: #1a2231;
+            box-shadow: 0 0 0 2px #3aa876, 0 4px 12px -3px rgba(0, 0, 0, .7);
+        }
+        .dark .group:hover .offboardee-avatar { box-shadow: 0 0 0 2px #5cc496, 0 6px 16px -4px rgba(58, 168, 118, .35); }
+
+        @media (prefers-reduced-motion: reduce) {
+            .offboardee-card, .offboardee-avatar { transition: none; }
+            .offboardee-card:hover { transform: none; }
+        }
+    </style>
+
     <x-common.page-breadcrumb pageTitle="Offboardees" />
 
     <div class="mb-4 flex items-center justify-end md:mb-6">
@@ -284,7 +338,7 @@
             </div>
 
             <div :class="effectiveView() === 'card'
-                    ? 'grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'
+                    ? 'grid grid-cols-1 gap-5 sm:grid-cols-2 md:gap-6 lg:grid-cols-3 xl:grid-cols-4'
                     : 'flex flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03]'">
                 @foreach ($offboardees as $offboardee)
                     @php
@@ -377,13 +431,13 @@
                         @click="if (!cancelling && !extending) $dispatch('open-offboardee-modal', { ...@js($offboardee), status, lastWorkingDay, originalLastWorkingDay, isLastWorkingDayExtended, timeline })"
                         x-show="search.trim() === '' || @js(Str::lower($offboardee['name'])).includes(search.trim().toLowerCase())"
                         :class="effectiveView() === 'card'
-                            ? 'group cursor-pointer rounded-2xl border border-gray-200 bg-white p-5 transition-all duration-200 hover:-translate-y-1 hover:border-[#145a3a]/40 hover:shadow-lg dark:border-gray-800 dark:bg-white/[0.03] dark:hover:border-[#3aa876]/40'
+                            ? 'offboardee-card group cursor-pointer p-5'
                             : 'group cursor-pointer border-b border-gray-100 px-4 py-3 transition-colors last:border-b-0 hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-white/[0.03]'">
                     {{-- ============================= CARD VIEW ============================= --}}
                     <template x-if="effectiveView() === 'card'">
                         <div>
                         <div class="flex items-start justify-between">
-                            <div class="flex h-12 w-12 items-center justify-center rounded-full bg-gray-100 text-base font-semibold text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                            <div class="offboardee-avatar flex h-12 w-12 shrink-0 items-center justify-center rounded-full text-base font-semibold">
                                 {{ collect(explode(' ', $offboardee['name']))->map(fn ($part) => mb_substr($part, 0, 1))->take(2)->implode('') }}
                             </div>
                             <span class="rounded-full px-2.5 py-1 text-xs font-medium"
@@ -453,7 +507,7 @@
                     <template x-if="effectiveView() === 'list'">
                         <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-6">
                             <div class="flex min-w-0 items-center gap-3 sm:w-64 sm:shrink-0">
-                                <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gray-100 text-sm font-semibold text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                                <div class="offboardee-avatar flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-sm font-semibold">
                                     {{ collect(explode(' ', $offboardee['name']))->map(fn ($part) => mb_substr($part, 0, 1))->take(2)->implode('') }}
                                 </div>
                                 <div class="min-w-0">

@@ -79,4 +79,38 @@ class ChecklistSignatoryAssignment extends Model
     {
         return $this->belongsTo(User::class, 'performed_by_user_id');
     }
+
+    /**
+     * Who initiated this movement — the HR/Admin user for a manual
+     * reassignment, otherwise the system's automatic escalation.
+     */
+    public function initiatorLabel(): string
+    {
+        if ($this->performedBy) {
+            return $this->performedBy->name;
+        }
+
+        return $this->event === self::EVENT_INITIAL ? 'System' : 'System (automatic escalation)';
+    }
+
+    /**
+     * One row of a checklist's reassignment history, as shown on the
+     * Offboarding Status/Timeline tabs.
+     *
+     * @return array<string, mixed>
+     */
+    public function toHistoryEntry(): array
+    {
+        return [
+            'event' => $this->event,
+            'label' => self::EVENT_LABELS[$this->event] ?? $this->event,
+            'occurredAt' => $this->occurred_at?->format('M d, Y g:i A'),
+            'from' => $this->previous_employee_name,
+            'to' => $this->new_employee_name,
+            'deadline' => $this->deadline_at?->format('M d, Y g:i A'),
+            'initiatedBy' => $this->initiatorLabel(),
+            'isManual' => $this->trigger === self::TRIGGER_MANUAL,
+            'reason' => $this->reason,
+        ];
+    }
 }

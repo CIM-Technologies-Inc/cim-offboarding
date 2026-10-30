@@ -227,6 +227,7 @@ Route::post('/employee/checklists/{offboardingRequestApprover}/follow-up', [Empl
 // dashboard pages
 Route::middleware('permission:dashboard.view')->group(function () {
     Route::get('/', [DashboardController::class, 'index'])->name('dashboard');
+    Route::get('/dashboard/offboarding-calendar', [DashboardController::class, 'calendar'])->name('dashboard.calendar');
 });
 
 // offboarding requests — only a "create" action exists (no dedicated list/

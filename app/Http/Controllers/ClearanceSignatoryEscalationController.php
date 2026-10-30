@@ -124,7 +124,7 @@ class ClearanceSignatoryEscalationController extends Controller
                 'to' => $event->new_employee_name,
                 'deadline' => $format($event->deadline_at),
                 'trigger' => $event->trigger,
-                'by' => $event->performedBy?->name,
+                'by' => $event->initiatorLabel(),
                 'reason' => $event->reason,
                 'notificationStatus' => $event->notification_status,
             ])->values()->all(),

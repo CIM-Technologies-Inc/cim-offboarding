@@ -499,6 +499,34 @@
                                         </div>
                                     </template>
 
+                                    <!-- Clearance Signatory Reassignment History — every time this checklist
+                                         moved from one signatory to another (automatic escalation to the
+                                         Secondary Approver, or HR/Admin reassignment), oldest first, with who
+                                         initiated it. Absent when the checklist was never moved. -->
+                                    <template x-if="step.signatoryHistory && step.signatoryHistory.length">
+                                        <div class="mt-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs dark:border-gray-800 dark:bg-white/[0.03]">
+                                            <p class="font-medium text-gray-700 dark:text-gray-300">Clearance Signatory Reassignment History</p>
+                                            <ul class="mt-1.5 space-y-1.5 text-gray-600 dark:text-gray-300">
+                                                <template x-for="(movement, movementIndex) in step.signatoryHistory" :key="movementIndex">
+                                                    <li>
+                                                        <span class="font-medium text-gray-800 dark:text-white/90" x-text="movement.label"></span>
+                                                        <span class="text-gray-400" x-text="'on ' + movement.occurredAt"></span>
+                                                        <div class="mt-0.5">
+                                                            <template x-if="movement.from">
+                                                                <span><span x-text="movement.from"></span> &rarr; </span>
+                                                            </template>
+                                                            <span class="font-medium text-gray-700 dark:text-gray-300" x-text="movement.to || 'HR/Admin (awaiting reassignment)'"></span>
+                                                        </div>
+                                                        <div class="mt-0.5 text-gray-500 dark:text-gray-400">Initiated by: <span class="font-medium text-gray-700 dark:text-gray-300" x-text="movement.initiatedBy"></span></div>
+                                                        <template x-if="movement.reason">
+                                                            <div class="mt-0.5 text-gray-500 dark:text-gray-400">Reason: <span x-text="movement.reason"></span></div>
+                                                        </template>
+                                                    </li>
+                                                </template>
+                                            </ul>
+                                        </div>
+                                    </template>
+
                                     @include('components.offboarding.partials.checklist-item-status-list')
 
                                     <!-- <template x-if="step.delegatedTo">
@@ -776,6 +804,34 @@
                                                             <span class="text-gray-400" x-text="'on ' + extension.extendedAt"></span>
                                                             <template x-if="extension.reason">
                                                                 <div class="mt-0.5 text-gray-500 dark:text-gray-400">Reason: <span x-text="extension.reason"></span></div>
+                                                            </template>
+                                                        </li>
+                                                    </template>
+                                                </ul>
+                                            </div>
+                                        </template>
+
+                                        <!-- Clearance Signatory Reassignment History — every time this checklist
+                                             moved from one signatory to another (automatic escalation to the
+                                             Secondary Approver, or HR/Admin reassignment), oldest first, with who
+                                             initiated it. Absent when the checklist was never moved. -->
+                                        <template x-if="step.signatoryHistory && step.signatoryHistory.length">
+                                            <div class="mt-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs dark:border-gray-800 dark:bg-white/[0.03]">
+                                                <p class="font-medium text-gray-700 dark:text-gray-300">Clearance Signatory Reassignment History</p>
+                                                <ul class="mt-1.5 space-y-1.5 text-gray-600 dark:text-gray-300">
+                                                    <template x-for="(movement, movementIndex) in step.signatoryHistory" :key="movementIndex">
+                                                        <li>
+                                                            <span class="font-medium text-gray-800 dark:text-white/90" x-text="movement.label"></span>
+                                                            <span class="text-gray-400" x-text="'on ' + movement.occurredAt"></span>
+                                                            <div class="mt-0.5">
+                                                                <template x-if="movement.from">
+                                                                    <span><span x-text="movement.from"></span> &rarr; </span>
+                                                                </template>
+                                                                <span class="font-medium text-gray-700 dark:text-gray-300" x-text="movement.to || 'HR/Admin (awaiting reassignment)'"></span>
+                                                            </div>
+                                                            <div class="mt-0.5 text-gray-500 dark:text-gray-400">Initiated by: <span class="font-medium text-gray-700 dark:text-gray-300" x-text="movement.initiatedBy"></span></div>
+                                                            <template x-if="movement.reason">
+                                                                <div class="mt-0.5 text-gray-500 dark:text-gray-400">Reason: <span x-text="movement.reason"></span></div>
                                                             </template>
                                                         </li>
                                                     </template>

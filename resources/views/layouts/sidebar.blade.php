@@ -5,24 +5,132 @@
 
     // Get current path
     $currentPath = request()->path();
+
+    // Each expandable module's position => its name. The sidebar remembers
+    // open/closed state by NAME, since positions differ between roles'
+    // menus (a hidden module shifts every later index).
+    $submenuKeys = [];
+    foreach ($menuGroups as $groupIndex => $menuGroup) {
+        foreach ($menuGroup['items'] as $itemIndex => $item) {
+            if (isset($item['subItems'])) {
+                $submenuKeys["{$groupIndex}-{$itemIndex}"] = $item['name'];
+            }
+        }
+    }
 @endphp
+
+{{-- Sidebar hover effect (dark-green theme). Kept in this scoped stylesheet
+     because the app's Tailwind bundle is prebuilt. Applies to every module
+     (category toggles, single links) and every submenu item: a soft green
+     tint, green text/icon, a short slide to the right, and a green accent
+     bar growing in on the left edge. Active/open items keep their own
+     highlight and only deepen slightly. --}}
+<style>
+    #sidebar .menu-item,
+    #sidebar .menu-dropdown-item {
+        transition: background-color .2s ease, color .2s ease, transform .2s cubic-bezier(.2,.8,.2,1), box-shadow .2s ease;
+    }
+    #sidebar .menu-item::before,
+    #sidebar .menu-dropdown-item::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 50%;
+        width: 3px;
+        height: 0;
+        border-radius: 0 3px 3px 0;
+        background: #145a3a;
+        transform: translateY(-50%);
+        transition: height .2s cubic-bezier(.2,.8,.2,1);
+    }
+    #sidebar .menu-item svg,
+    #sidebar .menu-dropdown-item svg {
+        transition: transform .2s cubic-bezier(.2,.8,.2,1), color .2s ease;
+    }
+
+    /* Inactive modules + submenu items */
+    #sidebar .menu-item.menu-item-inactive:hover,
+    #sidebar .menu-dropdown-item.menu-dropdown-item-inactive:hover {
+        background-color: rgba(20, 90, 58, .07);
+        color: #145a3a;
+        transform: translateX(3px);
+        box-shadow: 0 2px 6px -3px rgba(20, 90, 58, .35);
+    }
+    #sidebar .menu-item.menu-item-inactive:hover::before,
+    #sidebar .menu-dropdown-item.menu-dropdown-item-inactive:hover::before { height: 60%; }
+    #sidebar .menu-item.menu-item-inactive:hover .menu-item-icon-inactive,
+    #sidebar .menu-dropdown-item.menu-dropdown-item-inactive:hover .menu-item-icon-inactive,
+    #sidebar .menu-item.menu-item-inactive:hover > svg { color: #145a3a; }
+    #sidebar .menu-item.menu-item-inactive:hover .menu-item-icon-inactive svg,
+    #sidebar .menu-dropdown-item.menu-dropdown-item-inactive:hover .menu-item-icon-inactive svg { transform: scale(1.1); }
+
+    /* Active page / open module: keep the highlight, deepen it a touch */
+    #sidebar .menu-item.menu-item-active:hover,
+    #sidebar .menu-dropdown-item.menu-dropdown-item-active:hover {
+        background-color: rgba(20, 90, 58, .15);
+        box-shadow: 0 2px 6px -3px rgba(20, 90, 58, .35);
+    }
+
+    .dark #sidebar .menu-item::before,
+    .dark #sidebar .menu-dropdown-item::before { background: #3aa876; }
+    .dark #sidebar .menu-item.menu-item-inactive:hover,
+    .dark #sidebar .menu-dropdown-item.menu-dropdown-item-inactive:hover {
+        background-color: rgba(58, 168, 118, .12);
+        color: #3aa876;
+        box-shadow: 0 2px 8px -3px rgba(0, 0, 0, .6);
+    }
+    .dark #sidebar .menu-item.menu-item-inactive:hover .menu-item-icon-inactive,
+    .dark #sidebar .menu-dropdown-item.menu-dropdown-item-inactive:hover .menu-item-icon-inactive,
+    .dark #sidebar .menu-item.menu-item-inactive:hover > svg { color: #3aa876; }
+    .dark #sidebar .menu-item.menu-item-active:hover,
+    .dark #sidebar .menu-dropdown-item.menu-dropdown-item-active:hover { background-color: rgba(58, 168, 118, .22); }
+
+    @media (prefers-reduced-motion: reduce) {
+        #sidebar .menu-item, #sidebar .menu-dropdown-item, #sidebar .menu-item svg, #sidebar .menu-dropdown-item svg { transition: none; }
+        #sidebar .menu-item:hover, #sidebar .menu-dropdown-item:hover, #sidebar .menu-item:hover svg, #sidebar .menu-dropdown-item:hover svg { transform: none !important; }
+    }
+</style>
 
 <aside id="sidebar" data-turbo-permanent
     class="fixed flex flex-col mt-0 top-0 px-5 left-0 bg-white dark:bg-gray-900 dark:border-gray-800 text-gray-900 h-screen transition-all duration-300 ease-in-out z-99999 border-r border-gray-200"
     x-data="{
         openSubmenus: {},
         navTick: 0,
+        storageKey: 'cim.sidebar.openSubmenus',
+        menuKeys: @js($submenuKeys),
         init() {
-            // Auto-open Dashboard menu on page load
+            // Restore every module the user left expanded/collapsed (survives
+            // navigation and a full browser refresh), then make sure the
+            // current page's module is visible.
+            this.openSubmenus = this.loadSavedSubmenus();
             this.initializeActiveMenus();
+        },
+        loadSavedSubmenus() {
+            try {
+                const saved = JSON.parse(localStorage.getItem(this.storageKey) || '{}');
+                return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {};
+            } catch (e) {
+                return {};
+            }
+        },
+        saveSubmenus() {
+            try {
+                localStorage.setItem(this.storageKey, JSON.stringify(this.openSubmenus));
+            } catch (e) {
+                // Storage unavailable (private mode etc.) — state still holds for this page.
+            }
+        },
+        submenuKey(groupIndex, itemIndex) {
+            const position = groupIndex + '-' + itemIndex;
+            return this.menuKeys[position] || position;
         },
         initializeActiveMenus() {
             const currentPath = window.location.pathname.replace(/^\//, '');
 
-            // Every item, including Dashboard/My Dashboard, auto-expands
-            // its parent category when it's the active page — on login,
-            // landing on Dashboard shows Dashboard & Reports expanded with
-            // Dashboard highlighted, same as navigating to any other page.
+            // The current page's module auto-expands ONLY if the user has
+            // never chosen a state for it — an explicit collapse is
+            // respected — and this never collapses any other module, so
+            // every module the user left open stays open while navigating.
             @foreach ($menuGroups as $groupIndex => $menuGroup)
                 @foreach ($menuGroup['items'] as $itemIndex => $item)
                     @if (isset($item['subItems']))
@@ -30,22 +138,24 @@
                         @foreach ($item['subItems'] as $subItem)
                             if (currentPath === '{{ ltrim($subItem['path'], '/') }}' ||
                                 window.location.pathname === '{{ $subItem['path'] }}') {
-                                this.openSubmenus['{{ $groupIndex }}-{{ $itemIndex }}'] = true;
+                                const key = this.submenuKey({{ $groupIndex }}, {{ $itemIndex }});
+                                if (!(key in this.openSubmenus)) this.openSubmenus[key] = true;
                             } @endforeach
             @endif
             @endforeach
             @endforeach
         },
         toggleSubmenu(groupIndex, itemIndex) {
-            const key = groupIndex + '-' + itemIndex;
+            const key = this.submenuKey(groupIndex, itemIndex);
 
             // Independent multi-expand: toggle only this category's own
-            // key, never touch any other open category's state.
+            // key, never touch any other open category's state. Only a
+            // click here is ever saved as the user's preference.
             this.openSubmenus[key] = !this.openSubmenus[key];
+            this.saveSubmenus();
         },
         isSubmenuOpen(groupIndex, itemIndex) {
-            const key = groupIndex + '-' + itemIndex;
-            return this.openSubmenus[key] || false;
+            return this.openSubmenus[this.submenuKey(groupIndex, itemIndex)] || false;
         },
         isActive(path) {
             this.navTick;

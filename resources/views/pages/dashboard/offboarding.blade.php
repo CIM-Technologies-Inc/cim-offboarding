@@ -15,25 +15,13 @@
         :completed-count="$completedCount"
       />
       <x-offboarding.monthly-trend :month-labels="$monthLabels" :initiated-series="$initiatedSeries" />
+      <x-offboarding.department-breakdown :departments="$departments" />
     </div>
     <div class="col-span-12 xl:col-span-5">
-        <x-offboarding.completion-rate
-          :completion-rate="$completionRate"
-          :completed-this-month="$completedThisMonth"
-          :due-this-month="$dueThisMonth"
-          :pending-count="$pendingCount"
-        />
+      <x-offboarding.calendar-card />
     </div>
 
     <div class="col-span-12">
-      <x-offboarding.status-trend :month-labels="$monthLabels" :initiated-series="$initiatedSeries" :completed-series="$completedSeries" />
-    </div>
-
-    <div class="col-span-12 xl:col-span-5">
-      <x-offboarding.department-breakdown :departments="$departments" />
-    </div>
-
-    <div class="col-span-12 xl:col-span-7">
       <x-offboarding.recent-requests :requests="$recentRequests" />
     </div>
   </div>

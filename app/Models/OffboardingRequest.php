@@ -831,6 +831,7 @@ class OffboardingRequest extends Model
                 'itemProgress.checkedBy.employee',
                 'itemProgress.heldBy.employee',
                 'firstViewedBy',
+                'signatoryAssignments.performedBy',
             );
             $progressByItem = $assignment->itemProgress->keyBy('checklist_item_id');
 
@@ -1091,6 +1092,15 @@ class OffboardingRequest extends Model
                 // whole).
                 'approvalRemarks' => $assignment->approval_remarks,
                 'usesPerItemApprovers' => $assignment->usesPerItemApprovers(),
+                // Clearance Signatory reassignment history (secondary
+                // approver escalation / HR/Admin reassignment), oldest
+                // first, read straight from `checklist_signatory_assignments`.
+                // Empty unless the checklist was actually moved from one
+                // signatory to another, so an untouched checklist's card is
+                // unchanged.
+                'signatoryHistory' => $assignment->signatoryAssignments->contains(fn (ChecklistSignatoryAssignment $event) => $event->event !== ChecklistSignatoryAssignment::EVENT_INITIAL)
+                    ? $assignment->signatoryAssignments->map(fn (ChecklistSignatoryAssignment $event) => $event->toHistoryEntry())->values()->all()
+                    : [],
                 'checklistItems' => $checklistItems,
             ]];
 

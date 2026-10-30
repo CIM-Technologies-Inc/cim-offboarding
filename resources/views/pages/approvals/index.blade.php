@@ -1,7 +1,18 @@
 @extends('layouts.app')
 
 @section('content')
-    <x-common.page-breadcrumb pageTitle="Your Approval" />
+    {{-- When the Clearance Signatory Escalations panel (HR/Admin only) has
+         checklists to reassign, it sits under a "Your Immediate Action"
+         heading and "Your Approval" moves below it, above the approver's own
+         queue — reassigning a checklist isn't one of "your approvals". The
+         panel loads asynchronously and announces its visibility via the
+         `clearance-escalations-changed` event. --}}
+    <x-common.page-breadcrumb pageTitle="Your Approval">
+        <x-slot:title>
+            <span x-data="{ hasEscalations: false }" @clearance-escalations-changed.window="hasEscalations = $event.detail.visible"
+                x-text="hasEscalations ? 'Your Immediate Action' : 'Your Approval'">Your Approval</span>
+        </x-slot:title>
+    </x-common.page-breadcrumb>
 
     {{-- Fires the SweetAlert toast for flashed success/status messages — most
          relevantly, the redirect from the "Approve" email link. --}}
@@ -18,6 +29,10 @@
     @endcan
 
     <div>
+        @can('checklist-signatories.reassign')
+            <h2 x-data="{ hasEscalations: false }" @clearance-escalations-changed.window="hasEscalations = $event.detail.visible"
+                x-show="hasEscalations" x-cloak class="mb-2 text-xl font-semibold text-gray-800 dark:text-white/90">Your Approval</h2>
+        @endcan
         <div class="mb-6 flex flex-wrap items-center justify-between gap-3">
             <p class="text-sm text-gray-500 dark:text-gray-400">
                 Review pending offboarding requests and approve or decline them.
@@ -410,7 +425,7 @@
                         $checklistStatusButtonLabel = $isTaskAssigneeViewer ? 'View Progress' : 'Checklist Status';
                     @endphp
                     <div x-show="search.trim() === '' || @js($searchHaystacks[$loop->index]).includes(search.trim().toLowerCase())"
-                        @click="@js($isChecklistKind) ? $dispatch('open-checklist-modal', Object.assign({}, @js($approval), window.__approvalCardOverrides?.['{{ $approval['id'] }}'] || {})) : $dispatch('open-offboardee-modal', @js($approval))"
+                        @click="@js($isChecklistKind) ? $dispatch('open-checklist-modal', Object.assign({}, approvalCard(@js($approval['id'])), window.__approvalCardOverrides?.['{{ $approval['id'] }}'] || {})) : $dispatch('open-offboardee-modal', approvalCard(@js($approval['id'])))"
                         data-card-id="{{ $approval['id'] }}"
                         :class="effectiveView() === 'card'
                             ? 'group cursor-pointer rounded-2xl border border-gray-200 bg-white p-5 transition-all duration-200 hover:-translate-y-1 hover:border-[#145a3a]/40 hover:shadow-lg dark:border-gray-800 dark:bg-white/[0.03] dark:hover:border-[#3aa876]/40'
@@ -632,4 +647,24 @@
         <!-- Bulk Assign Checklist Modal (opens a shared claimable pool on one or more checklists) -->
         <x-approvals.assign-checklist-pool-modal />
     </div>
+    {{-- Every card's full payload, written ONCE as plain JSON and looked up
+         by card id when a button is clicked (`approvalCard(id)`). Inlining it
+         into each button's click handler instead (`@js($approval)` in several
+         buttons per card, in both the card and list layouts, HTML-escaped)
+         made this page ~15 MB of HTML, so every navigation here sat on the
+         loading skeleton while the browser parsed it. --}}
+    <script type="application/json" id="approval-cards-data">{!! json_encode($approvals->keyBy('id'), JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) !!}</script>
+    <script>
+        // A fresh copy per call, exactly like the per-button inline payload
+        // object each click used to get, so a modal mutating its payload
+        // never leaks into the next click. Parsed once per page visit
+        // (cached on the element, which Turbo replaces on every visit).
+        window.approvalCard = function (id) {
+            const el = document.getElementById('approval-cards-data');
+            if (!el) return {};
+            if (!el._cards) el._cards = JSON.parse(el.textContent || '{}');
+            const card = el._cards[id];
+            return card ? JSON.parse(JSON.stringify(card)) : {};
+        };
+    </script>
 @endsection

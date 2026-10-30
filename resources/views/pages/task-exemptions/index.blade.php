@@ -238,6 +238,13 @@
                             <template x-for="checklist in visibleChecklists()" :key="checklist.id">
                                 <div class="rounded-lg border border-gray-200 dark:border-gray-800">
                                     <div class="flex items-center justify-between gap-2 px-3 py-2.5">
+                                        <input type="checkbox" x-show="checklist.tasks.length"
+                                            :checked="allSelected(checklist)"
+                                            x-effect="$el.indeterminate = someSelected(checklist)"
+                                            @change="setChecklistSelection(checklist, $event.target.checked)"
+                                            :aria-label="'Select all tasks in ' + checklist.title"
+                                            :title="allSelected(checklist) ? 'Deselect all tasks in this checklist' : 'Select all tasks in this checklist'"
+                                            class="h-4 w-4 shrink-0 cursor-pointer rounded border-gray-300 accent-[#145a3a] dark:border-gray-700" />
                                         <button type="button" @click="toggleExpanded(checklist.id)" class="flex min-w-0 flex-1 items-center gap-2 text-left">
                                             <svg width="14" height="14" viewBox="0 0 20 20" fill="none" class="shrink-0 transition-transform" :class="isExpanded(checklist.id) ? 'rotate-180' : ''">
                                                 <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
@@ -250,10 +257,6 @@
                                             x-text="selectedCount(checklist) + ' / ' + checklist.tasks.length"></span>
                                     </div>
                                     <div x-show="isExpanded(checklist.id)" x-cloak class="border-t border-gray-100 px-3 py-2.5 dark:border-gray-800">
-                                        <div class="mb-2 flex items-center gap-3" x-show="checklist.tasks.length">
-                                            <button type="button" @click="selectAll(checklist)" class="text-xs font-medium text-[#145a3a] hover:underline dark:text-[#3aa876]">Select all</button>
-                                            <button type="button" @click="clearChecklist(checklist)" class="text-xs font-medium text-gray-500 hover:underline">Clear selection</button>
-                                        </div>
                                         <p x-show="!checklist.tasks.length" class="text-xs text-gray-400">This checklist has no tasks.</p>
                                         <div class="grid grid-cols-1 gap-1 sm:grid-cols-2">
                                             <template x-for="task in visibleTasks(checklist)" :key="task.id">
@@ -524,15 +527,24 @@
                         : this.form.item_ids.filter((x) => x !== id);
                     delete this.errors.item_ids;
                 },
-                // Scoped to this one checklist only — never touches another
-                // checklist's selection.
-                selectAll(checklist) {
-                    this.form.item_ids = [...new Set([...this.form.item_ids, ...checklist.tasks.map((t) => t.id)])];
-                    delete this.errors.item_ids;
+                // Per-checklist Select All checkbox: checked when every task is
+                // selected, indeterminate when only some are, unchecked when none.
+                allSelected(checklist) {
+                    return checklist.tasks.length > 0 && this.selectedCount(checklist) === checklist.tasks.length;
                 },
-                clearChecklist(checklist) {
+                someSelected(checklist) {
+                    const count = this.selectedCount(checklist);
+                    return count > 0 && count < checklist.tasks.length;
+                },
+                // Scoped to this one checklist only — never touches another
+                // checklist's selection (and always covers all of its tasks,
+                // even ones hidden by the task filter).
+                setChecklistSelection(checklist, checked) {
                     const ids = checklist.tasks.map((t) => t.id);
-                    this.form.item_ids = this.form.item_ids.filter((x) => !ids.includes(x));
+                    this.form.item_ids = checked
+                        ? [...new Set([...this.form.item_ids, ...ids])]
+                        : this.form.item_ids.filter((x) => !ids.includes(x));
+                    if (checked) delete this.errors.item_ids;
                 },
                 orphanedItemCount() {
                     const activeIds = new Set(this.checklists.flatMap((c) => c.tasks.map((t) => t.id)));
@@ -631,10 +643,13 @@
                         cancelButtonColor: '#6b7280',
                         reverseButtons: true,
                     }).then((result) => {
-                        if (result.isConfirmed) this.destroy(exemption);
+                        if (result.isConfirmed) this.deleteExemption(exemption);
                     });
                 },
-                destroy(exemption) {
+                // Not named `destroy` — Alpine calls a component's `destroy()`
+                // automatically when its element is removed (every Turbo
+                // navigation away from this page), with no arguments.
+                deleteExemption(exemption) {
                     this.deletingId = exemption.id;
                     window.fetchWithTimeout(`{{ url('task-exemptions') }}/${exemption.id}`, {
                         method: 'DELETE',

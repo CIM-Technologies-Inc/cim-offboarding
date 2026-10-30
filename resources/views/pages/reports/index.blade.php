@@ -207,12 +207,14 @@
         @endif
     </div> -->
 
-    {{-- Export + results table --}}
+    {{-- Export + results table. The Excel/CSV links opt out of Turbo
+         (data-turbo="false"): they return a file download, not a page, so a
+         Turbo visit would show the loading skeleton and never finish. --}}
     <div class="rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03]">
         <div class="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 p-5 dark:border-gray-800">
             <h3 class="text-base font-semibold text-gray-800 dark:text-white/90">{{ $typeLabel }}</h3>
             <div class="flex items-center gap-2">
-                <a href="{{ route('reports.export', array_merge($currentQuery, ['format' => 'xlsx'])) }}"
+                <a href="{{ route('reports.export', array_merge($currentQuery, ['format' => 'xlsx'])) }}" data-turbo="false"
                     class="rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
                     Export Excel
                 </a>
@@ -220,7 +222,7 @@
                     class="rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
                     Export PDF
                 </a>
-                <a href="{{ route('reports.export', array_merge($currentQuery, ['format' => 'csv'])) }}"
+                <a href="{{ route('reports.export', array_merge($currentQuery, ['format' => 'csv'])) }}" data-turbo="false"
                     class="rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5">
                     Export CSV
                 </a>

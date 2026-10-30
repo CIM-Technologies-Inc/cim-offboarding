@@ -18,7 +18,30 @@ class NotificationController extends Controller
         $notification = $request->user()->notifications()->findOrFail($notification);
         $notification->markAsRead();
 
-        return redirect($notification->data['url'] ?? route('dashboard'));
+        return redirect($this->resolveUrl($notification->data['url'] ?? null));
+    }
+
+    /**
+     * Notifications created by the scheduler/queue (escalations, overdue
+     * alerts, ...) have their `url` built from APP_URL, not from the address
+     * the user actually browses the app at (e.g. `http://localhost/approvals`
+     * while the app is opened at `http://127.0.0.1:8000`) — redirecting there
+     * lands on a different server. Any stored link under APP_URL is
+     * re-rooted onto the current request's own address instead.
+     */
+    private function resolveUrl(?string $url): string
+    {
+        if (blank($url)) {
+            return route('dashboard');
+        }
+
+        $appUrl = rtrim((string) config('app.url'), '/');
+
+        if ($appUrl !== '' && ($url === $appUrl || str_starts_with($url, $appUrl.'/') || str_starts_with($url, $appUrl.'?'))) {
+            return url(substr($url, strlen($appUrl)) ?: '/');
+        }
+
+        return $url;
     }
 
     public function readAll(Request $request): RedirectResponse
