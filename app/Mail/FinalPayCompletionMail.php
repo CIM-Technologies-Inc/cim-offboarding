@@ -4,6 +4,7 @@ namespace App\Mail;
 
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
+use App\Mail\Concerns\CapturesEmailLogContext;
 use Illuminate\Mail\Mailable;
 use Illuminate\Mail\Mailables\Attachment;
 use Illuminate\Mail\Mailables\Content;
@@ -28,7 +29,7 @@ use Illuminate\Queue\SerializesModels;
  */
 class FinalPayCompletionMail extends Mailable implements ShouldQueue
 {
-    use Queueable, SerializesModels;
+    use CapturesEmailLogContext, Queueable, SerializesModels;
 
     // Stored base64-encoded, not raw — see FinalApprovalRequestMail's
     // matching comment: ShouldQueue JSON-encodes public properties to
@@ -41,6 +42,7 @@ class FinalPayCompletionMail extends Mailable implements ShouldQueue
         string $pdfBytes,
         public string $offboardeeName,
     ) {
+        $this->captureEmailLogContext($emailSubject, $offboardeeName);
         $this->pdfBytes = base64_encode($pdfBytes);
     }
 

@@ -551,6 +551,9 @@ Route::post('/impersonate/stop', [ImpersonationController::class, 'stop'])->name
 // docblock for why there is no edit/delete route here at all.
 Route::middleware('permission:logs.view')->group(function () {
     Route::get('/logs', [LogController::class, 'index'])->name('logs.index');
+    // Registered before /logs/{activityLog} so 'email-notifications' isn't read as a log id.
+    Route::get('/logs/email-notifications', [LogController::class, 'emails'])->name('logs.email-notifications');
+    Route::get('/logs/email-notifications/{emailLog}', [LogController::class, 'emailShow'])->name('logs.email-notifications.show');
     Route::get('/logs/{activityLog}', [LogController::class, 'show'])->name('logs.show');
 });
 

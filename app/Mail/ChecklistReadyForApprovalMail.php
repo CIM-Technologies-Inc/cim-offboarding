@@ -4,6 +4,7 @@ namespace App\Mail;
 
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
+use App\Mail\Concerns\CapturesEmailLogContext;
 use Illuminate\Mail\Mailable;
 use Illuminate\Mail\Mailables\Content;
 use Illuminate\Mail\Mailables\Envelope;
@@ -13,7 +14,7 @@ use Illuminate\Queue\SerializesModels;
 // see `ChecklistSignatoryAnnouncementMail`'s own matching comment for why.
 class ChecklistReadyForApprovalMail extends Mailable implements ShouldQueue
 {
-    use Queueable, SerializesModels;
+    use CapturesEmailLogContext, Queueable, SerializesModels;
 
     /**
      * @param  array<int, array{title: string, items: array<int, array{title: string, checkedByName: ?string, checkedAt: ?string, remark: ?string}>}>  $checklists
@@ -25,7 +26,9 @@ class ChecklistReadyForApprovalMail extends Mailable implements ShouldQueue
         public array $checklists,
         public string $approvalUrl,
         public string $approveUrl,
-    ) {}
+    ) {
+        $this->captureEmailLogContext(null, $offboardeeName);
+    }
 
     public function envelope(): Envelope
     {

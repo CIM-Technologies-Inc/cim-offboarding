@@ -3,6 +3,7 @@
 namespace App\Mail;
 
 use Illuminate\Bus\Queueable;
+use App\Mail\Concerns\CapturesEmailLogContext;
 use Illuminate\Mail\Mailable;
 use Illuminate\Mail\Mailables\Content;
 use Illuminate\Mail\Mailables\Envelope;
@@ -10,12 +11,14 @@ use Illuminate\Queue\SerializesModels;
 
 class PasswordResetMail extends Mailable
 {
-    use Queueable, SerializesModels;
+    use CapturesEmailLogContext, Queueable, SerializesModels;
 
     public function __construct(
         public string $userName,
         public string $resetUrl,
-    ) {}
+    ) {
+        $this->captureEmailLogContext();
+    }
 
     public function envelope(): Envelope
     {

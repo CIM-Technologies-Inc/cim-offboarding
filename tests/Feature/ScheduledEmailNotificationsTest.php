@@ -1340,3 +1340,39 @@ it('CCs a template\'s manually entered recipient addresses on scheduled sends, a
         // Every CC address really reached the transport's envelope.
         ->and($message['envelope'])->toContain('payroll@company.test')->toContain('personal.address@gmail.test');
 });
+
+it('records each scheduled email in the email notification log as Scheduled, with the schedule name and intended date', function () {
+    $request = schedRequest(['last_working_day' => '2026-10-31']);
+    schedApprover($request, schedChecklist('IT'), schedEmployee(['email' => 'it@example.test']));
+    $schedule = schedSchedule(['timing' => 'before', 'days' => 7], schedTemplate(['template_name' => 'Audit Reminder']));
+
+    $this->travelTo(Carbon::parse('2026-10-24 08:00:00'));
+    runScheduler();
+
+    $log = \App\Models\EmailLog::sole();
+    expect($log->status)->toBe('sent')
+        ->and($log->notification_type)->toBe('scheduled')
+        ->and($log->template_name)->toBe('Audit Reminder')
+        ->and($log->schedule_name)->toBe('Audit Reminder — 7 days Before Last Working Day')
+        ->and($log->scheduled_for->toDateString())->toBe('2026-10-24')
+        ->and($log->to_recipients)->toBe(['it@example.test'])
+        ->and($log->offboarding_request_id)->toBe($request->id)
+        ->and($log->offboardee_name)->toBe('Olivia Offboardee')
+        ->and($log->trigger_source)->toBe('console')
+        ->and($log->triggered_by_user_id)->toBeNull();
+});
+
+it('records a scheduled email that the mail server rejects as Failed, with the reason', function () {
+    $request = schedRequest(['last_working_day' => '2026-10-31']);
+    schedApprover($request, schedChecklist('IT'), schedEmployee(['email' => 'it@example.test']));
+    schedSchedule(['timing' => 'before', 'days' => 7]);
+    RecordingTransport::$rejecting = ['it@example.test'];
+
+    $this->travelTo(Carbon::parse('2026-10-24 08:00:00'));
+    runScheduler();
+
+    $log = \App\Models\EmailLog::sole();
+    expect($log->status)->toBe('failed')
+        ->and($log->notification_type)->toBe('scheduled')
+        ->and($log->error_message)->toContain('Recipient address rejected');
+});

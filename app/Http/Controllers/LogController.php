@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\ActivityLog;
+use App\Models\EmailLog;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -70,6 +71,90 @@ class LogController extends Controller
             'sessionDurationMinutes' => $relatedLogin
                 ? $relatedLogin->created_at->diffInMinutes($activityLog->created_at)
                 : null,
+        ]);
+    }
+
+    /**
+     * Logs → Email Notifications: every email send attempt recorded by
+     * `EmailLogRecorder` (system-triggered and scheduled). Read-only,
+     * server-side filtered/paginated like the activity log above.
+     */
+    public function emails(Request $request): View
+    {
+        $filtered = EmailLog::query()
+            ->when($request->filled('search'), function ($query) use ($request) {
+                $search = $request->query('search');
+                $query->where(function ($query) use ($search) {
+                    $query->where('subject', 'like', "%{$search}%")
+                        ->orWhere('template_name', 'like', "%{$search}%")
+                        ->orWhere('offboardee_name', 'like', "%{$search}%")
+                        ->orWhere('trigger', 'like', "%{$search}%")
+                        ->orWhere('schedule_name', 'like', "%{$search}%");
+                });
+            })
+            ->when($request->filled('recipient'), fn ($query) => $query->where('recipients_search', 'like', '%'.$request->query('recipient').'%'))
+            ->when(in_array($request->query('type'), array_keys(EmailLog::TYPE_LABELS), true), fn ($query) => $query->where('notification_type', $request->query('type')))
+            ->when(in_array($request->query('status'), array_keys(EmailLog::STATUS_LABELS), true), fn ($query) => $query->where('status', $request->query('status')))
+            ->when($request->filled('date_from'), fn ($query) => $query->whereDate('created_at', '>=', $request->query('date_from')))
+            ->when($request->filled('date_to'), fn ($query) => $query->whereDate('created_at', '<=', $request->query('date_to')));
+
+        $statusCounts = (clone $filtered)->selectRaw('status, count(*) as total')->groupBy('status')->pluck('total', 'status');
+
+        $emails = $filtered
+            ->orderBy('created_at', $request->query('sort') === 'oldest' ? 'asc' : 'desc')
+            ->orderBy('id', $request->query('sort') === 'oldest' ? 'asc' : 'desc')
+            ->paginate(25)
+            ->withQueryString();
+
+        return view('pages.logs.email-notifications', [
+            'title' => 'Logs',
+            'emails' => $emails,
+            'statusCounts' => $statusCounts,
+            'filters' => $request->only(['search', 'recipient', 'type', 'status', 'date_from', 'date_to', 'sort']),
+        ]);
+    }
+
+    public function emailShow(EmailLog $emailLog): JsonResponse
+    {
+        $format = fn ($date) => $date?->format('M d, Y g:i:s A');
+
+        return response()->json([
+            'id' => $emailLog->id,
+            'subject' => $emailLog->subject,
+            'templateName' => $emailLog->template_name,
+            'mailable' => $emailLog->mailable,
+            'to' => $emailLog->to_recipients ?? [],
+            'cc' => $emailLog->cc_recipients ?? [],
+            'bcc' => $emailLog->bcc_recipients ?? [],
+            'redirectedTo' => $emailLog->redirected_to,
+            'type' => $emailLog->notification_type,
+            'typeLabel' => $emailLog->typeLabel(),
+            'status' => $emailLog->status,
+            'statusLabel' => $emailLog->statusLabel(),
+            'error' => $emailLog->error_message,
+            'trigger' => $emailLog->trigger,
+            'triggerSource' => $emailLog->trigger_source,
+            'delivery' => $emailLog->delivery,
+            'scheduleName' => $emailLog->schedule_name,
+            'scheduledFor' => $emailLog->scheduled_for?->format('M d, Y'),
+            'offboardingRequestId' => $emailLog->offboarding_request_id,
+            'offboardeeName' => $emailLog->offboardee_name,
+            'triggeredBy' => $emailLog->triggered_by_name,
+            'createdAt' => $format($emailLog->created_at),
+            'sentAt' => $format($emailLog->sent_at),
+            'failedAt' => $format($emailLog->failed_at),
+            'smtpMessageId' => $emailLog->smtp_message_id,
+            'attempt' => $emailLog->attempt,
+            'attempts' => $emailLog->attempts()->get(['id', 'attempt', 'status', 'created_at', 'error_message'])
+                ->map(fn (EmailLog $attempt) => [
+                    'id' => $attempt->id,
+                    'attempt' => $attempt->attempt,
+                    'status' => $attempt->status,
+                    'statusLabel' => $attempt->statusLabel(),
+                    'at' => $format($attempt->created_at),
+                    'error' => $attempt->error_message,
+                    'current' => $attempt->id === $emailLog->id,
+                ])->values(),
         ]);
     }
 }

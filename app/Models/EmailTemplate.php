@@ -397,8 +397,14 @@ class EmailTemplate extends Model
             $values[$token] = (string) ($escalation[$token] ?? '');
         }
 
+        $subject = $this->fillPlaceholders($this->subject, $values);
+
+        // Lets the email notification log name the template this email came
+        // from (matched by subject) — see EmailLogContext.
+        \App\Support\EmailLogContext::rememberRender($this, $subject, $offboardeeName, $offboardingRequestId);
+
         return [
-            $this->fillPlaceholders($this->subject, $values),
+            $subject,
             $this->fillPlaceholders($this->html_content ?? '', $values),
         ];
     }

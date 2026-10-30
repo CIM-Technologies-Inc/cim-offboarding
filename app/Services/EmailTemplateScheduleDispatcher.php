@@ -3,12 +3,14 @@
 namespace App\Services;
 
 use App\Mail\ChecklistSignatoryAnnouncementMail;
+use App\Models\EmailLog;
 use App\Models\EmailTemplateSchedule;
 use App\Models\EmailTemplateScheduleSend;
 use App\Models\Employee;
 use App\Models\OffboardingRequest;
 use App\Models\User;
 use App\Notifications\ScheduledEmailTemplateNotification;
+use App\Support\EmailLogContext;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
@@ -484,7 +486,16 @@ class EmailTemplateScheduleDispatcher
         $errors = [];
 
         if (in_array($schedule->channel, ['email', 'email_and_system'], true) && ! $emailSentAt) {
-            $errors = $this->sendEmails($template, $request, $contexts, $recipientLog);
+            // Logged as a Scheduled notification with the schedule's name and
+            // intended send date — see EmailLogContext / EmailLogRecorder.
+            $errors = EmailLogContext::scope([
+                'notification_type' => EmailLog::TYPE_SCHEDULED,
+                'trigger' => 'Scheduled email template',
+                'schedule_name' => ($template?->template_name ?? 'Email template').' — '.$schedule->label(),
+                'scheduled_for' => $scheduledDate->toDateString(),
+                'offboarding_request_id' => $request->id,
+                'offboardee_name' => $request->employee?->name,
+            ], fn () => $this->sendEmails($template, $request, $contexts, $recipientLog));
 
             if ($errors === []) {
                 $emailSentAt = now();

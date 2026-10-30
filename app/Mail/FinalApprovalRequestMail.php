@@ -4,6 +4,7 @@ namespace App\Mail;
 
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
+use App\Mail\Concerns\CapturesEmailLogContext;
 use Illuminate\Mail\Mailable;
 use Illuminate\Mail\Mailables\Attachment;
 use Illuminate\Mail\Mailables\Content;
@@ -28,7 +29,7 @@ use Illuminate\Queue\SerializesModels;
  */
 class FinalApprovalRequestMail extends Mailable implements ShouldQueue
 {
-    use Queueable, SerializesModels;
+    use CapturesEmailLogContext, Queueable, SerializesModels;
 
     // Stored base64-encoded, not raw — this Mailable is queued (ShouldQueue),
     // and Laravel JSON-encodes its public properties to persist the job in
@@ -46,6 +47,7 @@ class FinalApprovalRequestMail extends Mailable implements ShouldQueue
         public string $offboardeeName,
         ?string $pngBytes = null,
     ) {
+        $this->captureEmailLogContext($emailSubject, $offboardeeName);
         $this->pdfBytes = base64_encode($pdfBytes);
         $this->pngBytes = $pngBytes !== null ? base64_encode($pngBytes) : null;
     }

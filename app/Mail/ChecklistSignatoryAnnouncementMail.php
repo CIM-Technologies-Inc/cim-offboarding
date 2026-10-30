@@ -4,6 +4,7 @@ namespace App\Mail;
 
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
+use App\Mail\Concerns\CapturesEmailLogContext;
 use Illuminate\Mail\Mailable;
 use Illuminate\Mail\Mailables\Content;
 use Illuminate\Mail\Mailables\Envelope;
@@ -21,12 +22,14 @@ use Illuminate\Queue\SerializesModels;
 // need a separately-managed persistent worker process.
 class ChecklistSignatoryAnnouncementMail extends Mailable implements ShouldQueue
 {
-    use Queueable, SerializesModels;
+    use CapturesEmailLogContext, Queueable, SerializesModels;
 
     public function __construct(
         public string $emailSubject,
         public string $emailBody,
-    ) {}
+    ) {
+        $this->captureEmailLogContext($emailSubject);
+    }
 
     public function envelope(): Envelope
     {

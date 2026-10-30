@@ -3,6 +3,8 @@
 @section('content')
     <x-common.page-breadcrumb pageTitle="Logs" />
 
+    @include('pages.logs.partials.tabs')
+
     <div class="mb-6">
         <p class="text-sm text-gray-500 dark:text-gray-400">
             A read-only audit trail of authentication and account activity. No entry here can be edited or deleted

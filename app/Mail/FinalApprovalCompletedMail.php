@@ -4,6 +4,7 @@ namespace App\Mail;
 
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
+use App\Mail\Concerns\CapturesEmailLogContext;
 use Illuminate\Mail\Mailable;
 use Illuminate\Mail\Mailables\Content;
 use Illuminate\Mail\Mailables\Envelope;
@@ -22,7 +23,7 @@ use Illuminate\Queue\SerializesModels;
  */
 class FinalApprovalCompletedMail extends Mailable implements ShouldQueue
 {
-    use Queueable, SerializesModels;
+    use CapturesEmailLogContext, Queueable, SerializesModels;
 
     public function __construct(
         public string $creatorName,
@@ -33,7 +34,9 @@ class FinalApprovalCompletedMail extends Mailable implements ShouldQueue
         public string $approvedAt,
         public ?string $remarks,
         public string $viewUrl,
-    ) {}
+    ) {
+        $this->captureEmailLogContext(null, $offboardeeName);
+    }
 
     public function envelope(): Envelope
     {
